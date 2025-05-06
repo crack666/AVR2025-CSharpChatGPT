@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voice Chat Assistant</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; }
+    label { display: block; margin-top: 1em; }
+    button { margin-top: 1em; padding: 0.5em 1em; }
+  </style>
+</head>
+<body>
+  <h1>Voice Chat Assistant</h1>
+  <label>Model:
+    <select id="model">
+      <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+      <option value="gpt-4">gpt-4</option>
+    </select>
+  </label>
+  <label>Speech Language:
+    <select id="language"></select>
+  </label>
+  <label>Voice:
+    <select id="voice"></select>
+  </label>
+  <button id="record">Start Recording</button>
+  <p id="status"></p>
+  <p><strong>Transcription:</strong> <span id="transcript"></span></p>
+  <p><strong>Response:</strong> <span id="response"></span></p>
+  <script>
+    let recorder, chunks = [];
+    const recordBtn = document.getElementById('record');
+    const status = document.getElementById('status');
+    const transcriptEl = document.getElementById('transcript');
+    const responseEl = document.getElementById('response');
+    const modelSel = document.getElementById('model');
+    const langSel = document.getElementById('language');
+    const voiceSel = document.getElementById('voice');
+
+    function populateVoices() {
+      const voices = speechSynthesis.getVoices();
+      langSel.innerHTML = '';
+      voiceSel.innerHTML = '';
+      const languages = [...new Set(voices.map(v => v.lang))];
+      languages.forEach(lang => {
+        const opt = document.createElement('option'); opt.value = lang; opt.textContent = lang;
+        langSel.appendChild(opt);
+      });
+      voices.forEach(voice => {
+        const opt = document.createElement('option');
+        opt.value = voice.name;
+        opt.textContent = `${voice.name} (${voice.lang})`;
+        voiceSel.appendChild(opt);
+      });
+    }
+    speechSynthesis.onvoiceschanged = populateVoices;
+    populateVoices();
+
+    recordBtn.onclick = () => {
+      if (recorder && recorder.state === 'recording') {
+        recorder.stop();
+        recordBtn.textContent = 'Start Recording';
+      } else {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+          recorder = new MediaRecorder(stream);
+          chunks = [];
+          recorder.ondataavailable = e => chunks.push(e.data);
+          recorder.onstop = async () => {
+            status.textContent = 'Uploading...';
+            const blob = new Blob(chunks, { type: 'audio/webm' });
+            const fd = new FormData();
+            fd.append('file', blob, 'audio.webm');
+            fd.append('model', modelSel.value);
+            fd.append('language', langSel.value);
+            const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
+            if (!resp.ok) { status.textContent = 'Error processing audio'; return; }
+            const data = await resp.json();
+            transcriptEl.textContent = data.prompt;
+            responseEl.textContent = data.response;
+            status.textContent = 'Speaking...';
+            const utter = new SpeechSynthesisUtterance(data.response);
+            utter.lang = langSel.value;
+            const selectedVoice = speechSynthesis.getVoices().find(v => v.name === voiceSel.value);
+            if (selectedVoice) utter.voice = selectedVoice;
+            utter.onend = () => status.textContent = '';
+            speechSynthesis.speak(utter);
+          };
+          recorder.start();
+          recordBtn.textContent = 'Stop Recording';
+          status.textContent = 'Recording...';
+        });
+      }
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <!-- Static files (HTML/JS) served from wwwroot -->
+  <!-- Only compile explicit code files in this project; exclude all others (e.g., tests) -->
+  <PropertyGroup>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Main application source files -->
+    <Compile Include="Program.cs" />
+    <Compile Include="ProgramPartial.cs" />
+  </ItemGroup>
+</Project>
