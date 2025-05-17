@@ -8,16 +8,15 @@
     body { font-family: Arial, sans-serif; margin: 2em; }
     label { display: block; margin-top: 1em; }
     button { margin-top: 1em; padding: 0.5em 1em; }
+    #chatLog { border: 1px solid #ccc; padding: 1em; max-height: 400px; overflow-y: auto; margin-top: 1em; }
   </style>
 </head>
 <body>
   <h1>Voice Chat Assistant</h1>
   <label>Model:
-    <select id="model">
-      <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-      <option value="gpt-4">gpt-4</option>
-    </select>
+    <select id="model"></select>
   </label>
+  <p>Aktuelles Modell: <span id="currentModel"></span></p>
   <label>Speech Language:
     <select id="language"></select>
   </label>
@@ -26,19 +25,43 @@
   </label>
   <button id="record">Start Recording</button>
   <p id="status"></p>
-  <p><strong>Transcription:</strong> <span id="transcript"></span></p>
-  <p><strong>Response:</strong> <span id="response"></span></p>
+  <div id="chatLog"></div>
   <script>
     let recorder, chunks = [];
     const recordBtn = document.getElementById('record');
     const status = document.getElementById('status');
-    const transcriptEl = document.getElementById('transcript');
-    const responseEl = document.getElementById('response');
+    const chatLog = document.getElementById('chatLog');
     const modelSel = document.getElementById('model');
     const langSel = document.getElementById('language');
     const voiceSel = document.getElementById('voice');
+    // Dynamically load available chat models from server
+    async function loadModels() {
+      modelSel.innerHTML = '';
+      try {
+        const res = await fetch('/api/models');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const models = await res.json();
+        models.forEach(m => {
+          const opt = document.createElement('option'); opt.value = m; opt.textContent = m;
+          modelSel.appendChild(opt);
+        });
+      } catch (err) {
+        console.error('Fehler beim Laden der Modelle:', err);
+        ['gpt-3.5-turbo', 'gpt-4'].forEach(m => {
+          const opt = document.createElement('option'); opt.value = m; opt.textContent = m;
+          modelSel.appendChild(opt);
+        });
+      }
+    }
+    const loadPromise = loadModels();
+    const currentModelEl = document.getElementById('currentModel');
+    modelSel.addEventListener('change', () => { currentModelEl.textContent = modelSel.value; });
+    loadPromise.then(() => { currentModelEl.textContent = modelSel.value; });
 
+    // Populate browser voices and OpenAI TTS voices
+    const openaiVoices = ['nova', 'shimmer', 'echo', 'onyx', 'fable', 'alloy', 'ash', 'sage', 'coral'];
     function populateVoices() {
+      // Speech language dropdown
       const voices = speechSynthesis.getVoices();
       langSel.innerHTML = '';
       voiceSel.innerHTML = '';
@@ -47,6 +70,14 @@
         const opt = document.createElement('option'); opt.value = lang; opt.textContent = lang;
         langSel.appendChild(opt);
       });
+      // OpenAI TTS voice options
+      openaiVoices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = `OpenAI ${v.charAt(0).toUpperCase() + v.slice(1)}`;
+        voiceSel.appendChild(opt);
+      });
+      // Browser-native voices
       voices.forEach(voice => {
         const opt = document.createElement('option');
         opt.value = voice.name;
@@ -76,15 +107,41 @@
             const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
             if (!resp.ok) { status.textContent = 'Error processing audio'; return; }
             const data = await resp.json();
-            transcriptEl.textContent = data.prompt;
-            responseEl.textContent = data.response;
-            status.textContent = 'Speaking...';
-            const utter = new SpeechSynthesisUtterance(data.response);
-            utter.lang = langSel.value;
-            const selectedVoice = speechSynthesis.getVoices().find(v => v.name === voiceSel.value);
-            if (selectedVoice) utter.voice = selectedVoice;
-            utter.onend = () => status.textContent = '';
-            speechSynthesis.speak(utter);
+            console.log('processAudio response:', data, 'model selected:', modelSel.value);
+            const userMessage = document.createElement('p');
+            userMessage.innerHTML = `<strong>Du:</strong> ${data.prompt}`;
+            chatLog.appendChild(userMessage);
+            const assistantMessage = document.createElement('p');
+            assistantMessage.innerHTML = `<strong>Assistant (${data.model}):</strong> ${data.response}`;
+            chatLog.appendChild(assistantMessage);
+            chatLog.scrollTop = chatLog.scrollHeight;
+            // Speak response: use OpenAI TTS or browser SpeechSynthesis
+            if (openaiVoices.includes(voiceSel.value)) {
+              status.textContent = 'Synthesizing...';
+              const resp2 = await fetch('/api/speech', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ Input: data.response, Voice: voiceSel.value })
+              });
+            if (!resp2.ok) {
+              const errText = await resp2.text();
+              status.textContent = `Error synthesizing speech: ${resp2.status} ${errText}`;
+              return;
+            }
+              const audioBlob = await resp2.blob();
+              const audioUrl = URL.createObjectURL(audioBlob);
+              const audio = new Audio(audioUrl);
+              audio.onended = () => { status.textContent = ''; URL.revokeObjectURL(audioUrl); };
+              audio.play();
+            } else {
+              status.textContent = 'Speaking...';
+              const utter = new SpeechSynthesisUtterance(data.response);
+              utter.lang = langSel.value;
+              const selectedVoice = speechSynthesis.getVoices().find(v => v.name === voiceSel.value);
+              if (selectedVoice) utter.voice = selectedVoice;
+              utter.onend = () => status.textContent = '';
+              speechSynthesis.speak(utter);
+            }
           };
           recorder.start();
           recordBtn.textContent = 'Stop Recording';
