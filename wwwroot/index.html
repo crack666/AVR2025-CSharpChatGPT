@@ -23,6 +23,10 @@
   <label>Voice:
     <select id="voice"></select>
   </label>
+  <!-- Silence threshold duration in seconds -->
+  <label>Stille-Schwelle (s):
+    <input type="number" id="silenceSec" min="0.5" max="10" step="0.1" value="2" />
+  </label>
   <!-- Continuous listening; no manual record button -->
   <p id="status"></p>
   <div id="chatLog"></div>
@@ -32,6 +36,7 @@
     const modelSel = document.getElementById('model');
     const langSel = document.getElementById('language');
     const voiceSel = document.getElementById('voice');
+    const silenceSecInput = document.getElementById('silenceSec');
     // Dynamically load available chat models from server
     async function loadModels() {
       modelSel.innerHTML = '';
@@ -137,7 +142,8 @@
       const audioContext = new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
+      // Reduce FFT size for lower-latency voice activity detection
+      analyser.fftSize = 1024;
       source.connect(analyser);
       const dataArray = new Uint8Array(analyser.fftSize);
       const recorder = new MediaRecorder(stream);
@@ -165,8 +171,8 @@
       let speakingSegment = false;
       let silenceStart = null;
       const silenceThreshold = 0.02;
-      const silenceDuration = 2000;
       status.textContent = 'Listening...';
+      // Poll more frequently for quicker reaction (ms)
       setInterval(() => {
         analyser.getByteTimeDomainData(dataArray);
         let sumSquares = 0;
@@ -186,13 +192,13 @@
         } else {
           if (speakingSegment) {
             if (!silenceStart) silenceStart = Date.now();
-            else if (Date.now() - silenceStart > silenceDuration) {
+            else if (Date.now() - silenceStart > parseFloat(silenceSecInput.value) * 1000) {
               speakingSegment = false;
               recorder.stop();
             }
           }
         }
-      }, 100);
+      }, 50);
     })();
   </script>
 </body>
