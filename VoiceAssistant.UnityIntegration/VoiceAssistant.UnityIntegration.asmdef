@@ -1,0 +1,10 @@
+{
+  "name": "VoiceAssistant.UnityIntegration",
+  "references": [],
+  "includePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": []
+}

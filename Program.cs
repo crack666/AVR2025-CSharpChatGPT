@@ -8,6 +8,12 @@ using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Builder;
+using VoiceAssistant.Core.Services;
+using VoiceAssistant.Core.Interfaces;
+using VoiceAssistant.Core.Models;
+using VoiceAssistant.Plugins.OpenAI;
+using Microsoft.Extensions.Logging;
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -34,102 +40,101 @@ builder.Services.AddSingleton(sp =>
     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     return client;
 });
+// Register core services and plugin implementations
+builder.Services.AddSingleton<VoiceAssistant.Core.Services.ChatLogManager>();
+builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IChatService, VoiceAssistant.Plugins.OpenAI.OpenAIChatService>();
+builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IRecognizer, VoiceAssistant.Plugins.OpenAI.OpenAIApiRecognizer>();
+builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.ISynthesizer, VoiceAssistant.Plugins.OpenAI.OpenAIApiSynthesizer>();
 var app = builder.Build();
 var logger = app.Logger;
+// Enable detailed exception page for debugging
+app.UseDeveloperExceptionPage();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapPost("/api/processAudio", async (HttpRequest request, HttpClient http) =>
+// Endpoint: process audio to text, then chat with context via IChatService
+app.MapPost("/api/processAudio", async (
+    HttpRequest request,
+    IRecognizer recognizer,
+    IChatService chatService,
+    ChatLogManager chatLogManager) =>
 {
     var form = await request.ReadFormAsync();
-    var model = form["model"].ToString();
-    var language = form["language"].ToString();
     var file = form.Files.GetFile("file");
     if (file == null)
         return Results.BadRequest("No file uploaded");
 
-    // Transcribe directly from uploaded file (preserving original format/content type)
-    var prompt = await TranscribeAudio(file, http);
-    var response = await GetCompletion(prompt, model, http);
-    return Results.Json(new { prompt, response, model });
+    // Speech-to-text using configured recognizer
+    string prompt;
+    await using (var stream = file.OpenReadStream())
+        prompt = await recognizer.RecognizeAsync(stream, file.ContentType, file.FileName);
+
+    // Add user message to context
+    chatLogManager.AddMessage(ChatRole.User, prompt);
+
+    // Generate bot response with full context
+    var reply = await chatService.GenerateResponseAsync(chatLogManager.GetMessages());
+    chatLogManager.AddMessage(ChatRole.Bot, reply);
+
+    return Results.Json(new { prompt, response = reply });
 });
 // Streaming endpoint: process audio, transcribe, then stream chat completion tokens via SSE
-app.MapPost("/api/processAudioStream", async (HttpContext context, HttpClient http) =>
-{
-    var request = context.Request;
-    var response = context.Response;
-    var form = await request.ReadFormAsync();
-    var model = form["model"].ToString();
-    var language = form["language"].ToString();
-    var file = form.Files.GetFile("file");
-    if (file == null)
-    {
-        response.StatusCode = 400;
-        await response.WriteAsync("No file uploaded");
-        return;
-    }
-    // Transcribe audio
-    var prompt = await TranscribeAudio(file, http);
-    // Configure SSE response
-    response.Headers.Add("Cache-Control", "no-cache");
-    response.Headers.Add("Content-Type", "text/event-stream");
-    // Send initial prompt event
-    await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt, model })}\n\n");
-    await response.Body.FlushAsync();
-    // Prepare OpenAI streaming request using shared HTTP/2 client
-    var chatRequest = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
-    var chatPayload = JsonSerializer.Serialize(new
-    {
-        model = model,
-        messages = new object[] { new { role = "user", content = prompt } },
-        stream = true
-    });
-    chatRequest.Content = new StringContent(chatPayload, System.Text.Encoding.UTF8, "application/json");
-    chatRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-    var openAiRes = await http.SendAsync(chatRequest, HttpCompletionOption.ResponseHeadersRead);
-    openAiRes.EnsureSuccessStatusCode();
-    using var stream = await openAiRes.Content.ReadAsStreamAsync();
-    using var reader = new StreamReader(stream);
-    // Read streaming data line by line
-    while (!reader.EndOfStream)
-    {
-        var line = await reader.ReadLineAsync();
-        if (string.IsNullOrWhiteSpace(line)) continue;
-        const string prefix = "data: ";
-        if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
-        var data = line[prefix.Length..];
-        if (data.Trim() == "[DONE]")
-        {
-            // Signal done
-            await response.WriteAsync("event: done\ndata: \n\n");
-            await response.Body.FlushAsync();
-            break;
-        }
-        try
-        {
-            using var doc = JsonDocument.Parse(data);
-            var delta = doc.RootElement.GetProperty("choices")[0].GetProperty("delta");
-            if (delta.TryGetProperty("content", out var contentProp))
-            {
-                var token = contentProp.GetString();
-                if (!string.IsNullOrEmpty(token))
-                {
-                    // Send token event
-                    await response.WriteAsync($"data: {JsonSerializer.Serialize(new { token })}\n\n");
-                    await response.Body.FlushAsync();
-                }
-            }
-        }
-        catch { }
-    }
-});
-// Endpoint for OpenAI Text-to-Speech using models like Juniper or Alloy
-app.MapPost("/api/speech", async (SpeechRequest spec, HttpClient http) =>
+// Streaming endpoint: process audio, transcribe, then stream chat completion tokens via SSE
+app.MapPost("/api/processAudioStream", async (
+    HttpContext context,
+    IRecognizer recognizer,
+    ChatLogManager chatLogManager,
+    IChatService chatService) =>
 {
     try
     {
-        var audio = await SynthesizeSpeech(spec.Input, spec.Voice, http);
+        var request = context.Request;
+        var response = context.Response;
+        var form = await request.ReadFormAsync();
+        var file = form.Files.GetFile("file");
+        if (file == null)
+        {
+            response.StatusCode = 400;
+            await response.WriteAsync("No file uploaded");
+            return;
+        }
+        // Speech-to-text
+        string prompt;
+        await using (var audioStream = file.OpenReadStream())
+            prompt = await recognizer.RecognizeAsync(audioStream, file.ContentType, file.FileName);
+        chatLogManager.AddMessage(ChatRole.User, prompt);
+        // Configure SSE
+        response.Headers.Add("Cache-Control", "no-cache");
+        response.Headers.Add("Content-Type", "text/event-stream");
+        // Send initial prompt event
+        await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt })}\n\n");
+        await response.Body.FlushAsync();
+        // Generate and send bot response
+        var reply = await chatService.GenerateResponseAsync(chatLogManager.GetMessages());
+        chatLogManager.AddMessage(ChatRole.Bot, reply);
+        await response.WriteAsync($"data: {JsonSerializer.Serialize(new { message = reply })}\n\n");
+        // Signal done
+        await response.WriteAsync("event: done\ndata: \n\n");
+        await response.Body.FlushAsync();
+    }
+    catch (Exception ex)
+    {
+        // Log full exception and return detailed error for debugging
+        logger.LogError(ex, "Unhandled error in /api/processAudioStream");
+        var response = context.Response;
+        response.StatusCode = 500;
+        response.Headers["Content-Type"] = "text/plain";
+        await response.WriteAsync(ex.ToString());
+    }
+});
+// Endpoint for OpenAI Text-to-Speech using models like Juniper or Alloy
+// Endpoint for Text-to-Speech using ISynthesizer
+app.MapPost("/api/speech", async (SpeechRequest spec, ISynthesizer synthesizer) =>
+{
+    try
+    {
+        var audio = await synthesizer.SynthesizeAsync(spec.Input, spec.Voice);
         return Results.File(audio, "audio/mpeg");
     }
     catch (ApplicationException ex)
@@ -168,64 +173,33 @@ app.MapGet("/api/models", async (HttpClient http) =>
 });
 
 // Endpoint for direct text chat streaming (ASR clients)
-app.MapPost("/api/chatStream", async (HttpContext context, HttpClient http) =>
+// Endpoint for text-based chat with full context via IChatService (streaming fallback)
+app.MapPost("/api/chatStream", async (HttpContext context, ChatLogManager chatLogManager, IChatService chatService) =>
 {
     var chatReq = await JsonSerializer.DeserializeAsync<ChatRequest>(context.Request.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-    if (chatReq == null || string.IsNullOrEmpty(chatReq.Model) || string.IsNullOrEmpty(chatReq.Prompt))
+    if (chatReq?.Prompt == null)
     {
         context.Response.StatusCode = 400;
-        await context.Response.WriteAsync("Invalid request");
+        await context.Response.WriteAsync("Invalid request: missing prompt.");
         return;
     }
-    var model = chatReq.Model;
     var prompt = chatReq.Prompt;
-    var response = context.Response;
-    response.Headers.Add("Cache-Control", "no-cache");
-    response.Headers.Add("Content-Type", "text/event-stream");
-    await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt, model })}\n\n");
-    await response.Body.FlushAsync();
-    var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
-    var payload = JsonSerializer.Serialize(new
-    {
-        model = model,
-        messages = new object[] { new { role = "user", content = prompt } },
-        stream = true
-    });
-    req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-    var openAiRes = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
-    openAiRes.EnsureSuccessStatusCode();
-    using var stream = await openAiRes.Content.ReadAsStreamAsync();
-    using var reader = new StreamReader(stream);
-    while (!reader.EndOfStream)
-    {
-        var line = await reader.ReadLineAsync();
-        if (string.IsNullOrWhiteSpace(line)) continue;
-        const string prefix = "data: ";
-        if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
-        var data = line[prefix.Length..];
-        if (data.Trim() == "[DONE]")
-        {
-            await response.WriteAsync("event: done\ndata: \n\n");
-            await response.Body.FlushAsync();
-            break;
-        }
-        try
-        {
-            using var doc = JsonDocument.Parse(data);
-            var delta = doc.RootElement.GetProperty("choices")[0].GetProperty("delta");
-            if (delta.TryGetProperty("content", out var contentProp))
-            {
-                var token = contentProp.GetString();
-                if (!string.IsNullOrEmpty(token))
-                {
-                    await response.WriteAsync($"data: {JsonSerializer.Serialize(new { token })}\n\n");
-                    await response.Body.FlushAsync();
-                }
-            }
-        }
-        catch { }
-    }
+    // Add user message
+    chatLogManager.AddMessage(ChatRole.User, prompt);
+
+    context.Response.Headers.Add("Cache-Control", "no-cache");
+    context.Response.Headers.Add("Content-Type", "text/event-stream");
+    // Send initial prompt event
+    await context.Response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt })}\n\n");
+    await context.Response.Body.FlushAsync();
+
+    // Generate response (non-streaming) and send as single event
+    var reply = await chatService.GenerateResponseAsync(chatLogManager.GetMessages());
+    chatLogManager.AddMessage(ChatRole.Bot, reply);
+    await context.Response.WriteAsync($"data: {JsonSerializer.Serialize(new { message = reply })}\n\n");
+    // Signal done
+    await context.Response.WriteAsync("event: done\ndata: \n\n");
+    await context.Response.Body.FlushAsync();
 });
 
 app.Run();
@@ -291,7 +265,7 @@ async Task<byte[]> SynthesizeSpeech(string text, string voice, HttpClient http)
     return responseBytes;
 }
 
-// Specification for speech synthesis request
+        // Specification for speech synthesis request
 public record SpeechRequest(string Input, string Voice);
 // Specification for chat request (text-based streaming)
 public record ChatRequest(string Model, string Prompt);

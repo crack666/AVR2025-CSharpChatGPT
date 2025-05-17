@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>8.0</LangVersion>
+    <!-- Using C# 8.0 for compatibility with Unity and netstandard2.0 -->
+    <RootNamespace>VoiceAssistant.Plugins.OpenAI</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../VoiceAssistant.Core/VoiceAssistant.Core.csproj" />
+    <PackageReference Include="System.Net.Http.Json" Version="6.0.0" />
+  </ItemGroup>
+</Project>

@@ -14,4 +14,9 @@
     <Compile Include="Program.cs" />
     <Compile Include="ProgramPartial.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Core and plugin libraries -->
+    <ProjectReference Include="VoiceAssistant.Core/VoiceAssistant.Core.csproj" />
+    <ProjectReference Include="VoiceAssistant.Plugins.OpenAI/VoiceAssistant.Plugins.OpenAI.csproj" />
+  </ItemGroup>
 </Project>
