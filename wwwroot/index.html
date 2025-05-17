@@ -23,12 +23,10 @@
   <label>Voice:
     <select id="voice"></select>
   </label>
-  <button id="record">Start Recording</button>
+  <!-- Continuous listening; no manual record button -->
   <p id="status"></p>
   <div id="chatLog"></div>
   <script>
-    let recorder, chunks = [];
-    const recordBtn = document.getElementById('record');
     const status = document.getElementById('status');
     const chatLog = document.getElementById('chatLog');
     const modelSel = document.getElementById('model');
@@ -88,67 +86,114 @@
     speechSynthesis.onvoiceschanged = populateVoices;
     populateVoices();
 
-    recordBtn.onclick = () => {
-      if (recorder && recorder.state === 'recording') {
-        recorder.stop();
-        recordBtn.textContent = 'Start Recording';
+    // Helper to append chat messages
+    function appendChat(data) {
+      const userMessage = document.createElement('p');
+      userMessage.innerHTML = `<strong>Du:</strong> ${data.prompt}`;
+      chatLog.appendChild(userMessage);
+      const assistantMessage = document.createElement('p');
+      assistantMessage.innerHTML = `<strong>Assistant (${data.model}):</strong> ${data.response}`;
+      chatLog.appendChild(assistantMessage);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    // Helper to speak response with TTS or SpeechSynthesis
+    async function speakResponse(text) {
+      if (openaiVoices.includes(voiceSel.value)) {
+        status.textContent = 'Synthesizing...';
+        const resp2 = await fetch('/api/speech', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Input: text, Voice: voiceSel.value })
+        });
+        if (!resp2.ok) {
+          const errText = await resp2.text();
+          status.textContent = `Error synthesizing speech: ${resp2.status} ${errText}`;
+          return;
+        }
+        const audioBlob = await resp2.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        await new Promise(resolve => {
+          audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+          audio.play();
+        });
       } else {
-        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-          recorder = new MediaRecorder(stream);
-          chunks = [];
-          recorder.ondataavailable = e => chunks.push(e.data);
-          recorder.onstop = async () => {
-            status.textContent = 'Uploading...';
-            const blob = new Blob(chunks, { type: 'audio/webm' });
-            const fd = new FormData();
-            fd.append('file', blob, 'audio.webm');
-            fd.append('model', modelSel.value);
-            fd.append('language', langSel.value);
-            const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
-            if (!resp.ok) { status.textContent = 'Error processing audio'; return; }
-            const data = await resp.json();
-            console.log('processAudio response:', data, 'model selected:', modelSel.value);
-            const userMessage = document.createElement('p');
-            userMessage.innerHTML = `<strong>Du:</strong> ${data.prompt}`;
-            chatLog.appendChild(userMessage);
-            const assistantMessage = document.createElement('p');
-            assistantMessage.innerHTML = `<strong>Assistant (${data.model}):</strong> ${data.response}`;
-            chatLog.appendChild(assistantMessage);
-            chatLog.scrollTop = chatLog.scrollHeight;
-            // Speak response: use OpenAI TTS or browser SpeechSynthesis
-            if (openaiVoices.includes(voiceSel.value)) {
-              status.textContent = 'Synthesizing...';
-              const resp2 = await fetch('/api/speech', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ Input: data.response, Voice: voiceSel.value })
-              });
-            if (!resp2.ok) {
-              const errText = await resp2.text();
-              status.textContent = `Error synthesizing speech: ${resp2.status} ${errText}`;
-              return;
-            }
-              const audioBlob = await resp2.blob();
-              const audioUrl = URL.createObjectURL(audioBlob);
-              const audio = new Audio(audioUrl);
-              audio.onended = () => { status.textContent = ''; URL.revokeObjectURL(audioUrl); };
-              audio.play();
-            } else {
-              status.textContent = 'Speaking...';
-              const utter = new SpeechSynthesisUtterance(data.response);
-              utter.lang = langSel.value;
-              const selectedVoice = speechSynthesis.getVoices().find(v => v.name === voiceSel.value);
-              if (selectedVoice) utter.voice = selectedVoice;
-              utter.onend = () => status.textContent = '';
-              speechSynthesis.speak(utter);
-            }
-          };
-          recorder.start();
-          recordBtn.textContent = 'Stop Recording';
-          status.textContent = 'Recording...';
+        status.textContent = 'Speaking...';
+        await new Promise(resolve => {
+          const utter = new SpeechSynthesisUtterance(text);
+          utter.lang = langSel.value;
+          const selectedVoice = speechSynthesis.getVoices().find(v => v.name === voiceSel.value);
+          if (selectedVoice) utter.voice = selectedVoice;
+          utter.onend = () => resolve();
+          speechSynthesis.speak(utter);
         });
       }
-    };
+    }
+
+    // Continuous recording with silence detection
+    (async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.fftSize);
+      const recorder = new MediaRecorder(stream);
+      let chunks = [];
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = async () => {
+        status.textContent = 'Uploading...';
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const fd = new FormData();
+        fd.append('file', blob, 'audio.webm');
+        fd.append('model', modelSel.value);
+        fd.append('language', langSel.value);
+        try {
+          const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
+          if (!resp.ok) { status.textContent = 'Error processing audio'; return; }
+          const data = await resp.json();
+          appendChat(data);
+          await speakResponse(data.response);
+        } catch (err) {
+          console.error(err);
+          status.textContent = 'Error in processing';
+        }
+        status.textContent = 'Listening...';
+      };
+      let speakingSegment = false;
+      let silenceStart = null;
+      const silenceThreshold = 0.02;
+      const silenceDuration = 2000;
+      status.textContent = 'Listening...';
+      setInterval(() => {
+        analyser.getByteTimeDomainData(dataArray);
+        let sumSquares = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const v = (dataArray[i] - 128) / 128;
+          sumSquares += v * v;
+        }
+        const rms = Math.sqrt(sumSquares / dataArray.length);
+        if (rms > silenceThreshold) {
+          if (!speakingSegment) {
+            speakingSegment = true;
+            chunks = [];
+            recorder.start();
+            status.textContent = 'Recording...';
+          }
+          silenceStart = null;
+        } else {
+          if (speakingSegment) {
+            if (!silenceStart) silenceStart = Date.now();
+            else if (Date.now() - silenceStart > silenceDuration) {
+              speakingSegment = false;
+              recorder.stop();
+            }
+          }
+        }
+      }, 100);
+    })();
   </script>
 </body>
 </html>
