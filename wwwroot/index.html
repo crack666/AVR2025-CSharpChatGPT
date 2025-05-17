@@ -5,42 +5,305 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Voice Chat Assistant</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 2em; }
-    label { display: block; margin-top: 1em; }
-    button { margin-top: 1em; padding: 0.5em 1em; }
-    #chatLog { border: 1px solid #ccc; padding: 1em; max-height: 400px; overflow-y: auto; margin-top: 1em; }
+    :root {
+      --primary-color: #0078d7;
+      --secondary-color: #005a9e;
+      --bg-color: #f5f5f5;
+      --chat-bg: #ffffff;
+      --user-bubble: #dcf8c6;
+      --bot-bubble: #e8f1f3;
+      --border-radius: 10px;
+    }
+    
+    body { 
+      font-family: 'Segoe UI', Arial, sans-serif; 
+      margin: 0;
+      padding: 20px;
+      background-color: var(--bg-color);
+      color: #333;
+    }
+    
+    h1 {
+      color: var(--primary-color);
+      margin-bottom: 20px;
+    }
+    
+    .control-panel {
+      background-color: var(--chat-bg);
+      padding: 15px;
+      border-radius: var(--border-radius);
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    
+    .settings-group {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 15px;
+      margin-bottom: 15px;
+    }
+    
+    label { 
+      display: block; 
+      margin-bottom: 5px;
+      font-weight: 500;
+    }
+    
+    select, input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background-color: white;
+    }
+    
+    .button-group {
+      display: flex;
+      gap: 10px;
+    }
+    
+    button { 
+      background-color: var(--primary-color);
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }
+    
+    button:hover {
+      background-color: var(--secondary-color);
+    }
+    
+    button.secondary {
+      background-color: #f0f0f0;
+      color: #333;
+    }
+    
+    button.secondary:hover {
+      background-color: #e0e0e0;
+    }
+    
+    button.stop-button {
+      background-color: #e74c3c;
+      color: white;
+      padding: 5px 10px;
+      font-size: 0.8em;
+      margin-left: 10px;
+    }
+    
+    button.stop-button:hover {
+      background-color: #c0392b;
+    }
+    
+    #status {
+      padding: 8px 15px;
+      background-color: var(--primary-color);
+      color: white;
+      border-radius: 4px;
+      display: inline-block;
+      margin: 10px 0;
+    }
+    
+    #chatLog { 
+      background-color: var(--chat-bg);
+      border-radius: var(--border-radius);
+      padding: 1em; 
+      height: 400px;
+      overflow-y: auto; 
+      margin-top: 1em;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    
+    .message {
+      margin-bottom: 15px;
+      max-width: 80%;
+      padding: 10px 15px;
+      border-radius: var(--border-radius);
+      position: relative;
+      line-height: 1.5;
+    }
+    
+    .user-message {
+      background-color: var(--user-bubble);
+      margin-left: auto;
+      border-bottom-right-radius: 0;
+    }
+    
+    .bot-message {
+      background-color: var(--bot-bubble);
+      margin-right: auto;
+      border-bottom-left-radius: 0;
+    }
+    
+    .message-content {
+      word-wrap: break-word;
+    }
+    
+    .message-header {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    
+    .controls-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+    }
+    
+    .threshold-slider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .threshold-slider input[type="range"] {
+      flex-grow: 1;
+    }
+    
+    .threshold-value {
+      min-width: 40px;
+    }
+    
+    /* Debug panel */
+    .debug-panel {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #f8f8f8;
+      border: 1px solid #ddd;
+      border-radius: var(--border-radius);
+      font-family: monospace;
+    }
+    
+    @media (max-width: 768px) {
+      .settings-group {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
   <h1>Voice Chat Assistant</h1>
-  <label>Model:
-    <select id="model"></select>
-  </label>
-  <p>Aktuelles Modell: <span id="currentModel"></span></p>
-  <label>Speech Language:
-    <select id="language"></select>
-  </label>
-  <label>Voice:
-    <select id="voice"></select>
-  </label>
-  <label>Transcription Mode:
-    <select id="asrMode">
-      <option value="whisper">Whisper (Server)</option>
-      <option value="browser">Browser ASR</option>
-    </select>
-  </label>
-  <!-- Silence threshold duration in seconds -->
-  <label>Stille-Schwelle (s):
-    <input type="number" id="silenceSec" min="0.5" max="10" step="0.1" value="2" />
-  </label>
-  <!-- Continuous listening; no manual record button -->
-  <p id="status"></p>
-  <button id="stopBtn">Stopp</button>
+  
+  <div class="control-panel">
+    <div class="settings-group">
+      <div>
+        <label for="model">LLM Modell:</label>
+        <select id="model"></select>
+      </div>
+      
+      <div>
+        <label for="voice">Stimme:</label>
+        <select id="voice"></select>
+      </div>
+      
+      <div>
+        <label for="language">Sprache:</label>
+        <select id="language"></select>
+      </div>
+      
+      <div>
+        <label for="asrMode">Transkription:</label>
+        <select id="asrMode">
+          <option value="whisper">Whisper (Server)</option>
+          <option value="browser">Browser ASR</option>
+        </select>
+      </div>
+    </div>
+    
+    <div class="controls-row">
+      <div class="threshold-slider">
+        <label for="silenceThresholdRange">Erkennungsschwelle:</label>
+        <input type="range" id="silenceThresholdRange" min="0.005" max="0.1" step="0.001" value="0.02">
+        <span id="thresholdValue" class="threshold-value">0.02</span>
+      </div>
+      
+      <div class="threshold-slider">
+        <label for="silenceSec">Stille-Schwelle (s):</label>
+        <input type="range" id="silenceSecRange" min="0.5" max="5" step="0.1" value="2">
+        <input type="number" id="silenceSec" min="0.5" max="10" step="0.1" value="2" style="width: 60px;"/>
+      </div>
+    </div>
+    
+    <div class="button-group">
+      <div id="status">Bereit</div>
+      <button id="stopBtn" class="stop-button">Aufnahme stoppen</button>
+      <button id="clearBtn" class="secondary">Chat leeren</button>
+      <button id="debugBtn" class="secondary">Debug-Modus</button>
+    </div>
+  </div>
+  
   <div id="chatLog"></div>
+  
+  <div id="debugPanel" class="debug-panel" style="display: none;">
+    <h3>Debug-Informationen</h3>
+    <div id="debugOutput"></div>
+  </div>
   <script>
+    // UI Elements
     const status = document.getElementById('status');
     const stopBtn = document.getElementById('stopBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const debugBtn = document.getElementById('debugBtn');
+    const chatLog = document.getElementById('chatLog');
+    const modelSel = document.getElementById('model');
+    const langSel = document.getElementById('language');
+    const voiceSel = document.getElementById('voice');
+    const silenceSecInput = document.getElementById('silenceSec');
+    const silenceSecRange = document.getElementById('silenceSecRange');
+    const silenceThresholdRange = document.getElementById('silenceThresholdRange');
+    const thresholdValue = document.getElementById('thresholdValue');
+    const asrMode = document.getElementById('asrMode');
+    const debugPanel = document.getElementById('debugPanel');
+    const debugOutput = document.getElementById('debugOutput');
+    
+    // Audio state
+    let currentAudio = null;
+    let currentUtterance = null;
+    let silenceThreshold = parseFloat(silenceThresholdRange.value);
+    let recording = false;
+    
+    // Initialize values
+    thresholdValue.textContent = silenceThreshold.toFixed(3);
+    
+    // Global stop button stops any current audio playback
     stopBtn.addEventListener('click', () => {
+      stopAllAudio();
+      status.textContent = 'Gestoppt';
+    });
+    
+    // Clear chat button
+    clearBtn.addEventListener('click', () => {
+      chatLog.innerHTML = '';
+      status.textContent = 'Chat geleert';
+    });
+    
+    // Debug button
+    debugBtn.addEventListener('click', () => {
+      debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
+      debugBtn.textContent = debugPanel.style.display === 'none' ? 'Debug-Modus' : 'Debug ausblenden';
+    });
+    
+    // Sync range and number input for silence seconds
+    silenceSecRange.addEventListener('input', () => {
+      silenceSecInput.value = silenceSecRange.value;
+    });
+    
+    silenceSecInput.addEventListener('input', () => {
+      silenceSecRange.value = silenceSecInput.value;
+    });
+    
+    // Update threshold value on slider change
+    silenceThresholdRange.addEventListener('input', () => {
+      silenceThreshold = parseFloat(silenceThresholdRange.value);
+      thresholdValue.textContent = silenceThreshold.toFixed(3);
+    });
+    
+    // Function to stop all audio playback
+    function stopAllAudio() {
       if (currentAudio) {
         currentAudio.pause();
         URL.revokeObjectURL(currentAudio.src);
@@ -50,16 +313,86 @@
         speechSynthesis.cancel();
         currentUtterance = null;
       }
-      status.textContent = 'Stopped';
-    });
-    let currentAudio = null;
-    let currentUtterance = null;
-    const chatLog = document.getElementById('chatLog');
-    const modelSel = document.getElementById('model');
-    const langSel = document.getElementById('language');
-    const voiceSel = document.getElementById('voice');
-    const silenceSecInput = document.getElementById('silenceSec');
-    const asrMode = document.getElementById('asrMode');
+    }
+    
+    // Function to stop specific audio
+    function stopAudio(audio) {
+      if (audio) {
+        audio.pause();
+        if (audio === currentAudio) {
+          URL.revokeObjectURL(audio.src);
+          currentAudio = null;
+        }
+      }
+    }
+    
+    // Debug log
+    function debugLog(message) {
+      console.log(message);
+      const logEntry = document.createElement('div');
+      logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+      debugOutput.appendChild(logEntry);
+      
+      // Keep only last 100 entries
+      while (debugOutput.children.length > 100) {
+        debugOutput.removeChild(debugOutput.firstChild);
+      }
+      
+      // Auto-scroll
+      debugOutput.scrollTop = debugOutput.scrollHeight;
+    }
+    
+    // Create a user message bubble
+    function createUserMessage(text) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = 'message user-message';
+      
+      const header = document.createElement('div');
+      header.className = 'message-header';
+      header.textContent = 'Du';
+      
+      const content = document.createElement('div');
+      content.className = 'message-content';
+      content.textContent = text;
+      
+      messageDiv.appendChild(header);
+      messageDiv.appendChild(content);
+      chatLog.appendChild(messageDiv);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      
+      return messageDiv;
+    }
+    
+    // Create a bot message bubble with optional audio
+    function createBotMessage(text, model = modelSel.value) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = 'message bot-message';
+      
+      const header = document.createElement('div');
+      header.className = 'message-header';
+      header.textContent = `Assistant (${model})`;
+      
+      const content = document.createElement('div');
+      content.className = 'message-content';
+      content.textContent = text || '...';
+      
+      const controls = document.createElement('div');
+      controls.className = 'message-controls';
+      
+      const stopButton = document.createElement('button');
+      stopButton.className = 'stop-button';
+      stopButton.textContent = 'Audio stoppen';
+      stopButton.style.display = 'none';  // Hide initially until audio is playing
+      
+      messageDiv.appendChild(header);
+      messageDiv.appendChild(content);
+      messageDiv.appendChild(controls);
+      controls.appendChild(stopButton);
+      chatLog.appendChild(messageDiv);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      
+      return { messageDiv, content, stopButton };
+    }
     // Dynamically load available chat models from server
     async function loadModels() {
       modelSel.innerHTML = '';
@@ -126,77 +459,141 @@
     }
 
     // Helper to speak response with TTS or SpeechSynthesis
-    async function speakResponse(text) {
+    async function speakResponse(text, stopButton) {
       // Validate text input
       if (!text || text.trim().length === 0) {
-        console.warn("Attempted to synthesize empty text");
-        status.textContent = 'No text to synthesize';
+        debugLog("Attempted to synthesize empty text");
+        status.textContent = 'Kein Text zum Vorlesen';
         return;
       }
 
       // Abort any previous playback
-      if (currentAudio) {
-        currentAudio.pause();
-        URL.revokeObjectURL(currentAudio.src);
-        currentAudio = null;
-      }
-      if (currentUtterance) {
-        speechSynthesis.cancel();
-        currentUtterance = null;
-      }
+      stopAllAudio();
 
       // Ensure text is properly trimmed
       text = text.trim();
       
       if (openaiVoices.includes(voiceSel.value)) {
-        status.textContent = 'Synthesizing...';
+        status.textContent = 'Synthetisiere Sprache...';
         try {
+          debugLog(`Synthetisiere Text (${text.length} Zeichen) mit Stimme ${voiceSel.value}`);
+          
           const resp2 = await fetch('/api/speech', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ Input: text, Voice: voiceSel.value })
           });
+          
           if (!resp2.ok) {
             const errText = await resp2.text();
-            status.textContent = `Error synthesizing speech: ${resp2.status} ${errText}`;
+            debugLog(`Fehler bei der Sprachsynthese: ${resp2.status} ${errText}`);
+            status.textContent = `Fehler bei der Sprachsynthese: ${resp2.status}`;
             return;
           }
+          
           const audioBlob = await resp2.blob();
+          debugLog(`Audiodaten empfangen: ${Math.round(audioBlob.size / 1024)} KB`);
+          
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
           currentAudio = audio;
+          
+          // Configure stop button
+          if (stopButton) {
+            stopButton.style.display = 'inline-block';
+            stopButton.onclick = () => {
+              stopAudio(audio);
+              stopButton.style.display = 'none';
+              status.textContent = 'Audio gestoppt';
+            };
+          }
+          
+          // Play audio
+          status.textContent = 'Spielt Audio...';
+          
           await new Promise(resolve => {
-            audio.onended = () => { URL.revokeObjectURL(audioUrl); currentAudio = null; resolve(); };
-            audio.play();
+            audio.onended = () => { 
+              URL.revokeObjectURL(audioUrl); 
+              currentAudio = null;
+              if (stopButton) stopButton.style.display = 'none';
+              status.textContent = 'Bereit';
+              resolve();
+            };
+            
+            audio.onerror = (e) => {
+              debugLog(`Fehler bei der Audiowiedergabe: ${e.toString()}`);
+              URL.revokeObjectURL(audioUrl);
+              currentAudio = null;
+              if (stopButton) stopButton.style.display = 'none';
+              status.textContent = 'Fehler bei der Audiowiedergabe';
+              resolve();
+            };
+            
+            audio.play().catch(e => {
+              debugLog(`Fehler beim Starten der Audiowiedergabe: ${e.toString()}`);
+              URL.revokeObjectURL(audioUrl);
+              currentAudio = null;
+              if (stopButton) stopButton.style.display = 'none';
+              status.textContent = 'Fehler beim Starten der Audiowiedergabe';
+              resolve();
+            });
           });
+          
         } catch (error) {
-          console.error("TTS error:", error);
-          status.textContent = `Speech synthesis error: ${error.message}`;
+          debugLog(`TTS-Fehler: ${error.toString()}`);
+          status.textContent = `Fehler bei der Sprachsynthese`;
         }
       } else {
         // Browser Speech Synthesis
-        status.textContent = 'Speaking...';
+        status.textContent = 'Spricht...';
         try {
+          debugLog(`Verwende Browser-SpeechSynthesis mit Stimme ${voiceSel.value}`);
+          
           await new Promise(resolve => {
             const utter = new SpeechSynthesisUtterance(text);
             currentUtterance = utter;
             utter.lang = langSel.value;
             const selectedVoice = speechSynthesis.getVoices().find(v => v.name === voiceSel.value);
             if (selectedVoice) utter.voice = selectedVoice;
-            utter.onend = () => { currentUtterance = null; resolve(); };
-            utter.onerror = (e) => { 
-              console.error("SpeechSynthesis error:", e);
-              currentUtterance = null;
+            
+            // Configure stop button
+            if (stopButton) {
+              stopButton.style.display = 'inline-block';
+              stopButton.onclick = () => {
+                if (currentUtterance) {
+                  speechSynthesis.cancel();
+                  currentUtterance = null;
+                }
+                stopButton.style.display = 'none';
+                status.textContent = 'Audio gestoppt';
+                resolve();
+              };
+            }
+            
+            utter.onend = () => { 
+              currentUtterance = null; 
+              if (stopButton) stopButton.style.display = 'none';
+              status.textContent = 'Bereit';
               resolve();
             };
+            
+            utter.onerror = (e) => { 
+              debugLog(`SpeechSynthesis-Fehler: ${e.toString()}`);
+              currentUtterance = null;
+              if (stopButton) stopButton.style.display = 'none';
+              status.textContent = 'Fehler bei der Sprachsynthese';
+              resolve();
+            };
+            
             speechSynthesis.speak(utter);
           });
         } catch (error) {
-          console.error("Browser speech synthesis error:", error);
-          status.textContent = `Browser speech error: ${error.message}`;
+          debugLog(`Browser-Sprachsynthese-Fehler: ${error.toString()}`);
+          status.textContent = `Fehler bei der Browser-Sprachsynthese`;
         }
       }
     }
+    
 
     if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
       // Streaming ASR via Web Speech API
@@ -242,11 +639,10 @@
             const decoder = new TextDecoder();
             let buffer = '';
             let content = '';
-            const assistantElem = document.createElement('p');
-            const userMessage = document.createElement('p');
-            userMessage.innerHTML = `<strong>Du:</strong> ${prompt}`;
-            chatLog.appendChild(userMessage);
-            chatLog.appendChild(assistantElem);
+            
+            // Create proper message bubbles in the correct order
+            createUserMessage(prompt);
+            const { content: contentElem, stopButton } = createBotMessage('');
             while (true) {
               const { value, done } = await reader.read();
               if (done) break;
@@ -269,21 +665,21 @@
                     content += obj.token;
                     // Update UI more efficiently for token streaming
                     requestAnimationFrame(() => {
-                      assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
+                      contentElem.textContent = content;
                       chatLog.scrollTop = chatLog.scrollHeight;
                     });
                   } else if (obj.message !== undefined) {
                     content += obj.message;
-                    assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
+                    contentElem.textContent = content;
                     chatLog.scrollTop = chatLog.scrollHeight;
                   } else if (obj.response !== undefined) {
                     content += obj.response;
-                    assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
+                    contentElem.textContent = content;
                     chatLog.scrollTop = chatLog.scrollHeight;
                   }
                 }
                 if (eventType === 'done') {
-                  await speakResponse(content);
+                  await speakResponse(content, stopButton);
                 }
               }
             }
@@ -334,8 +730,10 @@
           const decoder = new TextDecoder();
           let buffer = '';
           let content = '';
-          const assistantElem = document.createElement('p');
-          chatLog.appendChild(assistantElem);
+          
+          // We'll create the bot message bubble after we receive the user's prompt
+          let contentElem = null;
+          let stopButton = null;
           
           // Flag to track if we've received any tokens
           let receivedAnyTokens = false;
@@ -376,9 +774,13 @@
                 try {
                   const obj = JSON.parse(dataLine);
                   console.log(`Received prompt: "${obj.prompt}"`);
-                  const userMessage = document.createElement('p');
-                  userMessage.innerHTML = `<strong>Du:</strong> ${obj.prompt}`;
-                  chatLog.appendChild(userMessage);
+                  // Add user message first
+                  createUserMessage(obj.prompt);
+                  
+                  // Now create bot message bubble (AFTER the user message)
+                  const botMessage = createBotMessage('');
+                  contentElem = botMessage.content;
+                  stopButton = botMessage.stopButton;
                 } catch (e) {
                   console.error(`Error parsing prompt data: ${e.message}`);
                 }
@@ -389,19 +791,23 @@
                     receivedAnyTokens = true;
                     // Token-by-token streaming (optimized)
                     content += obj.token;
+                    
                     // Update UI more efficiently for token streaming
                     requestAnimationFrame(() => {
-                      assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
-                      chatLog.scrollTop = chatLog.scrollHeight;
+                      if (contentElem) {
+                        contentElem.textContent = content;
+                        chatLog.scrollTop = chatLog.scrollHeight;
+                      }
                     });
                   }
                 } catch (e) {
                   console.error(`Error parsing token data: ${e.message}`);
+                  debugLog(`Error parsing token data: ${e.message}`);
                 }
               } else if (!eventType || eventType === 'message') {
                 try {
                   const obj = JSON.parse(dataLine);
-                  console.log("Received message data:", obj);
+                  debugLog("Received message data: " + JSON.stringify(obj));
                   
                   if (obj.token !== undefined) {
                     receivedAnyTokens = true;
@@ -409,35 +815,51 @@
                     content += obj.token;
                     // Update UI more efficiently for token streaming
                     requestAnimationFrame(() => {
-                      assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
-                      chatLog.scrollTop = chatLog.scrollHeight;
+                      if (contentElem) {
+                        contentElem.textContent = content;
+                        chatLog.scrollTop = chatLog.scrollHeight;
+                      }
                     });
                   } else if (obj.message !== undefined) {
                     receivedAnyTokens = true;
                     content += obj.message;
-                    assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
-                    chatLog.scrollTop = chatLog.scrollHeight;
+                    if (contentElem) {
+                      contentElem.textContent = content;
+                      chatLog.scrollTop = chatLog.scrollHeight;
+                    }
                   } else if (obj.response !== undefined) {
                     receivedAnyTokens = true;
                     content += obj.response;
-                    assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
-                    chatLog.scrollTop = chatLog.scrollHeight;
+                    if (contentElem) {
+                      contentElem.textContent = content;
+                      chatLog.scrollTop = chatLog.scrollHeight;
+                    }
                   }
                 } catch (e) {
                   console.error(`Error parsing message data: ${e.message}, raw data: ${dataLine}`);
+                  debugLog(`Error parsing message data: ${e.message}, raw data: ${dataLine}`);
                 }
               } else if (eventType === 'done') {
-                console.log(`Stream complete, received ${content.length} characters`);
+                debugLog(`Stream complete, received ${content.length} characters`);
                 
                 if (content && content.length > 0) {
-                  await speakResponse(content);
+                  // Create bot message if it doesn't exist yet (failsafe)
+                  if (!contentElem) {
+                    const botMessage = createBotMessage(content);
+                    contentElem = botMessage.content;
+                    stopButton = botMessage.stopButton;
+                  }
+                  
+                  await speakResponse(content, stopButton);
                 } else {
-                  console.error("Empty response content, nothing to speak");
+                  debugLog("Empty response content, nothing to speak");
                   // Show a helpful message
-                  assistantElem.innerHTML = `<strong>Assistant:</strong> <em>No response generated. Please try again.</em>`;
+                  if (contentElem) {
+                    contentElem.textContent = "Keine Antwort generiert. Bitte versuchen Sie es erneut.";
+                  }
                 }
                 
-                status.textContent = 'Listening...';
+                status.textContent = 'Zuhören...';
                 status.style.fontWeight = 'normal';
                 return;
               } else if (eventType === 'error') {
@@ -454,15 +876,24 @@
           }
           
           // If we reached end of stream without 'done' event
-          console.log("Stream ended without done event");
+          debugLog("Stream ended without done event");
           if (receivedAnyTokens) {
-            await speakResponse(content);
+            // Create bot message if it doesn't exist yet (failsafe)
+            if (!contentElem) {
+              const botMessage = createBotMessage(content);
+              contentElem = botMessage.content;
+              stopButton = botMessage.stopButton;
+            }
+            
+            await speakResponse(content, stopButton);
           } else {
-            console.error("No tokens received in the response");
-            assistantElem.innerHTML = `<strong>Assistant:</strong> <em>No response received. Please try again.</em>`;
+            debugLog("No tokens received in the response");
+            if (contentElem) {
+              contentElem.textContent = "Keine Antwort empfangen. Bitte versuchen Sie es erneut.";
+            }
           }
           
-          status.textContent = 'Listening...';
+          status.textContent = 'Zuhören...';
           status.style.fontWeight = 'normal';
         } catch (err) {
           console.error(err);
@@ -472,8 +903,7 @@
       };
       let speakingSegment = false;
       let silenceStart = null;
-      const silenceThreshold = 0.02;
-      status.textContent = 'Listening...';
+      status.textContent = 'Zuhören...';
       // Poll more frequently for quicker reaction (ms)
       setInterval(() => {
         analyser.getByteTimeDomainData(dataArray);
@@ -485,8 +915,21 @@
         const rms = Math.sqrt(sumSquares / dataArray.length);
         
         // Debug output for audio levels
-        if (window._debugAudioLevels) {
-          console.log(`Audio level: ${rms.toFixed(4)}, Threshold: ${silenceThreshold}`);
+        if (debugPanel.style.display !== 'none') {
+          // Add audio level to debug panel
+          const levelBar = document.createElement('div');
+          levelBar.style.width = `${Math.min(rms * 1000, 100)}%`;
+          levelBar.style.height = '10px';
+          levelBar.style.backgroundColor = rms > silenceThreshold ? '#4CAF50' : '#F44336';
+          levelBar.style.marginBottom = '2px';
+          debugOutput.appendChild(levelBar);
+          
+          // Keep only most recent bars
+          while (debugOutput.children.length > 50) {
+            debugOutput.removeChild(debugOutput.firstChild);
+          }
+          
+          debugLog(`Audio level: ${rms.toFixed(4)}, Threshold: ${silenceThreshold.toFixed(4)}`);
         }
         
         if (rms > silenceThreshold) {
