@@ -23,6 +23,12 @@
   <label>Voice:
     <select id="voice"></select>
   </label>
+  <label>Transcription Mode:
+    <select id="asrMode">
+      <option value="whisper">Whisper (Server)</option>
+      <option value="browser">Browser ASR</option>
+    </select>
+  </label>
   <!-- Silence threshold duration in seconds -->
   <label>Stille-Schwelle (s):
     <input type="number" id="silenceSec" min="0.5" max="10" step="0.1" value="2" />
@@ -37,6 +43,7 @@
     const langSel = document.getElementById('language');
     const voiceSel = document.getElementById('voice');
     const silenceSecInput = document.getElementById('silenceSec');
+    const asrMode = document.getElementById('asrMode');
     // Dynamically load available chat models from server
     async function loadModels() {
       modelSel.innerHTML = '';
@@ -136,7 +143,92 @@
       }
     }
 
-    // Continuous recording with silence detection
+    if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
+      // Streaming ASR via Web Speech API
+      (function() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = langSel.value;
+        recognition.onstart = () => { status.textContent = 'Listening (ASR)...'; };
+        recognition.onerror = (e) => { console.error('Speech recognition error', e); status.textContent = 'Error in recognition'; };
+        recognition.onresult = async (event) => {
+          let interimTranscript = '';
+          let finalTranscript = '';
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i];
+            const transcript = result[0].transcript;
+            if (result.isFinal) finalTranscript += transcript;
+            else interimTranscript += transcript;
+          }
+          if (interimTranscript) {
+            status.textContent = interimTranscript;
+          }
+          if (finalTranscript) {
+            status.textContent = 'Processing...';
+            await sendChat(finalTranscript.trim());
+            status.textContent = 'Listening (ASR)...';
+          }
+        };
+        recognition.onend = () => recognition.start();
+        recognition.start();
+
+        async function sendChat(prompt) {
+          try {
+            status.textContent = 'Connecting...';
+            const resp = await fetch('/api/chatStream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: modelSel.value, prompt })
+            });
+            if (!resp.ok) { status.textContent = `Error: ${resp.status}`; return; }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let content = '';
+            const assistantElem = document.createElement('p');
+            const userMessage = document.createElement('p');
+            userMessage.innerHTML = `<strong>Du:</strong> ${prompt}`;
+            chatLog.appendChild(userMessage);
+            chatLog.appendChild(assistantElem);
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const parts = buffer.split('\n\n');
+              buffer = parts.pop();
+              for (const part of parts) {
+                const lines = part.split('\n');
+                let eventType = '';
+                let dataLine = '';
+                for (const line of lines) {
+                  if (line.startsWith('event: ')) eventType = line.slice(7);
+                  else if (line.startsWith('data: ')) dataLine = line.slice(6);
+                }
+                if (eventType === 'prompt') continue;
+                if (dataLine) {
+                  const obj = JSON.parse(dataLine);
+                  content += obj.token;
+                  assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
+                  chatLog.scrollTop = chatLog.scrollHeight;
+                }
+                if (eventType === 'done') {
+                  await speakResponse(content);
+                }
+              }
+            }
+          } catch (err) {
+            console.error(err);
+            status.textContent = 'Error in ASR chat';
+          }
+        }
+      })();
+    } else {
+      if (asrMode.value === 'browser') {
+        status.textContent = 'Browser ASR not supported, falling back to Whisper (server)';
+      }
+      // Continuous recording with silence detection
     (async () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const audioContext = new AudioContext();
@@ -235,6 +327,7 @@
         }
       }, 50);
     })();
+    }
   </script>
 </body>
 </html>

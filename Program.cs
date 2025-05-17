@@ -1,8 +1,10 @@
+using System.Text;
 using System;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Http;
@@ -165,6 +167,67 @@ app.MapGet("/api/models", async (HttpClient http) =>
     return Results.Json(modelsList);
 });
 
+// Endpoint for direct text chat streaming (ASR clients)
+app.MapPost("/api/chatStream", async (HttpContext context, HttpClient http) =>
+{
+    var chatReq = await JsonSerializer.DeserializeAsync<ChatRequest>(context.Request.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    if (chatReq == null || string.IsNullOrEmpty(chatReq.Model) || string.IsNullOrEmpty(chatReq.Prompt))
+    {
+        context.Response.StatusCode = 400;
+        await context.Response.WriteAsync("Invalid request");
+        return;
+    }
+    var model = chatReq.Model;
+    var prompt = chatReq.Prompt;
+    var response = context.Response;
+    response.Headers.Add("Cache-Control", "no-cache");
+    response.Headers.Add("Content-Type", "text/event-stream");
+    await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt, model })}\n\n");
+    await response.Body.FlushAsync();
+    var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+    var payload = JsonSerializer.Serialize(new
+    {
+        model = model,
+        messages = new object[] { new { role = "user", content = prompt } },
+        stream = true
+    });
+    req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+    var openAiRes = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+    openAiRes.EnsureSuccessStatusCode();
+    using var stream = await openAiRes.Content.ReadAsStreamAsync();
+    using var reader = new StreamReader(stream);
+    while (!reader.EndOfStream)
+    {
+        var line = await reader.ReadLineAsync();
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        const string prefix = "data: ";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
+        var data = line[prefix.Length..];
+        if (data.Trim() == "[DONE]")
+        {
+            await response.WriteAsync("event: done\ndata: \n\n");
+            await response.Body.FlushAsync();
+            break;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(data);
+            var delta = doc.RootElement.GetProperty("choices")[0].GetProperty("delta");
+            if (delta.TryGetProperty("content", out var contentProp))
+            {
+                var token = contentProp.GetString();
+                if (!string.IsNullOrEmpty(token))
+                {
+                    await response.WriteAsync($"data: {JsonSerializer.Serialize(new { token })}\n\n");
+                    await response.Body.FlushAsync();
+                }
+            }
+        }
+        catch { }
+    }
+});
+
 app.Run();
 
 async Task<string> TranscribeAudio(IFormFile file, HttpClient http)
@@ -230,3 +293,5 @@ async Task<byte[]> SynthesizeSpeech(string text, string voice, HttpClient http)
 
 // Specification for speech synthesis request
 public record SpeechRequest(string Input, string Voice);
+// Specification for chat request (text-based streaming)
+public record ChatRequest(string Model, string Prompt);
