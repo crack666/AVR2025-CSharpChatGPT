@@ -21,6 +21,19 @@ namespace VoiceAssistant.Plugins.OpenAI
 
         public async Task<byte[]> SynthesizeAsync(string text, string voice)
         {
+            // Check for empty input to prevent API error
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                throw new ArgumentException("Text input for speech synthesis cannot be empty.", nameof(text));
+            }
+
+            // Trim and ensure minimum valid length
+            text = text.Trim();
+            if (text.Length == 0)
+            {
+                text = "No response available.";
+            }
+
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/speech");
             request.Headers.Accept.Clear();
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/mpeg"));

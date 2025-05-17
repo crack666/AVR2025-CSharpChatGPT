@@ -111,3 +111,90 @@ Beschreibung:
 - Unit-Tests für ChatLogManager (Reihenfolge, Enqueue/Dequeue).
 - Integrationstests: Play/Stop-Sequenzen im VoicePlaybackManager, Kontext-Injection im LLM-Service (Mock).
 - Manuelle VR-Durchläufe auf Ziel-Device.
+
+---
+
+## Zusätzliche Latenzoptimierungen für VR/Meta Quest 3
+
+Diese erweiterten Optimierungsmaßnahmen zielen speziell auf die Reduzierung der Latenz in VR-Umgebungen, insbesondere für die Meta Quest 3. Diese Optimierungen sollen in die bestehenden Schritte integriert werden.
+
+### Schritt 10: Unity-Audio-Optimierungen (1/5)
+Fortschritt: [ ]
+Beschreibung:
+- Optimiere DSP-Buffer-Größe (auf 128-256 Samples reduzieren)
+- Reduziere Sampling-Rate für Sprachaudio auf 22.05kHz
+- Implementiere "Decompress On Load" für kurze Voice-Clips
+- Erweitere VoicePlaybackManager für Queue-basierte Audio-Verarbeitung:
+  ```csharp
+  public void EnqueueClip(AudioClip clip)
+  {
+      _clipQueue.Enqueue(clip);
+      if (!_audioSource.isPlaying)
+          PlayNextInQueue();
+  }
+  ```
+
+### Schritt 11: Echtes Token-Streaming im Chat Service (2/5)
+Fortschritt: [x] (StreamingOpenAIChatService implementiert und API-Endpoints angepasst)
+Beschreibung:
+- Erweitere OpenAIChatService für echtes Token-Streaming mit Callback-Funktion:
+  ```csharp
+  public async Task<string> GenerateStreamingResponseAsync(
+      IEnumerable<ChatMessage> chatHistory, 
+      Action<string> onTokenReceived)
+  {
+      // Stream: true aktivieren und SSE-Response verarbeiten
+      // Token-weise Callbacks für UI-Updates
+  }
+  ```
+- Implementiere Streaming-to-UI-Updates via SSE Events (event: token)
+- Aktiviere inkrementelles Rendering der Chat-Antworten mit requestAnimationFrame()
+
+### Schritt 12: Progressive TTS-Synthese (3/5)
+Fortschritt: [ ]
+Beschreibung:
+- Implementiere Chunk-basierte TTS-Verarbeitung für früheres Feedback:
+  ```csharp
+  public async Task ChunkedSynthesisAsync(
+      string text, 
+      string voice,
+      Action<AudioClip> onChunkReady)
+  {
+      // Text in natürliche Chunks aufteilen (Sätze)
+      // Chunk für Chunk synthetisieren und sofort abspielen
+  }
+  ```
+- Intelligente Satz-/Phrase-Trennung für natürliche Chunks
+- Audio-Crossfading zwischen Chunks für nahtlose Übergänge
+
+### Schritt 13: Multithreading und Parallelverarbeitung (4/5)
+Fortschritt: [ ]
+Beschreibung:
+- State-Machine für ASR/LLM/TTS-Pipeline mit Zwischenfeedback
+- Erweiterte Thread-Synchronisation zwischen Worker-Tasks und Unity-Main-Thread:
+  ```csharp
+  // Beispiel für MainThreadDispatcher (Unity-kompatibel)
+  public static void Enqueue(Action action)
+  {
+      // Aktion für Ausführung im nächsten Update-Zyklus einreihen
+  }
+  ```
+- Optimierte CancellationToken-Unterstützung für abbrechbare Operationen
+
+### Schritt 14: Wahrnehmungsoptimierung (5/5)
+Fortschritt: [ ]
+Beschreibung:
+- Multimodale Feedback-Mechanismen für gefühlte Latenzreduktion:
+  ```csharp
+  public void ShowProcessingIndicator(bool isProcessing)
+  {
+      // Visuelles Feedback
+      thinkingIndicator.SetActive(isProcessing);
+      // Audio-Feedback
+      if (isProcessing)
+          playbackManager.Play(processingSound);
+  }
+  ```
+- Fülllaute und non-verbale Turn-Taking-Signale
+- Optimierte Animation von Chat-Bubbles
+- Visuelles Token-Streaming mit Typewriter-Effekt
