@@ -157,11 +157,46 @@
         fd.append('model', modelSel.value);
         fd.append('language', langSel.value);
         try {
-          const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
-          if (!resp.ok) { status.textContent = 'Error processing audio'; return; }
-          const data = await resp.json();
-          appendChat(data);
-          await speakResponse(data.response);
+          status.textContent = 'Connecting...';
+          const resp = await fetch('/api/processAudioStream', { method: 'POST', body: fd });
+          if (!resp.ok) { status.textContent = `Error: ${resp.status}`; return; }
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let content = '';
+          const assistantElem = document.createElement('p');
+          chatLog.appendChild(assistantElem);
+          // Parse SSE stream
+          while (true) {
+            const { value, done: doneReading } = await reader.read();
+            if (doneReading) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop();
+            for (const part of parts) {
+              const lines = part.split('\n');
+              let eventType = '';
+              let dataLine = '';
+              for (const line of lines) {
+                if (line.startsWith('event: ')) eventType = line.slice(7);
+                else if (line.startsWith('data: ')) dataLine = line.slice(6);
+              }
+              if (eventType === 'prompt') {
+                const obj = JSON.parse(dataLine);
+                const userMessage = document.createElement('p');
+                userMessage.innerHTML = `<strong>Du:</strong> ${obj.prompt}`;
+                chatLog.appendChild(userMessage);
+              } else if (!eventType || eventType === 'message') {
+                const obj = JSON.parse(dataLine);
+                content += obj.token;
+                assistantElem.innerHTML = `<strong>Assistant (${modelSel.value}):</strong> ${content}`;
+              } else if (eventType === 'done') {
+                await speakResponse(content);
+                status.textContent = 'Listening...';
+                return;
+              }
+            }
+          }
         } catch (err) {
           console.error(err);
           status.textContent = 'Error in processing';

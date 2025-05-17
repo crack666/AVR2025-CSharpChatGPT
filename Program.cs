@@ -34,6 +34,78 @@ app.MapPost("/api/processAudio", async (HttpRequest request) =>
     var response = await GetCompletion(prompt, model, apiKey);
     return Results.Json(new { prompt, response, model });
 });
+// Streaming endpoint: process audio, transcribe, then stream chat completion tokens via SSE
+app.MapPost("/api/processAudioStream", async (HttpContext context) =>
+{
+    var request = context.Request;
+    var response = context.Response;
+    var form = await request.ReadFormAsync();
+    var model = form["model"].ToString();
+    var language = form["language"].ToString();
+    var file = form.Files.GetFile("file");
+    if (file == null)
+    {
+        response.StatusCode = 400;
+        await response.WriteAsync("No file uploaded");
+        return;
+    }
+    // Transcribe audio
+    var prompt = await TranscribeAudio(file, apiKey);
+    // Configure SSE response
+    response.Headers.Add("Cache-Control", "no-cache");
+    response.Headers.Add("Content-Type", "text/event-stream");
+    // Send initial prompt event
+    await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt, model })}\n\n");
+    await response.Body.FlushAsync();
+    // Prepare OpenAI streaming request
+    using var http = new HttpClient();
+    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+    var chatRequest = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+    var chatPayload = JsonSerializer.Serialize(new
+    {
+        model = model,
+        messages = new object[] { new { role = "user", content = prompt } },
+        stream = true
+    });
+    chatRequest.Content = new StringContent(chatPayload, System.Text.Encoding.UTF8, "application/json");
+    chatRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+    var openAiRes = await http.SendAsync(chatRequest, HttpCompletionOption.ResponseHeadersRead);
+    openAiRes.EnsureSuccessStatusCode();
+    using var stream = await openAiRes.Content.ReadAsStreamAsync();
+    using var reader = new StreamReader(stream);
+    // Read streaming data line by line
+    while (!reader.EndOfStream)
+    {
+        var line = await reader.ReadLineAsync();
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        const string prefix = "data: ";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
+        var data = line[prefix.Length..];
+        if (data.Trim() == "[DONE]")
+        {
+            // Signal done
+            await response.WriteAsync("event: done\ndata: \n\n");
+            await response.Body.FlushAsync();
+            break;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(data);
+            var delta = doc.RootElement.GetProperty("choices")[0].GetProperty("delta");
+            if (delta.TryGetProperty("content", out var contentProp))
+            {
+                var token = contentProp.GetString();
+                if (!string.IsNullOrEmpty(token))
+                {
+                    // Send token event
+                    await response.WriteAsync($"data: {JsonSerializer.Serialize(new { token })}\n\n");
+                    await response.Body.FlushAsync();
+                }
+            }
+        }
+        catch { }
+    }
+});
 // Endpoint for OpenAI Text-to-Speech using models like Juniper or Alloy
 app.MapPost("/api/speech", async (SpeechRequest spec) =>
 {
