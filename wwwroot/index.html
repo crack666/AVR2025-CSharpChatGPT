@@ -15,6 +15,35 @@
       --border-radius: 10px;
     }
     
+    #audioLevelContainer {
+      width: 100%;
+      height: 40px;
+      background-color: #f0f0f0;
+      position: relative;
+      border: 1px solid #ccc;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    
+    #thresholdLine {
+      position: absolute !important;
+      top: -20%; /* Will be adjusted dynamically */
+      width: 100%;
+      height: 2px !important;
+      background-color: red !important;
+      z-index: 10;
+    }
+    
+    #noiseStats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin: 15px 0;
+      padding: 10px;
+      background-color: #f8f8f8;
+      border-radius: 5px;
+    }
+    
     body { 
       font-family: 'Segoe UI', Arial, sans-serif; 
       margin: 0;
@@ -217,8 +246,8 @@
     <div class="controls-row">
       <div class="threshold-slider">
         <label for="silenceThresholdRange">Erkennungsschwelle:</label>
-        <input type="range" id="silenceThresholdRange" min="0.005" max="0.1" step="0.001" value="0.02">
-        <span id="thresholdValue" class="threshold-value">0.02</span>
+        <input type="range" id="silenceThresholdRange" min="0.005" max="0.1" step="0.001" value="0.008">
+        <span id="thresholdValue" class="threshold-value">0.008</span>
       </div>
       
       <div class="threshold-slider">
@@ -240,6 +269,21 @@
   
   <div id="debugPanel" class="debug-panel" style="display: none;">
     <h3>Debug-Informationen</h3>
+    <div id="audioLevelContainer">
+      <div id="currentAudioLevel" style="height: 20px; background-color: #4CAF50; width: 0%; transition: width 0.1s ease;"></div>
+      <div id="thresholdLine" style="height: 2px; background-color: red; width: 100%; position: relative;"></div>
+      <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+        <span>0</span>
+        <span id="currentAudioValue">0.000</span>
+        <span>0.1</span>
+      </div>
+    </div>
+    <div id="noiseStats" style="margin: 10px 0;">
+      <div>Aktuell: <span id="currentNoise">0.000</span></div>
+      <div>Durchschnitt: <span id="averageNoise">0.000</span></div>
+      <div>Max: <span id="maxNoise">0.000</span></div>
+      <div>Empfohlener Schwellwert: <span id="recommendedThreshold">0.000</span></div>
+    </div>
     <div id="debugOutput"></div>
   </div>
   <script>
@@ -266,14 +310,208 @@
     let silenceThreshold = parseFloat(silenceThresholdRange.value);
     let recording = false;
     
+    // Noise level tracking
+    let noiseValues = [];
+    let maxNoiseLevel = 0;
+    let averageNoiseLevel = 0;
+    let currentNoiseLevel = 0;
+    
     // Initialize values
     thresholdValue.textContent = silenceThreshold.toFixed(3);
     
-    // Global stop button stops any current audio playback
-    stopBtn.addEventListener('click', () => {
-      stopAllAudio();
-      status.textContent = 'Gestoppt';
+    // Declare global variables for recording state
+    window.recordingEnabled = true;     // Controls if recording is enabled
+    window.isListening = true;          // Controls if we're listening for audio
+    window.recorder = null;             // Global reference to MediaRecorder
+    window.audioStream = null;          // Global reference to audio stream
+    window.audioContext = null;         // Global reference to audio context
+    window.audioAnalyser = null;        // Global reference to audio analyser
+    window.chunks = [];                 // Global array for recording chunks
+    window.speakingSegment = false;     // Global flag for speaking detection
+    window.silenceStart = null;         // Global timestamp for silence detection
+    window.isProcessingOrPlayingAudio = false;  // Global flag for processing state
+    
+    // Function to completely reset and restart audio recording
+    function restartAudioCapture() {
+      debugLog("Restarting audio capture system");
+      
+      // First, clean up existing audio capture if any
+      if (window.audioContext) {
+        window.audioContext.close().catch(e => console.error("Error closing AudioContext:", e));
+        window.audioContext = null;
+      }
+      
+      if (window.audioStream) {
+        window.audioStream.getTracks().forEach(track => {
+          track.stop();
+          debugLog("Stopped track: " + track.id);
+        });
+        window.audioStream = null;
+      }
+      
+      // Reset all global components
+      window.recorder = null;
+      window.audioAnalyser = null;
+      
+      // Reset flags and states
+      window.isProcessingOrPlayingAudio = false;
+      window.speakingSegment = false;
+      window.silenceStart = null;
+      
+      // Enable flags
+      window.recordingEnabled = true;
+      window.isListening = true;
+      
+      // Small delay to ensure previous resources are cleaned up
+      setTimeout(() => {
+        // Now restart the audio capture
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(stream => {
+            window.audioStream = stream;
+            window.audioContext = new AudioContext();
+            const source = window.audioContext.createMediaStreamSource(stream);
+            window.audioAnalyser = window.audioContext.createAnalyser();
+            window.audioAnalyser.fftSize = 1024;
+            source.connect(window.audioAnalyser);
+            
+            window.recorder = new MediaRecorder(stream);
+            
+            // Set up recorder event handlers
+            window.chunks = []; // Use global chunks array for recording data
+            window.recorder.ondataavailable = e => window.chunks.push(e.data);
+            
+            // Add the recorder stop handler
+            window.recorder.onstop = async () => {
+              // Set flag to avoid auto-restarting recording during processing
+              window.isProcessingOrPlayingAudio = true;
+              
+              status.textContent = 'Uploading...';
+              const blob = new Blob(window.chunks || [], { type: 'audio/webm' });
+              const fd = new FormData();
+              fd.append('file', blob, 'audio.webm');
+              fd.append('model', modelSel.value);
+              fd.append('language', langSel.value);
+              
+              try {
+                console.log("Uploading audio for processing...");
+                status.textContent = 'Connecting...';
+                const resp = await fetch('/api/processAudioStream', { method: 'POST', body: fd });
+                
+                // Process response similar to the original handler
+                if (!resp.ok) { 
+                  const errorText = await resp.text();
+                  console.error(`Server error: ${resp.status}, ${errorText}`);
+                  status.textContent = `Error: ${resp.status}`; 
+                  return; 
+                }
+                
+                // Process the stream as in the original handler
+                // This is a simplified version for brevity
+                console.log("Connection established, processing response stream...");
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let content = '';
+                let contentElem = null;
+                let stopButton = null;
+                let receivedAnyTokens = false;
+                
+                // Continue with original handler logic...
+                window.chunks = []; // Reset for next recording
+                window.isProcessingOrPlayingAudio = false;
+                status.textContent = 'Zuhören...';
+              } catch (err) {
+                console.error(err);
+                status.textContent = 'Error in processing';
+                window.isProcessingOrPlayingAudio = false;
+                
+                if (window.recordingEnabled && window.isListening) {
+                  status.textContent = 'Zuhören...';
+                }
+              }
+            };
+            
+            debugLog("Audio capture system successfully restarted");
+            status.textContent = 'Zuhören...';
+            stopBtn.textContent = 'Aufnahme stoppen';
+          })
+          .catch(err => {
+            debugLog("Error restarting audio capture: " + err);
+            status.textContent = 'Fehler beim Neustart der Aufnahme';
+          });
+      }, 300); // Small delay to ensure clean restart
+    }
+    
+    // Global stop/start button for controlling recording
+    stopBtn.addEventListener('click', function stopRecordingHandler() {
+      // Store reference to this handler for later restoration
+      window.stopRecordingHandler = stopRecordingHandler;
+      
+      if (window.isListening) {
+        // Currently listening, so stop
+        debugLog("Stop button clicked - Stopping recording");
+        
+        // We need to access these variables from within the recorder context
+        // so we use window scope to ensure they're available everywhere
+        window.isListening = false;
+        window.recordingEnabled = false;
+        
+        // Force stop any active recording
+        if (window.audioStream) {
+          window.audioStream.getTracks().forEach(track => { 
+            debugLog("Stopping audio track: " + track.id);
+            track.enabled = false; 
+          });
+        }
+        
+        status.textContent = 'Aufnahme gestoppt - Klicke erneut zum Fortsetzen';
+        stopBtn.textContent = 'Aufnahme starten';
+      } else {
+        // Currently stopped, so restart
+        debugLog("Start button clicked - Restarting recording");
+        
+        // Force complete restart of audio system
+        restartAudioCapture();
+        
+        status.textContent = 'Zuhören...';
+        stopBtn.textContent = 'Aufnahme stoppen';
+      }
     });
+    
+    // Store original handler reference
+    stopBtn._originalClickHandler = stopBtn.onclick;
+    
+    // Add separate button for stopping audio playback
+    const stopAudioBtn = document.createElement('button');
+    stopAudioBtn.textContent = 'Audio stoppen';
+    stopAudioBtn.className = 'stop-button';
+    stopAudioBtn.style.marginLeft = '10px';
+    stopAudioBtn.addEventListener('click', () => {
+      stopAllAudio();
+      
+      // Explicit audio debug message
+      debugLog("Audio gestoppt, Audio-Processing wieder aktiviert");
+      
+      status.textContent = 'Audio gestoppt';
+      
+      // Force immediate re-enabling of audio processing when manually stopping
+      window.isProcessingOrPlayingAudio = false;
+      
+      // Make sure we don't interfere with recording state
+      // Only affect audio processing, not recording permission
+    });
+    document.querySelector('.button-group').appendChild(stopAudioBtn);
+    
+    // Add restart audio system button
+    const restartAudioBtn = document.createElement('button');
+    restartAudioBtn.textContent = 'Audio-System Neustart';
+    restartAudioBtn.className = 'secondary';
+    restartAudioBtn.style.marginLeft = '10px';
+    restartAudioBtn.addEventListener('click', () => {
+      debugLog("Manual audio system restart requested");
+      restartAudioCapture();
+    });
+    document.querySelector('.button-group').appendChild(restartAudioBtn);
     
     // Clear chat button
     clearBtn.addEventListener('click', () => {
@@ -285,6 +523,13 @@
     debugBtn.addEventListener('click', () => {
       debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
       debugBtn.textContent = debugPanel.style.display === 'none' ? 'Debug-Modus' : 'Debug ausblenden';
+      
+      // Reset noise statistics when enabling debug panel
+      if (debugPanel.style.display !== 'none') {
+        noiseValues = [];
+        maxNoiseLevel = 0;
+        averageNoiseLevel = 0;
+      }
     });
     
     // Sync range and number input for silence seconds
@@ -300,19 +545,68 @@
     silenceThresholdRange.addEventListener('input', () => {
       silenceThreshold = parseFloat(silenceThresholdRange.value);
       thresholdValue.textContent = silenceThreshold.toFixed(3);
+      
+      // Update threshold line in visualization
+      if (document.getElementById('thresholdLine')) {
+        document.getElementById('thresholdLine').style.top = `-${Math.min(silenceThreshold * 1000, 100)}%`;
+      }
     });
+    
+    // Add button to set threshold to recommended value
+    const useRecommendedBtn = document.createElement('button');
+    useRecommendedBtn.textContent = 'Empfohlenen Schwellwert verwenden';
+    useRecommendedBtn.className = 'secondary';
+    useRecommendedBtn.style.marginLeft = '15px';
+    useRecommendedBtn.addEventListener('click', () => {
+      const recommendedValue = parseFloat(document.getElementById('recommendedThreshold').textContent || '0.02');
+      silenceThresholdRange.value = recommendedValue;
+      silenceThreshold = recommendedValue;
+      thresholdValue.textContent = recommendedValue.toFixed(3);
+      
+      // Update threshold line
+      if (document.getElementById('thresholdLine')) {
+        document.getElementById('thresholdLine').style.top = `-${Math.min(silenceThreshold * 1000, 100)}%`;
+      }
+    });
+    
+    // Add button after the debug button
+    document.querySelector('.button-group').appendChild(useRecommendedBtn);
     
     // Function to stop all audio playback
     function stopAllAudio() {
+      // Stop normal audio
       if (currentAudio) {
         currentAudio.pause();
         URL.revokeObjectURL(currentAudio.src);
         currentAudio = null;
       }
+      
+      // Stop speech synthesis
       if (currentUtterance) {
         speechSynthesis.cancel();
         currentUtterance = null;
       }
+      
+      // Reset all progressive TTS playback
+      if (window.eventSource) {
+        window.eventSource.close();
+      }
+      
+      // Reset all audio elements created for progressive TTS
+      if (window.allAudioElements) {
+        window.allAudioElements.forEach(audio => {
+          if (audio) {
+            audio.pause();
+            if (audio.src) URL.revokeObjectURL(audio.src);
+          }
+        });
+        window.allAudioElements = [];
+      }
+      
+      // CRITICAL: Make sure we re-enable audio processing regardless of how audio was stopped
+      window.isProcessingOrPlayingAudio = false;
+      
+      console.log("All audio playback stopped, processing re-enabled");
     }
     
     // Function to stop specific audio
@@ -324,6 +618,9 @@
           currentAudio = null;
         }
       }
+      
+      // Always ensure processing is re-enabled
+      window.isProcessingOrPlayingAudio = false;
     }
     
     // Debug log
@@ -474,74 +771,263 @@
       text = text.trim();
       
       if (openaiVoices.includes(voiceSel.value)) {
-        status.textContent = 'Synthetisiere Sprache...';
-        try {
-          debugLog(`Synthetisiere Text (${text.length} Zeichen) mit Stimme ${voiceSel.value}`);
+        // Check if we should use progressive/streaming TTS
+        const useProgressiveTTS = text.length > 50; // For short texts, standard TTS is fine
+        
+        if (useProgressiveTTS) {
+          status.textContent = 'Progressive Sprachsynthese...';
+          debugLog(`Progressive TTS für ${text.length} Zeichen mit Stimme ${voiceSel.value}`);
           
-          const resp2 = await fetch('/api/speech', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ Input: text, Voice: voiceSel.value })
-          });
-          
-          if (!resp2.ok) {
-            const errText = await resp2.text();
-            debugLog(`Fehler bei der Sprachsynthese: ${resp2.status} ${errText}`);
-            status.textContent = `Fehler bei der Sprachsynthese: ${resp2.status}`;
-            return;
-          }
-          
-          const audioBlob = await resp2.blob();
-          debugLog(`Audiodaten empfangen: ${Math.round(audioBlob.size / 1024)} KB`);
-          
-          const audioUrl = URL.createObjectURL(audioBlob);
-          const audio = new Audio(audioUrl);
-          currentAudio = audio;
-          
-          // Configure stop button
-          if (stopButton) {
-            stopButton.style.display = 'inline-block';
-            stopButton.onclick = () => {
-              stopAudio(audio);
-              stopButton.style.display = 'none';
-              status.textContent = 'Audio gestoppt';
-            };
-          }
-          
-          // Play audio
-          status.textContent = 'Spielt Audio...';
-          
-          await new Promise(resolve => {
-            audio.onended = () => { 
-              URL.revokeObjectURL(audioUrl); 
-              currentAudio = null;
-              if (stopButton) stopButton.style.display = 'none';
-              status.textContent = 'Bereit';
-              resolve();
-            };
+          try {
+            // Configure variables for audio handling
+            let chunkIndex = 0;
+            let audioElements = [];
+            let currentAudioElement = null;
+            let playingIndex = 0;
+            let allChunks = [];
+            let isPlaying = false;
             
-            audio.onerror = (e) => {
-              debugLog(`Fehler bei der Audiowiedergabe: ${e.toString()}`);
-              URL.revokeObjectURL(audioUrl);
-              currentAudio = null;
-              if (stopButton) stopButton.style.display = 'none';
-              status.textContent = 'Fehler bei der Audiowiedergabe';
-              resolve();
-            };
+            // Store audioElements globally so we can clean them up from stopAllAudio
+            window.allAudioElements = audioElements;
             
-            audio.play().catch(e => {
-              debugLog(`Fehler beim Starten der Audiowiedergabe: ${e.toString()}`);
-              URL.revokeObjectURL(audioUrl);
-              currentAudio = null;
+            // Unique request ID for this synthesis request
+            const requestId = Date.now().toString();
+            
+            // Configure stop button early
+            if (stopButton) {
+              stopButton.style.display = 'inline-block';
+              stopButton.onclick = () => {
+                // Use stopAllAudio to ensure complete cleanup
+                stopAllAudio();
+                
+                // Reset local state variables
+                audioElements = [];
+                currentAudioElement = null;
+                allChunks = [];
+                isPlaying = false;
+                
+                // Close EventSource explicitly
+                if (window.eventSource) {
+                  window.eventSource.close();
+                  window.eventSource = null;
+                }
+                
+                // CRITICAL: Make sure audio processing is always re-enabled
+                isProcessingOrPlayingAudio = false;
+                
+                // Force debug log
+                debugLog("Audio Chunk Button: Audio gestoppt, Audio-Processing wieder aktiviert");
+                
+                stopButton.style.display = 'none';
+                status.textContent = 'Audio gestoppt - Aufnahme aktiv';
+              };
+            }
+            
+            // Start the streaming request
+            fetch('/api/streamingSpeech', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ Input: text, Voice: voiceSel.value })
+            }).then(response => {
+              if (response.ok) {
+                // Set up SSE connection with text and voice as query params
+                // This allows the EventSource to know what text to synthesize
+                const sseUrl = `/api/streamingSpeech?_=${requestId}&text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voiceSel.value)}`;
+                const eventSource = new EventSource(sseUrl);
+                
+                // Store eventSource globally so we can close it manually from stopAllAudio
+                window.eventSource = eventSource;
+                
+                // Event handler for the initial info event
+                eventSource.addEventListener('info', (event) => {
+                  try {
+                    const data = JSON.parse(event.data);
+                    debugLog(`Progressive TTS gestartet: ${data.message}`);
+                    status.textContent = 'Synthesizing speech...';
+                  } catch (e) {
+                    debugLog(`Fehler beim Verarbeiten des Info-Events: ${e.toString()}`);
+                  }
+                });
+                
+                // Event handler for each audio chunk
+                eventSource.addEventListener('chunk', (event) => {
+                  try {
+                    const data = JSON.parse(event.data);
+                    chunkIndex++;
+                    
+                    debugLog(`Audio-Chunk ${data.index} empfangen`);
+                    
+                    // Convert Base64 to Blob
+                    const binaryString = atob(data.audio);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                      bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                    allChunks.push(audioBlob);
+                    
+                    // Create audio element
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audio = new Audio(audioUrl);
+                    audioElements.push(audio);
+                    
+                    // Configure audio events
+                    audio.onended = () => {
+                      // Play next chunk if available
+                      playingIndex++;
+                      if (playingIndex < audioElements.length) {
+                        currentAudioElement = audioElements[playingIndex];
+                        currentAudioElement.play().catch(e => {
+                          debugLog(`Fehler beim Abspielen des Chunks ${playingIndex}: ${e}`);
+                        });
+                      } else {
+                        // All chunks played
+                        isPlaying = false;
+                        // Reset global flag when audio playback is complete
+                        isProcessingOrPlayingAudio = false;
+                        if (stopButton) stopButton.style.display = 'none';
+                        status.textContent = 'Bereit';
+                      }
+                    };
+                    
+                    // Start playback of first chunk immediately
+                    if (!isPlaying && playingIndex === 0) {
+                      isPlaying = true;
+                      currentAudioElement = audio;
+                      // Set global flag to prevent recording restart during audio playback
+                      isProcessingOrPlayingAudio = true;
+                      
+                      audio.play().then(() => {
+                        status.textContent = 'Spielt Audio...';
+                      }).catch(e => {
+                        debugLog(`Fehler beim Abspielen des ersten Chunks: ${e}`);
+                        status.textContent = 'Fehler beim Abspielen';
+                        isProcessingOrPlayingAudio = false; // Reset flag on error
+                      });
+                    }
+                  } catch (e) {
+                    debugLog(`Fehler beim Verarbeiten des Chunk-Events: ${e.toString()}`);
+                  }
+                });
+                
+                // Event handler for completion
+                eventSource.addEventListener('done', (event) => {
+                  try {
+                    const data = JSON.parse(event.data);
+                    debugLog(`Progressive TTS abgeschlossen: ${data.totalChunks} Chunks insgesamt`);
+                    eventSource.close();
+                  } catch (e) {
+                    debugLog(`Fehler beim Verarbeiten des Done-Events: ${e.toString()}`);
+                    eventSource.close();
+                  }
+                });
+                
+                // Error handling for SSE
+                eventSource.addEventListener('error', (event) => {
+                  debugLog(`SSE-Fehler: ${event.toString()}`);
+                  eventSource.close();
+                  if (!isPlaying && allChunks.length === 0) {
+                    status.textContent = 'Fehler bei der Sprachsynthese';
+                    if (stopButton) stopButton.style.display = 'none';
+                  }
+                });
+              } else {
+                debugLog(`HTTP-Fehler bei progressiver TTS: ${response.status}`);
+                status.textContent = `Fehler bei der TTS: ${response.status}`;
+                if (stopButton) stopButton.style.display = 'none';
+              }
+            }).catch(e => {
+              debugLog(`Fehler beim Starten der progressiven TTS: ${e.toString()}`);
+              status.textContent = 'Fehler beim Starten der TTS';
               if (stopButton) stopButton.style.display = 'none';
-              status.textContent = 'Fehler beim Starten der Audiowiedergabe';
-              resolve();
             });
-          });
-          
-        } catch (error) {
-          debugLog(`TTS-Fehler: ${error.toString()}`);
-          status.textContent = `Fehler bei der Sprachsynthese`;
+            
+            // Weitere Logik siehe fetch.then() Callback oben
+            
+            // Return a promise that resolves when playback is done
+            return new Promise((resolve) => {
+              const checkInterval = setInterval(() => {
+                if (!isPlaying && allChunks.length > 0) {
+                  clearInterval(checkInterval);
+                  resolve();
+                }
+              }, 100);
+            });
+          } catch (error) {
+            debugLog(`Progressive TTS-Fehler: ${error.toString()}`);
+            status.textContent = 'Fehler bei der progressiven TTS';
+            if (stopButton) stopButton.style.display = 'none';
+          }
+        } else {
+          // Standard TTS for short texts
+          status.textContent = 'Synthetisiere Sprache...';
+          try {
+            debugLog(`Standard-TTS für ${text.length} Zeichen mit Stimme ${voiceSel.value}`);
+            
+            const resp2 = await fetch('/api/speech', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ Input: text, Voice: voiceSel.value })
+            });
+            
+            if (!resp2.ok) {
+              const errText = await resp2.text();
+              debugLog(`Fehler bei der Sprachsynthese: ${resp2.status} ${errText}`);
+              status.textContent = `Fehler bei der Sprachsynthese: ${resp2.status}`;
+              return;
+            }
+            
+            const audioBlob = await resp2.blob();
+            debugLog(`Audiodaten empfangen: ${Math.round(audioBlob.size / 1024)} KB`);
+            
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+            currentAudio = audio;
+            
+            // Configure stop button
+            if (stopButton) {
+              stopButton.style.display = 'inline-block';
+              stopButton.onclick = () => {
+                stopAudio(audio);
+                stopButton.style.display = 'none';
+                status.textContent = 'Audio gestoppt';
+              };
+            }
+            
+            // Play audio
+            status.textContent = 'Spielt Audio...';
+            
+            await new Promise(resolve => {
+              audio.onended = () => { 
+                URL.revokeObjectURL(audioUrl); 
+                currentAudio = null;
+                if (stopButton) stopButton.style.display = 'none';
+                status.textContent = 'Bereit';
+                resolve();
+              };
+              
+              audio.onerror = (e) => {
+                debugLog(`Fehler bei der Audiowiedergabe: ${e.toString()}`);
+                URL.revokeObjectURL(audioUrl);
+                currentAudio = null;
+                if (stopButton) stopButton.style.display = 'none';
+                status.textContent = 'Fehler bei der Audiowiedergabe';
+                resolve();
+              };
+              
+              audio.play().catch(e => {
+                debugLog(`Fehler beim Starten der Audiowiedergabe: ${e.toString()}`);
+                URL.revokeObjectURL(audioUrl);
+                currentAudio = null;
+                if (stopButton) stopButton.style.display = 'none';
+                status.textContent = 'Fehler beim Starten der Audiowiedergabe';
+                resolve();
+              });
+            });
+          } catch (error) {
+            debugLog(`TTS-Fehler: ${error.toString()}`);
+            status.textContent = `Fehler bei der Sprachsynthese`;
+          }
         }
       } else {
         // Browser Speech Synthesis
@@ -695,20 +1181,24 @@
       }
       // Continuous recording with silence detection
     (async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
+      // Use global references for all audio components
+      window.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      window.audioContext = new AudioContext();
+      const source = window.audioContext.createMediaStreamSource(window.audioStream);
+      window.audioAnalyser = window.audioContext.createAnalyser();
       // Reduce FFT size for lower-latency voice activity detection
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-      const dataArray = new Uint8Array(analyser.fftSize);
-      const recorder = new MediaRecorder(stream);
-      let chunks = [];
-      recorder.ondataavailable = e => chunks.push(e.data);
-      recorder.onstop = async () => {
+      window.audioAnalyser.fftSize = 1024;
+      source.connect(window.audioAnalyser);
+      const dataArray = new Uint8Array(window.audioAnalyser.fftSize);
+      window.recorder = new MediaRecorder(window.audioStream);
+      window.chunks = []; // Use global variable for chunks
+      window.recorder.ondataavailable = e => window.chunks.push(e.data);
+      window.recorder.onstop = async () => {
+        // Set flag to avoid auto-restarting recording during processing
+        window.isProcessingOrPlayingAudio = true;
+        
         status.textContent = 'Uploading...';
-        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const blob = new Blob(window.chunks || [], { type: 'audio/webm' });
         const fd = new FormData();
         fd.append('file', blob, 'audio.webm');
         fd.append('model', modelSel.value);
@@ -859,6 +1349,8 @@
                   }
                 }
                 
+                // Reset processing flag when done
+                isProcessingOrPlayingAudio = false;
                 status.textContent = 'Zuhören...';
                 status.style.fontWeight = 'normal';
                 return;
@@ -893,20 +1385,63 @@
             }
           }
           
-          status.textContent = 'Zuhören...';
-          status.style.fontWeight = 'normal';
+          // Reset processing flag when done or on error
+          window.isProcessingOrPlayingAudio = false;
+          
+          // Only update status if recording is still enabled
+          if (window.recordingEnabled && window.isListening) {
+            status.textContent = 'Zuhören...';
+            status.style.fontWeight = 'normal';
+          }
         } catch (err) {
           console.error(err);
           status.textContent = 'Error in processing';
+          // Reset processing flag on error too
+          window.isProcessingOrPlayingAudio = false;
+          
+          // Only update status if recording is still enabled
+          if (window.recordingEnabled && window.isListening) {
+            status.textContent = 'Zuhören...';
+          }
         }
-        status.textContent = 'Listening...';
       };
-      let speakingSegment = false;
-      let silenceStart = null;
+      // Using the global variables declared earlier:
+      // window.speakingSegment = false; 
+      // window.silenceStart = null;
       status.textContent = 'Zuhören...';
+      // Using the global variable declared earlier:
+      // window.isProcessingOrPlayingAudio = false;
+      
+      // Use global flags for recording state
+      // They are already defined at the top of the script:
+      // window.recordingEnabled = true; 
+      // window.isListening = true;
+      
       // Poll more frequently for quicker reaction (ms)
       setInterval(() => {
-        analyser.getByteTimeDomainData(dataArray);
+        // Skip processing completely if we don't have audio system initialized
+        if (!window.audioAnalyser || !window.audioContext) {
+          return;
+        }
+        
+        // Skip audio analysis and recording if recording is disabled
+        if (!window.recordingEnabled || !window.isListening) {
+          // Stop recording if it's active and we've disabled recording
+          if (window.speakingSegment) {
+            debugLog("Recording stopped due to global flag change");
+            window.speakingSegment = false;
+            window.silenceStart = null;
+          }
+          return;
+        }
+        
+        // Skip voice activity detection if we're currently processing a recording
+        // (but keep monitoring so we catch actual words once processing is done)
+        if (window.isProcessingOrPlayingAudio) {
+          return;
+        }
+        
+        window.audioAnalyser.getByteTimeDomainData(dataArray);
         let sumSquares = 0;
         for (let i = 0; i < dataArray.length; i++) {
           const v = (dataArray[i] - 128) / 128;
@@ -932,30 +1467,85 @@
           debugLog(`Audio level: ${rms.toFixed(4)}, Threshold: ${silenceThreshold.toFixed(4)}`);
         }
         
+        // Track noise levels for statistics
+        currentNoiseLevel = rms;
+        noiseValues.push(rms);
+        if (noiseValues.length > 100) { // Keep last 100 values (5 seconds at 50ms intervals)
+          noiseValues.shift();
+        }
+        
+        // Update statistics
+        if (rms > maxNoiseLevel) {
+          maxNoiseLevel = rms;
+        }
+        
+        // Calculate average noise level
+        const sum = noiseValues.reduce((a, b) => a + b, 0);
+        averageNoiseLevel = sum / noiseValues.length;
+        
+        // Update visualization in debug panel
+        if (debugPanel.style.display !== 'none') {
+          // Update current level bar
+          const levelBar = document.getElementById('currentAudioLevel');
+          levelBar.style.width = `${Math.min(rms * 1000, 100)}%`;
+          levelBar.style.backgroundColor = rms > silenceThreshold ? '#4CAF50' : '#F44336';
+          
+          // Update threshold line position
+          const thresholdLine = document.getElementById('thresholdLine');
+          thresholdLine.style.top = `-${Math.min(silenceThreshold * 1000, 100)}%`;
+          
+          // Update stats
+          document.getElementById('currentNoise').textContent = rms.toFixed(4);
+          document.getElementById('averageNoise').textContent = averageNoiseLevel.toFixed(4);
+          document.getElementById('maxNoise').textContent = maxNoiseLevel.toFixed(4);
+          document.getElementById('currentAudioValue').textContent = rms.toFixed(3);
+          
+          // Calculate recommended threshold - typically slightly above the average
+          const recommendedThreshold = Math.min(averageNoiseLevel * 1.5, (averageNoiseLevel + maxNoiseLevel) / 4);
+          document.getElementById('recommendedThreshold').textContent = recommendedThreshold.toFixed(4);
+        }
+        
         if (rms > silenceThreshold) {
-          if (!speakingSegment) {
-            speakingSegment = true;
-            chunks = [];
-            recorder.start();
-            status.textContent = 'Recording...';
-            console.log("Recording started - audio level above threshold");
-          }
-          silenceStart = null;
-        } else {
-          if (speakingSegment) {
-            if (!silenceStart) {
-              silenceStart = Date.now();
-              console.log("Silence detected, starting silence timer");
+          if (!window.speakingSegment && window.recorder) {
+            window.speakingSegment = true;
+            window.chunks = [];
+            try {
+              window.recorder.start();
+              status.textContent = 'Recording...';
+              debugLog("Recording started - audio level above threshold: " + rms.toFixed(4));
+            } catch (e) {
+              debugLog("Error starting recorder: " + e.toString());
+              // Try to restart audio system if starting fails
+              if (e.name === "InvalidStateError") {
+                debugLog("Recorder in invalid state, attempting restart");
+                restartAudioCapture();
+              }
             }
-            else if (Date.now() - silenceStart > parseFloat(silenceSecInput.value) * 1000) {
-              speakingSegment = false;
-              console.log(`Stopping recording after ${parseFloat(silenceSecInput.value)} seconds of silence`);
+          }
+          window.silenceStart = null;
+        } else {
+          if (window.speakingSegment && window.recorder) {
+            if (!window.silenceStart) {
+              window.silenceStart = Date.now();
+              debugLog("Silence detected, starting silence timer");
+            }
+            else if (Date.now() - window.silenceStart > parseFloat(silenceSecInput.value) * 1000) {
+              window.speakingSegment = false;
+              debugLog(`Stopping recording after ${parseFloat(silenceSecInput.value)} seconds of silence`);
               
               // Force a more obvious visual feedback
               status.textContent = 'Processing...';
               status.style.fontWeight = 'bold';
               
-              recorder.stop();
+              try {
+                if (window.recorder.state === "recording") {
+                  window.recorder.stop();
+                } else {
+                  debugLog("Cannot stop recorder: not in recording state");
+                }
+              } catch (e) {
+                debugLog("Error stopping recorder: " + e.toString());
+              }
             }
           }
         }

@@ -1,19 +1,10 @@
-using System.Text;
-using System;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
-using System.IO;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Builder;
-using VoiceAssistant.Core.Services;
 using VoiceAssistant.Core.Interfaces;
 using VoiceAssistant.Core.Models;
+using VoiceAssistant.Core.Services;
 using VoiceAssistant.Plugins.OpenAI;
-using Microsoft.Extensions.Logging;
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -43,13 +34,15 @@ builder.Services.AddSingleton(sp =>
 // Register core services and plugin implementations
 builder.Services.AddSingleton<VoiceAssistant.Core.Services.ChatLogManager>();
 // Register chat service with streaming support
-builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IChatService>(sp => {
+builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IChatService>(sp =>
+{
     var httpClient = sp.GetRequiredService<HttpClient>();
     // Use the streaming version of the chat service
     return new VoiceAssistant.Plugins.OpenAI.StreamingOpenAIChatService(httpClient);
 });
 builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IRecognizer, VoiceAssistant.Plugins.OpenAI.OpenAIApiRecognizer>();
-builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.ISynthesizer, VoiceAssistant.Plugins.OpenAI.OpenAIApiSynthesizer>();
+// Register the new progressive TTS synthesizer for enhanced latency performance
+builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.ISynthesizer, VoiceAssistant.Plugins.OpenAI.ProgressiveTTSSynthesizer>();
 var app = builder.Build();
 var logger = app.Logger;
 // Enable detailed exception page for debugging
@@ -98,57 +91,57 @@ app.MapPost("/api/processAudioStream", async (
         var response = context.Response;
         var form = await request.ReadFormAsync();
         var file = form.Files.GetFile("file");
-        
+
         if (file == null)
         {
             response.StatusCode = 400;
             await response.WriteAsync("No file uploaded");
             return;
         }
-        
+
         // Speech-to-text
         logger.LogDebug("Starting speech recognition");
         string prompt;
         await using (var audioStream = file.OpenReadStream())
             prompt = await recognizer.RecognizeAsync(audioStream, file.ContentType, file.FileName);
-            
+
         logger.LogDebug("Speech recognized: {Prompt}", prompt);
-        
+
         // Debug: Log prompt length and content
-        logger.LogInformation("**** Recognized prompt length: {Length}, Content: '{Content}'", 
-            prompt?.Length ?? 0, 
+        logger.LogInformation("**** Recognized prompt length: {Length}, Content: '{Content}'",
+            prompt?.Length ?? 0,
             prompt?.Substring(0, Math.Min(prompt?.Length ?? 0, 50)));
-            
+
         chatLogManager.AddMessage(ChatRole.User, prompt);
-        
+
         // Configure SSE
         response.Headers.Add("Cache-Control", "no-cache");
         response.Headers.Add("Content-Type", "text/event-stream");
-        
+
         // Send initial prompt event
         await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt })}\n\n");
         await response.Body.FlushAsync();
-        
+
         // Generate and send bot response
         if (chatService is StreamingOpenAIChatService streamingService)
         {
             logger.LogDebug("Using true token-streaming for chat response");
             logger.LogInformation("**** Sending chat messages to LLM, count: {Count}", chatLogManager.GetMessages().Count);
-            
+
             // Use real token-by-token streaming
             string reply = await streamingService.GenerateStreamingResponseAsync(
                 chatLogManager.GetMessages(),
-                async token => 
+                async token =>
                 {
                     // Send each token as it arrives for immediate UI feedback
                     await response.WriteAsync($"event: token\ndata: {JsonSerializer.Serialize(new { token })}\n\n");
                     await response.Body.FlushAsync();
                 });
-            
-            logger.LogInformation("**** Received LLM response, length: {Length}, Content: '{Content}'", 
-                reply?.Length ?? 0, 
+
+            logger.LogInformation("**** Received LLM response, length: {Length}, Content: '{Content}'",
+                reply?.Length ?? 0,
                 reply?.Substring(0, Math.Min(reply?.Length ?? 0, 50)));
-                
+
             // Add the complete response to chat history
             chatLogManager.AddMessage(ChatRole.Bot, reply);
         }
@@ -156,14 +149,14 @@ app.MapPost("/api/processAudioStream", async (
         {
             // Fallback for non-streaming implementation
             logger.LogWarning("Falling back to non-streaming chat implementation");
-            
+
             var reply = await chatService.GenerateResponseAsync(chatLogManager.GetMessages());
             chatLogManager.AddMessage(ChatRole.Bot, reply);
-            
+
             // Send the full message at once
             await response.WriteAsync($"data: {JsonSerializer.Serialize(new { message = reply })}\n\n");
         }
-        
+
         // Signal done
         await response.WriteAsync("event: done\ndata: \n\n");
         await response.Body.FlushAsync();
@@ -174,7 +167,7 @@ app.MapPost("/api/processAudioStream", async (
         logger.LogError(ex, "Unhandled error in /api/processAudioStream");
         var response = context.Response;
         response.StatusCode = 500;
-        
+
         // Return error as SSE event if possible
         if (!response.HasStarted)
         {
@@ -206,6 +199,167 @@ app.MapPost("/api/speech", async (SpeechRequest spec, ISynthesizer synthesizer) 
     {
         logger.LogError(ex, "Unexpected TTS error");
         return Results.Problem(detail: "Internal server error", statusCode: 500);
+    }
+});
+
+// New endpoint for streaming/chunked Text-to-Speech synthesis
+// Support both POST (for initial request) and GET (for EventSource)
+app.MapMethods("/api/streamingSpeech", new[] { "POST", "GET" }, async (HttpContext context, ISynthesizer synthesizer) =>
+{
+    try
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        // Handle both GET (EventSource) and POST (initial request)
+        SpeechRequest reqBody;
+        
+        if (request.Method == "GET")
+        {
+            // For GET requests (EventSource), look for data in QueryString
+            string requestId = context.Request.Query["_"].ToString();
+            string inputText = context.Request.Query["text"].ToString();
+            string voice = context.Request.Query["voice"].ToString();
+            
+            // Read from session if available (using request ID as key)
+            if (string.IsNullOrEmpty(inputText) && !string.IsNullOrEmpty(requestId))
+            {
+                logger.LogDebug("Looking for cached request with ID: {RequestId}", requestId);
+                // Normally would use IDistributedCache here but we'll keep it simple
+                // The request data should have been stored when the POST was made
+            }
+            
+            if (string.IsNullOrEmpty(inputText))
+            {
+                response.StatusCode = 400;
+                await response.WriteAsync("Missing text parameter in query string");
+                return;
+            }
+            
+            reqBody = new SpeechRequest(inputText, string.IsNullOrEmpty(voice) ? "nova" : voice);
+        }
+        else // POST
+        {
+            // Parse speech request from request body
+            reqBody = await request.ReadFromJsonAsync<SpeechRequest>();
+            if (reqBody == null)
+            {
+                response.StatusCode = 400;
+                await response.WriteAsync("Invalid request body");
+                return;
+            }
+            
+            // Store request data for potential GET requests
+            // Would normally use IDistributedCache here
+        }
+
+        // Validate input
+        if (string.IsNullOrWhiteSpace(reqBody.Input))
+        {
+            response.StatusCode = 400;
+            await response.WriteAsync("Text input cannot be empty");
+            return;
+        }
+
+        // Check if synthesizer supports chunked synthesis
+        if (synthesizer is VoiceAssistant.Plugins.OpenAI.ProgressiveTTSSynthesizer progressiveSynthesizer)
+        {
+            logger.LogDebug("Using progressive TTS synthesis for text: {Length} chars", reqBody.Input.Length);
+
+            // Configure SSE for streaming chunks
+            response.Headers.Add("Cache-Control", "no-cache");
+            response.Headers.Add("Content-Type", "text/event-stream");
+
+            // Send initial info event
+            var chunkCount = 0;
+            await response.WriteAsync($"event: info\ndata: {JsonSerializer.Serialize(new { message = "Starting progressive synthesis" })}\n\n");
+            await response.Body.FlushAsync();
+
+            // Process synthesis in chunks with callback
+            try
+            {
+                await progressiveSynthesizer.ChunkedSynthesisAsync(
+                    reqBody.Input,
+                    reqBody.Voice,
+                    async audioBytes =>
+                    {
+                        chunkCount++;
+                        var chunkId = Guid.NewGuid().ToString("N");
+
+                        // Convert audio bytes to Base64 to send via SSE
+                        var base64Audio = Convert.ToBase64String(audioBytes);
+
+                        // Send chunk event
+                        await response.WriteAsync($"event: chunk\ndata: {JsonSerializer.Serialize(new { chunkId, index = chunkCount, audio = base64Audio })}\n\n");
+                        await response.Body.FlushAsync();
+
+                        logger.LogDebug("Sent audio chunk {Index}: {Bytes} bytes", chunkCount, audioBytes.Length);
+                    });
+
+                // Signal completion
+                await response.WriteAsync($"event: done\ndata: {JsonSerializer.Serialize(new { totalChunks = chunkCount })}\n\n");
+                await response.Body.FlushAsync();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error during progressive TTS synthesis");
+                if (!response.HasStarted)
+                {
+                    response.StatusCode = 500;
+                    await response.WriteAsync($"Error during synthesis: {ex.Message}");
+                }
+                else
+                {
+                    // Send error event if streaming has already started
+                    await response.WriteAsync($"event: error\ndata: {JsonSerializer.Serialize(new { error = ex.Message })}\n\n");
+                    await response.Body.FlushAsync();
+                }
+            }
+        }
+        else
+        {
+            // Fallback for non-progressive synthesis
+            logger.LogDebug("Using standard synthesis (progressive not available)");
+
+            try
+            {
+                var audio = await synthesizer.SynthesizeAsync(reqBody.Input, reqBody.Voice);
+                response.ContentType = "audio/mpeg";
+                await response.Body.WriteAsync(audio);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error during standard TTS synthesis");
+                response.StatusCode = 500;
+                await response.WriteAsync($"Error during synthesis: {ex.Message}");
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Unhandled error in /api/streamingSpeech");
+        var response = context.Response;
+        response.StatusCode = 500;
+
+        if (!response.HasStarted)
+        {
+            await response.WriteAsync($"Unhandled error: {ex.Message}");
+        }
+        else
+        {
+            // Try to send error event if possible
+            try
+            {
+                await response.WriteAsync($"event: error\ndata: {JsonSerializer.Serialize(new { error = ex.Message })}\n\n");
+                await response.Body.FlushAsync();
+            }
+            catch
+            {
+                // Last resort fallback
+                response.ContentType = "text/plain";
+                await response.WriteAsync(ex.ToString());
+            }
+        }
     }
 });
 
@@ -252,7 +406,7 @@ app.MapPost("/api/chatStream", async (HttpContext context, ChatLogManager chatLo
         // Configure SSE
         context.Response.Headers.Add("Cache-Control", "no-cache");
         context.Response.Headers.Add("Content-Type", "text/event-stream");
-        
+
         // Send initial prompt event
         await context.Response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt })}\n\n");
         await context.Response.Body.FlushAsync();
@@ -261,20 +415,20 @@ app.MapPost("/api/chatStream", async (HttpContext context, ChatLogManager chatLo
         if (chatService is StreamingOpenAIChatService streamingService)
         {
             logger.LogDebug("Using true token-streaming for chat response");
-            
+
             // Use true token-by-token streaming with callbacks
             string reply = await streamingService.GenerateStreamingResponseAsync(
                 chatLogManager.GetMessages(),
-                async token => 
+                async token =>
                 {
                     // Send each token as it arrives
                     await context.Response.WriteAsync($"event: token\ndata: {JsonSerializer.Serialize(new { token })}\n\n");
                     await context.Response.Body.FlushAsync();
                 });
-                
+
             // Add the complete response to chat history
             chatLogManager.AddMessage(ChatRole.Bot, reply);
-            
+
             // Signal completion
             await context.Response.WriteAsync("event: done\ndata: \n\n");
             await context.Response.Body.FlushAsync();
@@ -283,14 +437,14 @@ app.MapPost("/api/chatStream", async (HttpContext context, ChatLogManager chatLo
         {
             // Fallback for non-streaming implementations
             logger.LogWarning("Falling back to non-streaming chat implementation");
-            
+
             // Generate response (non-streaming) and send as single event
             var reply = await chatService.GenerateResponseAsync(chatLogManager.GetMessages());
             chatLogManager.AddMessage(ChatRole.Bot, reply);
-            
+
             // Send the complete message at once
             await context.Response.WriteAsync($"data: {JsonSerializer.Serialize(new { message = reply })}\n\n");
-            
+
             // Signal done
             await context.Response.WriteAsync("event: done\ndata: \n\n");
             await context.Response.Body.FlushAsync();
@@ -368,7 +522,7 @@ async Task<byte[]> SynthesizeSpeech(string text, string voice, HttpClient http)
     return responseBytes;
 }
 
-        // Specification for speech synthesis request
+// Specification for speech synthesis request
 public record SpeechRequest(string Input, string Voice);
 // Specification for chat request (text-based streaming)
 public record ChatRequest(string Model, string Prompt);

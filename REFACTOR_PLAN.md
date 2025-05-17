@@ -119,12 +119,12 @@ Beschreibung:
 Diese erweiterten Optimierungsmaßnahmen zielen speziell auf die Reduzierung der Latenz in VR-Umgebungen, insbesondere für die Meta Quest 3. Diese Optimierungen sollen in die bestehenden Schritte integriert werden.
 
 ### Schritt 10: Unity-Audio-Optimierungen (1/5)
-Fortschritt: [ ]
+Fortschritt: [ ] (Implementierung im Unity-Kontext noch ausständig)
 Beschreibung:
 - Optimiere DSP-Buffer-Größe (auf 128-256 Samples reduzieren)
 - Reduziere Sampling-Rate für Sprachaudio auf 22.05kHz
 - Implementiere "Decompress On Load" für kurze Voice-Clips
-- Erweitere VoicePlaybackManager für Queue-basierte Audio-Verarbeitung:
+- ✅ Queue-basierte Audio-Verarbeitung (bereits für Web implementiert, Unity-Variante folgt):
   ```csharp
   public void EnqueueClip(AudioClip clip)
   {
@@ -151,21 +151,25 @@ Beschreibung:
 - Aktiviere inkrementelles Rendering der Chat-Antworten mit requestAnimationFrame()
 
 ### Schritt 12: Progressive TTS-Synthese (3/5)
-Fortschritt: [ ]
+Fortschritt: [x] (ProgressiveTTSSynthesizer implementiert mit Chunk-basierter Verarbeitung)
 Beschreibung:
-- Implementiere Chunk-basierte TTS-Verarbeitung für früheres Feedback:
+- ✅ Implementiere Chunk-basierte TTS-Verarbeitung für früheres Feedback:
   ```csharp
   public async Task ChunkedSynthesisAsync(
       string text, 
       string voice,
-      Action<AudioClip> onChunkReady)
+      Action<byte[]> onChunkReady)
   {
       // Text in natürliche Chunks aufteilen (Sätze)
       // Chunk für Chunk synthetisieren und sofort abspielen
   }
   ```
-- Intelligente Satz-/Phrase-Trennung für natürliche Chunks
-- Audio-Crossfading zwischen Chunks für nahtlose Übergänge
+- ✅ Intelligente Satz-/Phrase-Trennung für natürliche Chunks
+  - Primäre Trennung an Satzenden (., !, ?)
+  - Sekundäre Trennung an Phrasen (,, ;, :, -)
+  - Notfall-Trennung an Wortgrenzen
+- ✅ Server-Sent-Events (SSE) für streamed Audio-Chunks zur progressiven Wiedergabe
+- ⬜ Audio-Crossfading zwischen Chunks für nahtlose Übergänge (Unity-spezifisch, folgt in VR-Integration)
 
 ### Schritt 13: Multithreading und Parallelverarbeitung (4/5)
 Fortschritt: [ ]

@@ -3,6 +3,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>11.0</LangVersion>
   </PropertyGroup>
   <!-- Static files (HTML/JS) served from wwwroot -->
   <!-- Only compile explicit code files in this project; exclude all others (e.g., tests) -->
