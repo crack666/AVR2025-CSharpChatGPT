@@ -1,6 +1,8 @@
+using System;
+using System.Net;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
-using System.Net.Http;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Http;
@@ -14,13 +16,29 @@ if (string.IsNullOrWhiteSpace(apiKey))
 
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Configure shared HTTP/2 HttpClient as singleton with persistent connections
+builder.Services.AddSingleton(sp =>
+{
+    var handler = new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    };
+    var client = new HttpClient(handler)
+    {
+        DefaultRequestVersion = HttpVersion.Version20,
+        DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
+    };
+    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+    return client;
+});
 var app = builder.Build();
 var logger = app.Logger;
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapPost("/api/processAudio", async (HttpRequest request) =>
+app.MapPost("/api/processAudio", async (HttpRequest request, HttpClient http) =>
 {
     var form = await request.ReadFormAsync();
     var model = form["model"].ToString();
@@ -30,12 +48,12 @@ app.MapPost("/api/processAudio", async (HttpRequest request) =>
         return Results.BadRequest("No file uploaded");
 
     // Transcribe directly from uploaded file (preserving original format/content type)
-    var prompt = await TranscribeAudio(file, apiKey);
-    var response = await GetCompletion(prompt, model, apiKey);
+    var prompt = await TranscribeAudio(file, http);
+    var response = await GetCompletion(prompt, model, http);
     return Results.Json(new { prompt, response, model });
 });
 // Streaming endpoint: process audio, transcribe, then stream chat completion tokens via SSE
-app.MapPost("/api/processAudioStream", async (HttpContext context) =>
+app.MapPost("/api/processAudioStream", async (HttpContext context, HttpClient http) =>
 {
     var request = context.Request;
     var response = context.Response;
@@ -50,16 +68,14 @@ app.MapPost("/api/processAudioStream", async (HttpContext context) =>
         return;
     }
     // Transcribe audio
-    var prompt = await TranscribeAudio(file, apiKey);
+    var prompt = await TranscribeAudio(file, http);
     // Configure SSE response
     response.Headers.Add("Cache-Control", "no-cache");
     response.Headers.Add("Content-Type", "text/event-stream");
     // Send initial prompt event
     await response.WriteAsync($"event: prompt\ndata: {JsonSerializer.Serialize(new { prompt, model })}\n\n");
     await response.Body.FlushAsync();
-    // Prepare OpenAI streaming request
-    using var http = new HttpClient();
-    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+    // Prepare OpenAI streaming request using shared HTTP/2 client
     var chatRequest = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
     var chatPayload = JsonSerializer.Serialize(new
     {
@@ -107,11 +123,11 @@ app.MapPost("/api/processAudioStream", async (HttpContext context) =>
     }
 });
 // Endpoint for OpenAI Text-to-Speech using models like Juniper or Alloy
-app.MapPost("/api/speech", async (SpeechRequest spec) =>
+app.MapPost("/api/speech", async (SpeechRequest spec, HttpClient http) =>
 {
     try
     {
-        var audio = await SynthesizeSpeech(spec.Input, spec.Voice, apiKey);
+        var audio = await SynthesizeSpeech(spec.Input, spec.Voice, http);
         return Results.File(audio, "audio/mpeg");
     }
     catch (ApplicationException ex)
@@ -127,10 +143,8 @@ app.MapPost("/api/speech", async (SpeechRequest spec) =>
 });
 
 // Endpoint to list available chat models
-app.MapGet("/api/models", async () =>
+app.MapGet("/api/models", async (HttpClient http) =>
 {
-    using var http = new HttpClient();
-    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     var res = await http.GetAsync("https://api.openai.com/v1/models");
     res.EnsureSuccessStatusCode();
     var json = await res.Content.ReadAsStringAsync();
@@ -153,10 +167,8 @@ app.MapGet("/api/models", async () =>
 
 app.Run();
 
-async Task<string> TranscribeAudio(IFormFile file, string apiKey)
+async Task<string> TranscribeAudio(IFormFile file, HttpClient http)
 {
-    using var http = new HttpClient();
-    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     using var multipart = new MultipartFormDataContent();
     multipart.Add(new StringContent("whisper-1"), "model");
     // Read directly from the uploaded file stream
@@ -173,10 +185,8 @@ async Task<string> TranscribeAudio(IFormFile file, string apiKey)
     return doc.RootElement.GetProperty("text").GetString() ?? string.Empty;
 }
 
-async Task<string> GetCompletion(string prompt, string model, string apiKey)
+async Task<string> GetCompletion(string prompt, string model, HttpClient http)
 {
-    using var http = new HttpClient();
-    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     var payload = JsonSerializer.Serialize(new
     {
         model = model,
@@ -192,12 +202,12 @@ async Task<string> GetCompletion(string prompt, string model, string apiKey)
 }
 
 // OpenAI Text-to-Speech synthesis using the /v1/audio/speech endpoint
-async Task<byte[]> SynthesizeSpeech(string text, string voice, string apiKey)
+async Task<byte[]> SynthesizeSpeech(string text, string voice, HttpClient http)
 {
-    using var http = new HttpClient();
-    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-    http.DefaultRequestHeaders.Accept.Clear();
-    http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/mpeg"));
+    // Prepare request with proper Accept header for audio
+    using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/speech");
+    req.Headers.Accept.Clear();
+    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/mpeg"));
 
     // Prepare JSON payload for TTS
     var payload = new { model = "tts-1", voice = voice, input = text };
@@ -205,7 +215,8 @@ async Task<byte[]> SynthesizeSpeech(string text, string voice, string apiKey)
     using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
     logger.LogDebug("Sending TTS request: {Payload}", body);
 
-    var res = await http.PostAsync("https://api.openai.com/v1/audio/speech", content);
+    req.Content = content;
+    var res = await http.SendAsync(req);
     var responseBytes = await res.Content.ReadAsByteArrayAsync();
     if (!res.IsSuccessStatusCode)
     {
