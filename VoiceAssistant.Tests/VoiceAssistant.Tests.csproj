@@ -19,7 +19,7 @@
     <ProjectReference Include="..\VoiceAssistant.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="TestAudioSamples\test.wav">
+    <None Include="TestAudioSamples\Elefanten.wav">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>

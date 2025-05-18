@@ -92,12 +92,19 @@ namespace VoiceAssistant
             var noSpeechFrames = 0;
             // Minimum frames before starting speech segment
             var minSpeechFrames = (int)(_settings.MinSpeechDurationSec * 1000 / FrameDurationMs);
+            var rawAudioBuffer = new List<byte>();
+            var segmentProcessed = false;
 
             while (webSocket.State == WebSocketState.Open)
             {
                 var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    if (!segmentProcessed)
+                    {
+                        var allBytes = rawAudioBuffer.ToArray();
+                        await ProcessSegmentAsync(allBytes, webSocket);
+                    }
                     await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
                     break;
                 }
@@ -109,6 +116,7 @@ namespace VoiceAssistant
 
                 var frame = new byte[_frameBytes];
                 Array.Copy(buffer, frame, _frameBytes);
+                rawAudioBuffer.AddRange(frame);
                 // maintain pre-speech ring buffer for including a bit of audio before VAD start
                 if (preSpeechFrames > 0)
                 {
@@ -172,6 +180,7 @@ namespace VoiceAssistant
                             speechFrameCount = 0;
                             noSpeechFrames = 0;
                             await ProcessSegmentAsync(segmentCopy, webSocket);
+                            segmentProcessed = true;
                         }
                     }
                 }

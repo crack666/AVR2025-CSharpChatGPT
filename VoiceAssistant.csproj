@@ -26,4 +26,10 @@
     <!-- VAD: WebRTC Voice Activity Detection for backend streaming service -->
     <PackageReference Include="WebRtcVadSharp" Version="1.0.6" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Serilog logging -->
+    <PackageReference Include="Serilog.AspNetCore" Version="6.1.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="3.3.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="4.1.0" />
+  </ItemGroup>
 </Project>

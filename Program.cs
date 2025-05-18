@@ -1,11 +1,8 @@
+using Serilog;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Text.Json;
 using VoiceAssistant;
-using VoiceAssistant.Core.Interfaces;
 using VoiceAssistant.Core.Models;
-using VoiceAssistant.Core.Services;
-using VoiceAssistant.Plugins.OpenAI;
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -15,6 +12,14 @@ if (string.IsNullOrWhiteSpace(apiKey))
 }
 
 var builder = WebApplication.CreateBuilder(args);
+// Configure Serilog from appsettings.json
+builder.Host.UseSerilog((hostingContext, services, loggerConfiguration) =>
+{
+    loggerConfiguration
+        .ReadFrom.Configuration(hostingContext.Configuration)
+        .Enrich.FromLogContext()
+        .WriteTo.Console();
+});
 
 // Configure shared HTTP/2 HttpClient as singleton with persistent connections
 builder.Services.AddSingleton(sp =>
@@ -79,4 +84,3 @@ app.UseStaticFiles();
 app.MapControllers();
 
 app.Run();
-
