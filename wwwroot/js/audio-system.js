@@ -20,6 +20,8 @@ const audioSystem = {
   // Function to completely reset and restart audio recording
   restartAudioCapture: function() {
     debugLog("Restarting audio capture system");
+    // Prevent onstop handler from triggering processing during restart
+    window._ignoreNextStop = true;
     
     try {
       // Explicitly stop any ongoing media recorder
@@ -365,10 +367,19 @@ const audioSystem = {
   },
   
   processSpeechRecording: async function() {
+    debugLog("Speech processing started (onstop handler)");
+    // If stop was triggered by restartAudioCapture, skip processing
+    if (window._ignoreNextStop) {
+      debugLog("Skipping processSpeechRecording due to audio system restart");
+      window._ignoreNextStop = false;
+      return;
+    }
+    debugLog("Speech processing started (onstop handler)");
     // Set flag to avoid auto-restarting recording during processing
     window.isProcessingOrPlayingAudio = true;
     
     status.textContent = 'Uploading...';
+    debugLog(`Uploading audio for processing (${(window.chunks||[]).length} chunks)`);
     const blob = new Blob(window.chunks || [], { type: 'audio/webm' });
     const fd = new FormData();
     fd.append('file', blob, 'audio.webm');
@@ -376,9 +387,10 @@ const audioSystem = {
     fd.append('language', langSel.value);
     
     try {
-      console.log("Uploading audio for processing...");
+      debugLog("Sending fetch to /api/processAudioStream");
       status.textContent = 'Connecting...';
       const resp = await fetch('/api/processAudioStream', { method: 'POST', body: fd });
+      debugLog(`Fetch response status: ${resp.status}`);
       
       if (!resp.ok) { 
         const errorText = await resp.text();
@@ -387,7 +399,7 @@ const audioSystem = {
         return; 
       }
       
-      console.log("Connection established, processing response stream...");
+      debugLog("Connection established, processing response stream (SSE)");
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -435,7 +447,7 @@ const audioSystem = {
           if (eventType === 'prompt') {
             try {
               const obj = JSON.parse(dataLine);
-              console.log(`Received prompt: "${obj.prompt}"`);
+              debugLog(`Prompt event received: "${obj.prompt}"`);
               // Track transcription received for latency measurement
               optimizationManager.trackLatency('transcriptionReceived');
               // Check if we have a non-empty prompt
@@ -477,6 +489,7 @@ const audioSystem = {
           } else if (eventType === 'token') {
             try {
               const obj = JSON.parse(dataLine);
+              if (obj.token !== undefined) debugLog(`Token event received: "${obj.token}"`);
               if (obj.token !== undefined) {
                 // Track first token received (LLM response start)
                 if (!receivedAnyTokens) {
@@ -536,7 +549,7 @@ const audioSystem = {
           } else if (!eventType || eventType === 'message') {
             try {
               const obj = JSON.parse(dataLine);
-              debugLog("Received message data: " + JSON.stringify(obj));
+              debugLog(`Message event received: ${dataLine}`);
               
               if (obj.token !== undefined) {
                 receivedAnyTokens = true;
@@ -594,7 +607,7 @@ const audioSystem = {
             // Reset processing flag when done
             window.isProcessingOrPlayingAudio = false;
             status.textContent = 'Zuhören...';
-            status.style.fontWeight = 'normal';
+            //status.style.fontWeight = 'normal';
             return;
           } else if (eventType === 'error') {
             try {
@@ -633,7 +646,7 @@ const audioSystem = {
       // Only update status if recording is still enabled
       if (window.recordingEnabled && window.isListening) {
         status.textContent = 'Zuhören...';
-        status.style.fontWeight = 'normal';
+        //status.style.fontWeight = 'normal';
       }
     } catch (err) {
       console.error(err);

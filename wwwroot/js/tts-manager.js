@@ -4,6 +4,7 @@ const ttsManager = {
   async speakResponse(text, stopButton) {
     // Track TTS start for latency measurement
     optimizationManager.trackLatency('ttsStart');
+    debugLog(`TTS speakResponse called with text length ${text ? text.length : 0}`);
     
     // Validate text input
     if (!text || text.trim().length === 0) {

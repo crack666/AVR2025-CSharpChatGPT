@@ -67,6 +67,8 @@ app.MapPost("/api/processAudio", async (
     string prompt;
     await using (var stream = file.OpenReadStream())
         prompt = await recognizer.RecognizeAsync(stream, file.ContentType, file.FileName);
+    // Log recognized prompt for debugging
+    logger.LogInformation("ProcessAudio recognized prompt: {Prompt}", prompt);
 
     // Add user message to context
     chatLogManager.AddMessage(ChatRole.User, prompt);
