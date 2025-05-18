@@ -10,61 +10,145 @@
   <h1>Voice Chat Assistant</h1>
   
   <div class="control-panel">
-    <div class="settings-group">
-      <div>
-        <label for="model">LLM Modell:</label>
-        <select id="model"></select>
-      </div>
-      
-      <div>
-        <label for="voice">Stimme:</label>
-        <select id="voice"></select>
-      </div>
-      
-      <div>
-        <label for="language">Sprache:</label>
-        <select id="language"></select>
-      </div>
-      
-      <div>
-        <label for="asrMode">Transkription:</label>
-        <select id="asrMode">
-          <option value="whisper">Whisper (Server)</option>
-          <option value="browser">Browser ASR</option>
-        </select>
-      </div>
-      
-      <div>
-        <label for="optimizationMode">Performance-Optimierungen:</label>
-        <select id="optimizationMode">
-          <option value="none">Keine Optimierungen</option>
-          <option value="progressive">Progressive TTS</option>
-          <option value="advanced" selected>Erweiterte Optimierungen</option>
-        </select>
-        <div class="setting-description">
-          Wählt die Optimierungsstrategie für geringe Latenz.<br>
-          <span style="font-style: italic; font-size: 0.9em;">
-            "Keine": Standardverhalten ohne Optimierungen<br>
-            "Progressive TTS": Audio wird in Chunks verarbeitet (funktioniert auch in Unity)<br>
-            "Erweitert": Alle Optimierungen aktivieren (empfohlen für Browser)
-          </span>
+      <div class="settings-group">
+          <div>
+              <label for="model">LLM Modell:</label>
+              <select id="model"></select>
+          </div>
+
+          <div>
+              <label for="voice">Stimme:</label>
+              <select id="voice"></select>
+          </div>
+
+          <div>
+              <label for="language">Sprache:</label>
+              <select id="language"></select>
+          </div>
+
+          <div>
+              <label for="asrMode">Transkription:</label>
+              <select id="asrMode">
+                  <option value="whisper">Whisper (Server)</option>
+                  <option value="browser">Browser ASR</option>
+              </select>
+          </div>
+
+          <div>
+              <label for="optimizationMode">Performance-Optimierungen:</label>
+              <select id="optimizationMode">
+                  <option value="none">Keine Optimierungen</option>
+                  <option value="progressive">Progressive TTS</option>
+                  <option value="advanced" selected>Erweiterte Optimierungen</option>
+              </select>
+          </div>
+
+          <!--<div class="controls-row">-->
+          <div class="threshold-slider">
+              <label for="silenceThresholdRange">Erkennungsschwelle:</label>
+              <input type="range" id="silenceThresholdRange" min="0.005" max="0.1" step="0.001" value="0.008">
+              <span id="thresholdValue" class="threshold-value">0.008</span>
+          </div>
+
+          <div class="threshold-slider">
+              <label for="silenceSec">Stille-Schwelle (s):</label>
+              <input type="range" id="silenceSecRange" min="0.2" max="5" step="0.1" value="0.5">
+              <input type="number" id="silenceSec" min="0.2" max="10" step="0.1" value="0.5" style="width: 60px;" />
+          </div>
+      <!--</div>-->
+  </div>
+
+    <div id="optimizationPanel" class="debug-panel" style="">
+        <h3>Performance-Optimierungen</h3>
+        <div style="margin-bottom: 15px;">
+            <p>Aktivieren oder deaktivieren Sie verschiedene Optimierungstechniken, um die beste Latenz zu finden.</p>
         </div>
-      </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+            <div>
+                <label><input type="checkbox" id="useProgressiveTTS" checked> Progressive TTS verwenden</label>
+                <div class="setting-description" style="font-size: 0.9em; color: #666;">
+                    Text wird in Chunks verarbeitet und schrittweise ausgegeben.
+                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
+                </div>
+            </div>
+
+            <div>
+                <label><input type="checkbox" id="useTokenStreaming" checked> Token-Streaming verwenden</label>
+                <div class="setting-description" style="font-size: 0.9em; color: #666;">
+                    LLM-Antworten werden Token für Token empfangen.
+                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
+                </div>
+            </div>
+
+            <div>
+                <label><input type="checkbox" id="useChunkBasedAudio" checked> Chunk-basierte Audioverarbeitung</label>
+                <div class="setting-description" style="font-size: 0.9em; color: #666;">
+                    Audio wird in Chunks verarbeitet statt als Ganzes.
+                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
+                </div>
+            </div>
+
+            <div>
+                <label><input type="checkbox" id="useEarlyAudioProcessing"> Frühe Audio-Verarbeitung</label>
+                <div class="setting-description" style="font-size: 0.9em; color: #666;">
+                    Audio wird verarbeitet, bevor die Stille erkannt wird.
+                    <br><span style="font-style: italic; color: #dc3545;">✗ Nur im Browser</span>
+                </div>
+            </div>
+
+            <div>
+                <label><input type="checkbox" id="useCachedAudioContext"> Audio-Context Cache</label>
+                <div class="setting-description" style="font-size: 0.9em; color: #666;">
+                    AudioContext wird wiederverwendet statt neu erstellt.
+                    <br><span style="font-style: italic; color: #dc3545;">✗ Nur im Browser</span>
+                </div>
+            </div>
+
+            <div>
+                <label><input type="checkbox" id="useSmartChunkSplitting" checked> Intelligente Chunk-Aufteilung</label>
+                <div class="setting-description" style="font-size: 0.9em; color: #666;">
+                    Chunks werden an sinnvollen Stellen (Satzenden) getrennt.
+                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label for="ttsDynamicChunkSize">TTS Chunk-Größe:</label>
+            <input type="range" id="ttsDynamicChunkSize" min="10" max="500" step="10" value="100">
+            <span id="ttsDynamicChunkSizeValue">100</span> Zeichen
+        </div>
+
+        <div>
+            <button id="applyOptimizationSettings" class="secondary">Einstellungen anwenden</button>
+            <button id="resetOptimizationSettings" class="secondary">Zurücksetzen</button>
+        </div>
+
+        <div style="margin-top: 15px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
+            <strong>Hinweis:</strong> Einige Einstellungen erfordern möglicherweise einen Audio-System-Neustart, um wirksam zu werden.
+        </div>
+
+        <div id="latencyStats" style="margin-top: 15px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
+            <h4>Latenz-Statistiken</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div>Aufnahme bis Transkription: <span id="recordingToTranscriptLatency">-</span> ms</div>
+                <div>Transkription bis LLM: <span id="transcriptToLLMLatency">-</span> ms</div>
+                <div>LLM bis TTS: <span id="llmToTTSLatency">-</span> ms</div>
+                <div>Text-Latenz: <span id="textLatency">-</span> ms</div>
+                <div>Audio-Latenz: <span id="audioLatency">-</span> ms</div>
+            </div>
+            <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                <strong>Hinweis:</strong>
+                <ul>
+                    <li>Text-Latenz: Zeit vom Aufnahmestart bis zur Anzeige der ersten Tokens</li>
+                    <li>Audio-Latenz: Zeit vom Aufnahmestart bis zum Beginn der Audiowiedergabe</li>
+                </ul>
+            </div>
+            <button id="resetLatencyStats" class="secondary" style="margin-top: 10px;">Statistiken zurücksetzen</button>
+        </div>
     </div>
-    
-    <div class="controls-row">
-      <div class="threshold-slider">
-        <label for="silenceThresholdRange">Erkennungsschwelle:</label>
-        <input type="range" id="silenceThresholdRange" min="0.005" max="0.1" step="0.001" value="0.008">
-        <span id="thresholdValue" class="threshold-value">0.008</span>
-      </div>
-      
-      <div class="threshold-slider">
-        <label for="silenceSec">Stille-Schwelle (s):</label>
-        <input type="range" id="silenceSecRange" min="0.2" max="5" step="0.1" value="0.5">
-        <input type="number" id="silenceSec" min="0.2" max="10" step="0.1" value="0.5" style="width: 60px;"/>
-      </div>
-    </div>
+   
     
     <div class="button-group">
       <div id="status">Bereit</div>
@@ -76,97 +160,6 @@
   </div>
   
   <div id="chatLog"></div>
-  
-  <div id="optimizationPanel" class="debug-panel" style="display: none;">
-    <h3>Performance-Optimierungen</h3>
-    <div style="margin-bottom: 15px;">
-      <p>Aktivieren oder deaktivieren Sie verschiedene Optimierungstechniken, um die beste Latenz zu finden.</p>
-    </div>
-    
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
-      <div>
-        <label><input type="checkbox" id="useProgressiveTTS" checked> Progressive TTS verwenden</label>
-        <div class="setting-description" style="font-size: 0.9em; color: #666;">
-          Text wird in Chunks verarbeitet und schrittweise ausgegeben.
-          <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-        </div>
-      </div>
-      
-      <div>
-        <label><input type="checkbox" id="useTokenStreaming" checked> Token-Streaming verwenden</label>
-        <div class="setting-description" style="font-size: 0.9em; color: #666;">
-          LLM-Antworten werden Token für Token empfangen.
-          <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-        </div>
-      </div>
-      
-      <div>
-        <label><input type="checkbox" id="useChunkBasedAudio" checked> Chunk-basierte Audioverarbeitung</label>
-        <div class="setting-description" style="font-size: 0.9em; color: #666;">
-          Audio wird in Chunks verarbeitet statt als Ganzes.
-          <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-        </div>
-      </div>
-      
-      <div>
-        <label><input type="checkbox" id="useEarlyAudioProcessing"> Frühe Audio-Verarbeitung</label>
-        <div class="setting-description" style="font-size: 0.9em; color: #666;">
-          Audio wird verarbeitet, bevor die Stille erkannt wird.
-          <br><span style="font-style: italic; color: #dc3545;">✗ Nur im Browser</span>
-        </div>
-      </div>
-      
-      <div>
-        <label><input type="checkbox" id="useCachedAudioContext"> Audio-Context Cache</label>
-        <div class="setting-description" style="font-size: 0.9em; color: #666;">
-          AudioContext wird wiederverwendet statt neu erstellt.
-          <br><span style="font-style: italic; color: #dc3545;">✗ Nur im Browser</span>
-        </div>
-      </div>
-      
-      <div>
-        <label><input type="checkbox" id="useSmartChunkSplitting" checked> Intelligente Chunk-Aufteilung</label>
-        <div class="setting-description" style="font-size: 0.9em; color: #666;">
-          Chunks werden an sinnvollen Stellen (Satzenden) getrennt.
-          <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-        </div>
-      </div>
-    </div>
-    
-    <div style="margin-bottom: 15px;">
-      <label for="ttsDynamicChunkSize">TTS Chunk-Größe:</label>
-      <input type="range" id="ttsDynamicChunkSize" min="10" max="500" step="10" value="100">
-      <span id="ttsDynamicChunkSizeValue">100</span> Zeichen
-    </div>
-    
-    <div>
-      <button id="applyOptimizationSettings" class="secondary">Einstellungen anwenden</button>
-      <button id="resetOptimizationSettings" class="secondary">Zurücksetzen</button>
-    </div>
-    
-    <div style="margin-top: 15px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
-      <strong>Hinweis:</strong> Einige Einstellungen erfordern möglicherweise einen Audio-System-Neustart, um wirksam zu werden.
-    </div>
-    
-    <div id="latencyStats" style="margin-top: 15px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
-      <h4>Latenz-Statistiken</h4>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-        <div>Aufnahme bis Transkription: <span id="recordingToTranscriptLatency">-</span> ms</div>
-        <div>Transkription bis LLM: <span id="transcriptToLLMLatency">-</span> ms</div>
-        <div>LLM bis TTS: <span id="llmToTTSLatency">-</span> ms</div>
-        <div>Text-Latenz: <span id="textLatency">-</span> ms</div>
-        <div>Audio-Latenz: <span id="audioLatency">-</span> ms</div>
-      </div>
-      <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
-        <strong>Hinweis:</strong> 
-        <ul>
-          <li>Text-Latenz: Zeit vom Aufnahmestart bis zur Anzeige der ersten Tokens</li>
-          <li>Audio-Latenz: Zeit vom Aufnahmestart bis zum Beginn der Audiowiedergabe</li>
-        </ul>
-      </div>
-      <button id="resetLatencyStats" class="secondary" style="margin-top: 10px;">Statistiken zurücksetzen</button>
-    </div>
-  </div>
   
   <div id="debugPanel" class="debug-panel" style="display: none;">
     <h3>Debug-Informationen</h3>
@@ -185,7 +178,13 @@
       <div>Max: <span id="maxNoise">0.000</span></div>
       <div>Empfohlener Schwellwert: <span id="recommendedThreshold">0.000</span></div>
     </div>
-    <div id="debugOutput"></div>
+    <!-- Bereich mit geteiltem Debug-Log und Audio-Pegel-Historie nebeneinander -->
+    <div id="debugPanels" style="display: flex; gap: 20px; margin: 10px 0;">
+      <div id="audioLevelHistory" style="flex: 1; max-height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 5px;">
+        <h4>Audio-Pegel Historie</h4>
+      </div>
+      <div id="debugOutput" style="flex: 1; max-height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 5px;"></div>
+    </div>
   </div>
   <!-- Load scripts -->
   <script src="js/utils.js"></script>

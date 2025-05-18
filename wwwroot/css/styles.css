@@ -208,9 +208,10 @@ button.stop-button:hover {
 }
 
 .threshold-slider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+    /*display: flex;*/
+    align-items: center;
+    gap: 10px;
+    margin: 10px;
 }
 
 .threshold-slider input[type="range"] {

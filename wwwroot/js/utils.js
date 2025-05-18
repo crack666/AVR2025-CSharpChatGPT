@@ -20,6 +20,8 @@ function initializeUIElements() {
   window.debugPanel = document.getElementById('debugPanel');
   window.optimizationPanel = document.getElementById('optimizationPanel');
   window.debugOutput = document.getElementById('debugOutput');
+  // Separate container for audio level history (bars + numeric values)
+  window.audioLevelHistory = document.getElementById('audioLevelHistory');
 }
 
 // Initialize UI elements on load

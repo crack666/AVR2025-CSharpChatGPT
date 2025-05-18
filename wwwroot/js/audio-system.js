@@ -329,7 +329,7 @@ const audioSystem = {
               
               // Force a more obvious visual feedback
               status.textContent = 'Processing...';
-              status.style.fontWeight = 'bold';
+              //status.style.fontWeight = 'bold';
               
               try {
                 if (window.recorder.state === "recording") {
@@ -649,19 +649,32 @@ const audioSystem = {
   },
   
   updateAudioVisualization: function(rms) {
-    // Debug output for audio levels
-    if (debugPanel.style.display !== 'none') {
-      // Add audio level to debug panel
-      const levelBar = document.createElement('div');
-      levelBar.style.width = `${Math.min(rms * 1000, 100)}%`;
-      levelBar.style.height = '10px';
-      levelBar.style.backgroundColor = rms > silenceThreshold ? '#4CAF50' : '#F44336';
-      levelBar.style.marginBottom = '2px';
-      debugOutput.appendChild(levelBar);
+    // Audio level history: separate container for bars + numeric values
+    if (window.audioLevelHistory) {
+      const recordDiv = document.createElement('div');
+      recordDiv.style.display = 'flex';
+      recordDiv.style.alignItems = 'center';
+      recordDiv.style.marginBottom = '2px';
       
-      // Keep only most recent bars
-      while (debugOutput.children.length > 50) {
-        debugOutput.removeChild(debugOutput.firstChild);
+      // Bar representation
+      const bar = document.createElement('div');
+      bar.style.width = `${Math.min(rms * 1000, 100)}%`;
+      bar.style.height = '10px';
+      bar.style.backgroundColor = rms > silenceThreshold ? '#4CAF50' : '#F44336';
+      bar.style.marginRight = '8px';
+      
+      // Numeric value
+      const text = document.createElement('span');
+      text.textContent = rms.toFixed(4);
+      
+      recordDiv.appendChild(bar);
+      recordDiv.appendChild(text);
+      window.audioLevelHistory.appendChild(recordDiv);
+      
+      // Keep only most recent entries
+      while (window.audioLevelHistory.children.length > 51) {
+        // first child is the <h4> header, preserve it
+        window.audioLevelHistory.removeChild(window.audioLevelHistory.children[1]);
       }
     }
     
