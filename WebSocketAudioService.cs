@@ -32,6 +32,10 @@ namespace VoiceAssistant
         private readonly int _frameBytes;
         private readonly VadSettings _settings;
 
+        // EMA smoothing for RMS
+        private readonly double _emaAlpha;
+        private float _emaRms;
+
         // TTS voice identifier provided by client (default: nova)
         private string _ttsVoice = "nova";
         public string TtsVoice
@@ -62,13 +66,26 @@ namespace VoiceAssistant
                 FrameLength    = WebRtcVadSharp.FrameLength.Is20ms
             };
             _frameBytes = SampleRate * 2 * FrameDurationMs / 1000;
+            _emaAlpha = FrameDurationMs / (_settings.RmsSmoothingWindowSec * 1000.0);
+            _emaRms = 0;
         }
 
         public async Task HandleAsync(WebSocket webSocket)
         {
             _logger.LogInformation("WebSocket /ws/audio connected");
+            _logger.LogInformation(
+                "VAD Settings: StartThreshold={StartThreshold:F4}, EndThreshold={EndThreshold:F4}, RmsSmoothingWindowSec={RmsSmoothingWindowSec:F2}, HangoverDurationSec={HangoverDurationSec:F2}, MinSpeechDurationSec={MinSpeechDurationSec:F2}, PreSpeechDurationSec={PreSpeechDurationSec:F2}",
+                _settings.StartThreshold,
+                _settings.EndThreshold,
+                _settings.RmsSmoothingWindowSec,
+                _settings.HangoverDurationSec,
+                _settings.MinSpeechDurationSec,
+                _settings.PreSpeechDurationSec);
             var segmentBuffer = new List<byte>();
             var buffer = new byte[_frameBytes];
+            // Ring buffer to pre-store frames before speech start
+            var preSpeechFrames = (int)(_settings.PreSpeechDurationSec * 1000 / FrameDurationMs);
+            var preBuffer = new Queue<byte[]>();
             // VAD state counters
             var inSpeech = false;
             var speechFrameCount = 0;
@@ -86,20 +103,30 @@ namespace VoiceAssistant
                 }
                 if (result.MessageType != WebSocketMessageType.Binary || result.Count != _frameBytes)
                 {
-                    _logger.LogDebug("Ignored frame of length {Length} and type {Type}", result.Count, result.MessageType);
+                    _logger.LogInformation("Ignored frame of length {Length} and type {Type}", result.Count, result.MessageType);
                     continue;
                 }
 
                 var frame = new byte[_frameBytes];
                 Array.Copy(buffer, frame, _frameBytes);
+                // maintain pre-speech ring buffer for including a bit of audio before VAD start
+                if (preSpeechFrames > 0)
+                {
+                    preBuffer.Enqueue(frame);
+                    if (preBuffer.Count > preSpeechFrames)
+                        preBuffer.Dequeue();
+                }
 
                 // Compute RMS amplitude and apply amplitude threshold
                 var rms = ComputeRms(frame);
-                _logger.LogDebug("Frame RMS: {Rms:F4}", rms);
-                var passesThreshold = rms >= _settings.Threshold;
-                // VAD decision
+                _emaRms = (float)(_emaAlpha * rms + (1 - _emaAlpha) * _emaRms);
+                var smoothRms = _emaRms;
+                _logger.LogTrace("Smoothed RMS: {SmoothRms:F4}", smoothRms);
+                // VAD decision: hysteresis thresholds for start vs. end
+                var rmsThreshold = inSpeech ? _settings.EndThreshold : _settings.StartThreshold;
+                var passesThreshold = smoothRms >= rmsThreshold;
                 var vadSpeech = _vad.HasSpeech(frame);
-                var isSpeech = vadSpeech && passesThreshold;
+                var isSpeech = vadSpeech || passesThreshold;
 
                 if (!inSpeech)
                 {
@@ -110,9 +137,13 @@ namespace VoiceAssistant
                         if (speechFrameCount >= minSpeechFrames)
                         {
                             inSpeech = true;
-                            segmentBuffer.Clear();
-                            noSpeechFrames = 0;
                             _logger.LogInformation("VAD: speech start detected");
+                            segmentBuffer.Clear();
+                            // prepend buffered frames collected before detection
+                            if (preSpeechFrames > 0)
+                                foreach (var buf in preBuffer)
+                                    segmentBuffer.AddRange(buf);
+                            noSpeechFrames = 0;
                         }
                     }
                     else
@@ -130,8 +161,8 @@ namespace VoiceAssistant
                     else
                     {
                         noSpeechFrames++;
-                        var silenceFrameThreshold = (int)(_settings.SilenceTimeoutSec * 1000 / FrameDurationMs);
-                        if (noSpeechFrames > silenceFrameThreshold)
+                        var hangoverFrameThreshold = (int)(_settings.HangoverDurationSec * 1000 / FrameDurationMs);
+                        if (noSpeechFrames > hangoverFrameThreshold)
                         {
                             inSpeech = false;
                             _logger.LogInformation("VAD: speech end detected, bytes={Bytes}", segmentBuffer.Count);

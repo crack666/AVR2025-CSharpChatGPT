@@ -141,7 +141,6 @@
       <div id="status">Bereit</div>
       <button id="stopBtn" class="stop-button">Aufnahme starten</button>
       <button id="clearBtn" class="secondary">Chat leeren</button>
-      <button id="autoListenBtn" class="secondary">Automatisches Zuhören aktivieren</button>
       <button id="optimizationBtn" class="secondary">Optimierungen</button>
       <button id="debugBtn" class="secondary">Debug-Modus</button>
     </div>
@@ -153,6 +152,7 @@
     <h3>Debug-Informationen</h3>
     <fieldset style="margin: 10px 0; padding: 10px; border: 1px solid #ccc;">
       <legend>VAD-Einstellungen</legend>
+      <p>Die Voice Activity Detection (VAD) läuft nun zentral im Backend über WebSocketAudioService. Änderungen der Schwellwerte werden automatisch an den Server übertragen.</p>
       <div class="threshold-slider">
         <label for="thresholdSlider">Schwelle (RMS):</label>
         <input type="range" id="thresholdSlider" min="0" max="0.1" step="0.001">
@@ -167,6 +167,26 @@
         <label for="minSpeechDurationSlider">Min. Sprechdauer (s):</label>
         <input type="range" id="minSpeechDurationSlider" min="0" max="3" step="0.1">
         <span class="threshold-value" id="minSpeechDurationValue"></span>
+      </div>
+      <div class="threshold-slider">
+        <label for="startThresholdSlider">Start-Schwellwert (RMS):</label>
+        <input type="range" id="startThresholdSlider" min="0" max="0.1" step="0.001">
+        <span class="threshold-value" id="startThresholdValue"></span>
+      </div>
+      <div class="threshold-slider">
+        <label for="endThresholdSlider">End-Schwellwert (RMS):</label>
+        <input type="range" id="endThresholdSlider" min="0" max="0.1" step="0.001">
+        <span class="threshold-value" id="endThresholdValue"></span>
+      </div>
+      <div class="threshold-slider">
+        <label for="smoothingWindowSlider">Glättungszeit (s):</label>
+        <input type="range" id="smoothingWindowSlider" min="0" max="1" step="0.05">
+        <span class="threshold-value" id="smoothingWindowValue"></span>
+      </div>
+      <div class="threshold-slider">
+        <label for="hangoverSlider">Hang-over (s):</label>
+        <input type="range" id="hangoverSlider" min="0" max="1" step="0.05">
+        <span class="threshold-value" id="hangoverValue"></span>
       </div>
     </fieldset>
     <div id="audioLevelContainer">

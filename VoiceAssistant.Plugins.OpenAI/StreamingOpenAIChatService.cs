@@ -23,7 +23,7 @@ namespace VoiceAssistant.Plugins.OpenAI
         private readonly HttpClient _httpClient;
         private readonly Action<string> _onTokenReceived;
         private readonly ILogger<StreamingOpenAIChatService> _logger;
-        private readonly bool _enableVerboseLogging = true;
+        private readonly bool _enableVerboseLogging = false;
         
         /// <summary>
         /// Initializes a new instance of the <see cref="StreamingOpenAIChatService"/> class.
@@ -200,10 +200,10 @@ namespace VoiceAssistant.Plugins.OpenAI
         // Helper methods for logging
         private void LogDebug(string message)
         {
-            _logger?.LogDebug(message);
+            _logger?.LogTrace(message);
             if (_enableVerboseLogging)
             {
-                Console.WriteLine($"[DEBUG] StreamingOpenAIChatService: {message}");
+                Console.WriteLine($"[TRACE] StreamingOpenAIChatService: {message}");
             }
         }
         
