@@ -386,6 +386,14 @@ app.MapGet("/api/models", async (HttpClient http) =>
     return Results.Json(modelsList);
 });
 
+// Endpoint to clear chat history
+app.MapPost("/api/clearChat", (ChatLogManager chatLogManager) =>
+{
+    chatLogManager.ClearMessages();
+    logger.LogInformation("Chat history cleared");
+    return Results.Ok(new { success = true, message = "Chat history cleared" });
+});
+
 // Endpoint for direct text chat streaming (ASR clients)
 // Endpoint for text-based chat with full context via IChatService with token-by-token streaming
 app.MapPost("/api/chatStream", async (HttpContext context, ChatLogManager chatLogManager, IChatService chatService) =>

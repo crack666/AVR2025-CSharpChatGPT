@@ -18,6 +18,11 @@ namespace VoiceAssistant.Core.Services
         public event Action<ChatMessage>? MessageAdded;
 
         /// <summary>
+        /// Invoked when the chat history is cleared.
+        /// </summary>
+        public event Action? MessagesCleared;
+
+        /// <summary>
         /// Adds a new message to the log and notifies subscribers.
         /// </summary>
         /// <param name="role">Role of the message sender.</param>
@@ -43,6 +48,18 @@ namespace VoiceAssistant.Core.Services
             {
                 return _messages.AsReadOnly();
             }
+        }
+
+        /// <summary>
+        /// Clears all messages from the chat history and notifies subscribers.
+        /// </summary>
+        public void ClearMessages()
+        {
+            lock (_lock)
+            {
+                _messages.Clear();
+            }
+            MessagesCleared?.Invoke();
         }
     }
 }
