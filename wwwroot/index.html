@@ -43,19 +43,6 @@
               </select>
           </div>
 
-          <!--<div class="controls-row">-->
-          <div class="threshold-slider">
-              <label for="silenceThresholdRange">Erkennungsschwelle:</label>
-              <input type="range" id="silenceThresholdRange" min="0.005" max="0.1" step="0.001" value="0.008">
-              <span id="thresholdValue" class="threshold-value">0.008</span>
-          </div>
-
-          <div class="threshold-slider">
-              <label for="silenceSec">Stille-Schwelle (s):</label>
-              <input type="range" id="silenceSecRange" min="0.2" max="5" step="0.1" value="0.5">
-              <input type="number" id="silenceSec" min="0.2" max="10" step="0.1" value="0.5" style="width: 60px;" />
-          </div>
-      <!--</div>-->
   </div>
 
     <div id="optimizationPanel" class="debug-panel" style="">
@@ -152,8 +139,9 @@
     
     <div class="button-group">
       <div id="status">Bereit</div>
-      <button id="stopBtn" class="stop-button">Aufnahme stoppen</button>
+      <button id="stopBtn" class="stop-button">Aufnahme starten</button>
       <button id="clearBtn" class="secondary">Chat leeren</button>
+      <button id="autoListenBtn" class="secondary">Automatisches Zuhören aktivieren</button>
       <button id="optimizationBtn" class="secondary">Optimierungen</button>
       <button id="debugBtn" class="secondary">Debug-Modus</button>
     </div>
@@ -163,6 +151,24 @@
   
   <div id="debugPanel" class="debug-panel" style="display: none;">
     <h3>Debug-Informationen</h3>
+    <fieldset style="margin: 10px 0; padding: 10px; border: 1px solid #ccc;">
+      <legend>VAD-Einstellungen</legend>
+      <div class="threshold-slider">
+        <label for="thresholdSlider">Schwelle (RMS):</label>
+        <input type="range" id="thresholdSlider" min="0" max="0.1" step="0.001">
+        <span class="threshold-value" id="thresholdValue"></span>
+      </div>
+      <div class="threshold-slider">
+        <label for="silenceTimeoutSlider">Stillezeit (s):</label>
+        <input type="range" id="silenceTimeoutSlider" min="0" max="3" step="0.1">
+        <span class="threshold-value" id="silenceTimeoutValue"></span>
+      </div>
+      <div class="threshold-slider">
+        <label for="minSpeechDurationSlider">Min. Sprechdauer (s):</label>
+        <input type="range" id="minSpeechDurationSlider" min="0" max="3" step="0.1">
+        <span class="threshold-value" id="minSpeechDurationValue"></span>
+      </div>
+    </fieldset>
     <div id="audioLevelContainer">
       <div id="currentAudioLevel" style="height: 20px; background-color: #4CAF50; width: 0%; transition: width 0.1s ease;"></div>
       <div id="thresholdLine" style="height: 2px; background-color: red; width: 100%; position: relative;"></div>
@@ -178,6 +184,11 @@
       <div>Max: <span id="maxNoise">0.000</span></div>
       <div>Empfohlener Schwellwert: <span id="recommendedThreshold">0.000</span></div>
     </div>
+    <!-- Ereignis-Timeline: Start, Stop, Upload, Prompt, Token, Done -->
+    <div id="eventTimelineContainer" style="margin: 10px 0;">
+      <h4>Ereignis-Timeline</h4>
+      <div id="eventTimeline" style="max-height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 5px;"></div>
+    </div>
     <!-- Bereich mit geteiltem Debug-Log und Audio-Pegel-Historie nebeneinander -->
     <div id="debugPanels" style="display: flex; gap: 20px; margin: 10px 0;">
       <div id="audioLevelHistory" style="flex: 1; max-height: 1500px; overflow-y: auto; border: 1px solid #ccc; padding: 5px;">
@@ -189,7 +200,6 @@
   <!-- Load scripts -->
   <script src="js/utils.js"></script>
   <script src="js/audio-system.js"></script>
-  <script src="js/tts-manager.js"></script>
   <script src="js/ui-manager.js"></script>
   <script src="js/optimization-manager.js"></script>
   <script src="js/main.js"></script>

@@ -4,20 +4,26 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>11.0</LangVersion>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
   <!-- Static files (HTML/JS) served from wwwroot -->
   <!-- Only compile explicit code files in this project; exclude all others (e.g., tests) -->
   <PropertyGroup>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <!-- Explicitly compile the WebSocketAudioService -->
   <ItemGroup>
     <!-- Main application source files -->
     <Compile Include="Program.cs" />
     <Compile Include="ProgramPartial.cs" />
+    <Compile Include="WebSocketAudioService.cs" />
+    <Compile Include="Controllers\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- Core and plugin libraries -->
     <ProjectReference Include="VoiceAssistant.Core/VoiceAssistant.Core.csproj" />
     <ProjectReference Include="VoiceAssistant.Plugins.OpenAI/VoiceAssistant.Plugins.OpenAI.csproj" />
+    <!-- VAD: WebRTC Voice Activity Detection for backend streaming service -->
+    <PackageReference Include="WebRtcVadSharp" Version="1.0.6" />
   </ItemGroup>
 </Project>

@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.Tasks;
 using VoiceAssistant.Core.Interfaces;
+using Microsoft.Extensions.Logging;
 
 namespace VoiceAssistant.Plugins.OpenAI
 {
@@ -14,14 +15,20 @@ namespace VoiceAssistant.Plugins.OpenAI
     public class OpenAIApiRecognizer : IRecognizer
     {
         private readonly HttpClient _httpClient;
+        private readonly ILogger<OpenAIApiRecognizer> _logger;
 
-        public OpenAIApiRecognizer(HttpClient httpClient)
+        public OpenAIApiRecognizer(HttpClient httpClient, ILogger<OpenAIApiRecognizer> logger)
         {
             _httpClient = httpClient;
+            _logger = logger;
         }
 
         public async Task<string> RecognizeAsync(Stream audioStream, string contentType, string fileName)
         {
+            // Log request details for debugging
+            long dataLength = audioStream.CanSeek ? audioStream.Length : -1;
+            _logger.LogInformation("Whisper API request: model=whisper-1, contentType={ContentType}, fileName={FileName}, dataLength={DataLength}",
+                contentType, fileName, dataLength);
             using var multipart = new MultipartFormDataContent();
             multipart.Add(new StringContent("whisper-1"), "model");
             var fileContent = new StreamContent(audioStream);
@@ -40,7 +47,9 @@ namespace VoiceAssistant.Plugins.OpenAI
             {
                 throw new ApplicationException($"Whisper API response missing 'text' field: {body}");
             }
-            return textProp.GetString() ?? string.Empty;
+            var resultText = textProp.GetString() ?? string.Empty;
+            _logger.LogInformation("Whisper API response: text={ResponseText}", resultText);
+            return resultText;
         }
     }
 }

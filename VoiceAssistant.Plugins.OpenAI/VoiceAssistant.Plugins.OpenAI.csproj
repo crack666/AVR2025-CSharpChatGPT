@@ -4,6 +4,7 @@
     <LangVersion>8.0</LangVersion>
     <!-- Using C# 8.0 for compatibility with Unity and netstandard2.0 -->
     <RootNamespace>VoiceAssistant.Plugins.OpenAI</RootNamespace>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../VoiceAssistant.Core/VoiceAssistant.Core.csproj" />

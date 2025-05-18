@@ -12,7 +12,7 @@ namespace VoiceAssistant.Core.Interfaces
         /// <summary>
         /// Generates a response based on the given chat history.
         /// </summary>
-        /// <param name="chatHistory">Ordered list of chat messages (user + bot).</param>
+        /// <param name="chatHistory">Ordered list of chat messages (user  bot).</param>
         /// <returns>Generated response text.</returns>
         Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory);
     }

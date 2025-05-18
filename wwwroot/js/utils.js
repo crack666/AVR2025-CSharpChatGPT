@@ -11,15 +11,12 @@ function initializeUIElements() {
   window.modelSel = document.getElementById('model');
   window.langSel = document.getElementById('language');
   window.voiceSel = document.getElementById('voice');
-  window.silenceSecInput = document.getElementById('silenceSec');
-  window.silenceSecRange = document.getElementById('silenceSecRange');
-  window.silenceThresholdRange = document.getElementById('silenceThresholdRange');
-  window.thresholdValue = document.getElementById('thresholdValue');
   window.asrMode = document.getElementById('asrMode');
   window.optimizationMode = document.getElementById('optimizationMode');
   window.debugPanel = document.getElementById('debugPanel');
   window.optimizationPanel = document.getElementById('optimizationPanel');
   window.debugOutput = document.getElementById('debugOutput');
+  window.eventTimeline = document.getElementById('eventTimeline');
   // Separate container for audio level history (bars + numeric values)
   window.audioLevelHistory = document.getElementById('audioLevelHistory');
 }
@@ -33,7 +30,6 @@ window.refreshUIElements = initializeUIElements;
 // Audio state
 let currentAudio = null;
 let currentUtterance = null;
-let silenceThreshold = parseFloat(silenceThresholdRange.value);
 let recording = false;
 
 // Noise level tracking
@@ -45,20 +41,32 @@ let currentNoiseLevel = 0;
 // Available OpenAI voices
 const openaiVoices = ['nova', 'shimmer', 'echo', 'onyx', 'fable', 'alloy', 'ash', 'sage', 'coral'];
 
-// Debug log
+// Debug log (FE console + debug panel)
 function debugLog(message) {
   console.log(message);
   const logEntry = document.createElement('div');
   logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
   debugOutput.appendChild(logEntry);
-  
   // Keep only last 100 entries
   while (debugOutput.children.length > 100) {
     debugOutput.removeChild(debugOutput.firstChild);
   }
-  
   // Auto-scroll
   debugOutput.scrollTop = debugOutput.scrollHeight;
+}
+
+// Event timeline (FE console + timeline panel)
+function eventLog(message) {
+  console.log(message);
+  if (!eventTimeline) return;
+  const entry = document.createElement('div');
+  entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+  eventTimeline.appendChild(entry);
+  // Keep only last 100 entries
+  while (eventTimeline.children.length > 100) {
+    eventTimeline.removeChild(eventTimeline.firstChild);
+  }
+  eventTimeline.scrollTop = eventTimeline.scrollHeight;
 }
 
 // Function to stop all audio playback
@@ -112,8 +120,6 @@ function stopAudio(audio) {
   window.isProcessingOrPlayingAudio = false;
 }
 
-// Initialize values
-thresholdValue.textContent = silenceThreshold.toFixed(3);
 
 // Dynamically load available chat models from server
 async function loadModels() {

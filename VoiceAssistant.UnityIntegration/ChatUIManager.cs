@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System;
 
 namespace VoiceAssistant.UnityIntegration
 {
@@ -8,8 +9,8 @@ namespace VoiceAssistant.UnityIntegration
     /// </summary>
     public class ChatUIManager : MonoBehaviour
     {
-        [Header("References")]
-        [SerializeField] private VoicePlaybackManager playbackManager;
+    [Header("References")]
+    [SerializeField] private VoicePlaybackManager playbackManager;
         [SerializeField] private GameObject chatBubblePrefab; // Prefab with Text and Stop Button
         [SerializeField] private Transform chatContainer;
 
@@ -34,15 +35,17 @@ namespace VoiceAssistant.UnityIntegration
             var bubble = Instantiate(chatBubblePrefab, chatContainer);
             var text = bubble.GetComponentInChildren<Text>();
             text.text = message;
-            // Configure stop button
+            // Generate a unique ID for this audio clip
+            var clipId = Guid.NewGuid().ToString();
+            // Configure stop button to skip this clip
             var stopBtn = bubble.transform.Find("StopButton")?.GetComponent<Button>();
             if (stopBtn)
             {
                 stopBtn.gameObject.SetActive(true);
-                stopBtn.onClick.AddListener(() => playbackManager.Stop());
+                stopBtn.onClick.AddListener(() => playbackManager.SkipClip(clipId));
             }
-            // Play voice (will interrupt any current playback)
-            playbackManager.Play(voiceClip);
+            // Enqueue the clip with its ID for targeted playback
+            playbackManager.EnqueueClip(clipId, voiceClip);
         }
     }
 }

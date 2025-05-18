@@ -6,6 +6,8 @@
 
 Dieser Plan dokumentiert die geplanten Phasen zur Optimierung der Latenz und Streaming-Funktionalität.
 
+Siehe auch [IntegrationSummary.md](IntegrationSummary.md) für eine Übersicht der bereits abgeschlossenen Addendum-Schritte (15.x).
+
 **Hinweis:** Plattformunabhängigkeit hat höchste Priorität. Rein browser-spezifische Streaming-Techniken (z.B. Streaming-ASR/-TTS) sind optional und nur als Plugin-Lösung vorgesehen. Bevorzuge batch-basierte UnityWebRequest-Implementierungen.
 
 **Kompatibilität:**
@@ -201,4 +203,34 @@ Beschreibung:
   ```
 - Fülllaute und non-verbale Turn-Taking-Signale
 - Optimierte Animation von Chat-Bubbles
-- Visuelles Token-Streaming mit Typewriter-Effekt
++ Visuelles Token-Streaming mit Typewriter-Effekt
+  
+---
+
+## Neuer Addendum-Plan: Backend-basierte VAD-Auslagerung und Audio-Streaming
+Dieser Addendum-Plan beschreibt, wie wir die gesamte Sprachsegmentierung (VAD), Logging und Tests in einen dedizierten Backend-Service verlagern, während Frontend und Unity-Clients nur noch rohe Audio-Frames senden und Ausgaben wiedergeben.
+
+| Phase | Beschreibung | Status |
+|-------|--------------|:-----:|
+| 15.1  | Protokollwahl: WebSocket für Audio-Streaming, SSE für Events | ✅ Abgeschlossen |
+| 15.2  | VAD-Service: .NET-Integration von WebRTC-VAD (WebRtcVadSharp o.Ä.) | ✅ Abgeschlossen |
+| 15.3  | WebSocket-Endpoint `/ws/audio` implementieren (PCM-Frames) | ✅ Abgeschlossen |
+| 15.4  | Streaming-Logik: Buffer für Frames, VAD-Entscheidungen (speechStart/end) | ✅ Abgeschlossen |
+| 15.5  | ASR-Aufruf im Backend: erkannte Sprach-Segmente via IRecognizer | ✅ Abgeschlossen |
+| 15.6  | Chat-Service: Prompt in IChatService → SSE-Token-Streaming zurück | ✅ Abgeschlossen |
+| 15.7  | TTS-Streaming: chunkedSynthesis SSE für Audio-Chunks | ✅ Abgeschlossen |
+| 15.8  | Client-Adapter: nur Audio-Frames senden, Status & Playback anzeigen | ⬜ Nicht gestartet |
+| 15.9  | Logging & Tests: Unit-Tests für VAD, Integrationstests WebSocket-Flow | ⬜ Nicht gestartet |
+| 15.10 | Hybrid API & WebSocket-Strategie: Behalte klassische HTTP-Endpunkte für Fallback und Batch-Aufrufe, verschiebe Echtzeit-Audio- und TTS-Streaming auf den WebSocket-Kanal; refaktoriere Routing in Controller-Klassen | ✅ Abgeschlossen |
+
+### Detailbeschreibungen
+1. **Architektur**: Serviceklasse `WebSocketAudioService` in Core/Plugin, ASP.NET Core WebSocket-Mapping in `Program.cs`.
+2. **VAD**: Verwende `WebRtcVadSharp`, führe für jeden 20–30 ms-Frame `IsSpeech()` aus, baue State-Machine für segmentbasierte Erkennung.
+3. **Streaming**: Halte Frames bis `speechEnd`, sende PCM-Buffer an Whisper (`IRecognizer.RecognizeAsync`) und Chat-Service.
+4. **SSE-Events**: Reuse `/api/processAudioStream` oder eigenes `/api/audio-events`, sende `prompt`, `token`, `done` Events.
+5. **TTS**: ProgressiveTTSSynthesizer bleibt im Backend, SSE-basierte Audio-Chunk-Verteilung wie bisher.
+6. **Frontend/Unity**: Entferne lokale VAD-Logik, implementiere WebSocket-Client zum Senden von Audio-Frames, empfange SSE und spiele Audio.
+7. **Logging**: Pro VAD-Event (rms, isSpeech), Segmentdauer, erkannter Prompt und LLM-Events im Server-Log.
+8. **Tests**: Unit-Tests für `VadService`, Integrationstest über WebSocket (simulierter Rausch- vs. Sprach-Stream).
+
+Mit diesem Addendum planen wir eine robuste, zentral wartbare Voice-Pipeline im Backend und halten die Clients schlank und wiederverwendbar.

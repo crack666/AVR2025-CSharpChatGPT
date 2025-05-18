@@ -1,8 +1,6 @@
 // UI Manager
 const uiManager = {
   init: function() {
-    // Initialize values
-    thresholdValue.textContent = silenceThreshold.toFixed(3);
     
     // Setup event listeners
     this.setupEventListeners();
@@ -126,44 +124,5 @@ const uiManager = {
       }
     });
     
-    // Sync range and number input for silence seconds
-    silenceSecRange.addEventListener('input', () => {
-      silenceSecInput.value = silenceSecRange.value;
-    });
-    
-    silenceSecInput.addEventListener('input', () => {
-      silenceSecRange.value = silenceSecInput.value;
-    });
-    
-    // Update threshold value on slider change
-    silenceThresholdRange.addEventListener('input', () => {
-      silenceThreshold = parseFloat(silenceThresholdRange.value);
-      thresholdValue.textContent = silenceThreshold.toFixed(3);
-      
-      // Update threshold line in visualization
-      if (document.getElementById('thresholdLine')) {
-        document.getElementById('thresholdLine').style.top = `-${Math.min(silenceThreshold * 1000, 100)}%`;
-      }
-    });
-    
-    // Add button to set threshold to recommended value
-    const useRecommendedBtn = document.createElement('button');
-    useRecommendedBtn.textContent = 'Empfohlenen Schwellwert verwenden';
-    useRecommendedBtn.className = 'secondary';
-    useRecommendedBtn.style.marginLeft = '15px';
-    useRecommendedBtn.addEventListener('click', () => {
-      const recommendedValue = parseFloat(document.getElementById('recommendedThreshold').textContent || '0.02');
-      silenceThresholdRange.value = recommendedValue;
-      silenceThreshold = recommendedValue;
-      thresholdValue.textContent = recommendedValue.toFixed(3);
-      
-      // Update threshold line
-      if (document.getElementById('thresholdLine')) {
-        document.getElementById('thresholdLine').style.top = `-${Math.min(silenceThreshold * 1000, 100)}%`;
-      }
-    });
-    
-    // Add button after the debug button
-    document.querySelector('.button-group').appendChild(useRecommendedBtn);
   }
 };

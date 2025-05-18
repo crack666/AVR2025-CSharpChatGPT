@@ -13,10 +13,32 @@ const audioSystem = {
     window.silenceStart = null;         // Global timestamp for silence detection
     window.isProcessingOrPlayingAudio = false;  // Global flag for processing state
     
+    // Initialize VAD debug sliders and global parameters
+    const thresholdSlider = document.getElementById('thresholdSlider');
+    const thresholdValue = document.getElementById('thresholdValue');
+    window.silenceThreshold = parseFloat(thresholdSlider.value);
+    thresholdValue.textContent = thresholdSlider.value;
+    thresholdSlider.addEventListener('input', () => {
+      window.silenceThreshold = parseFloat(thresholdSlider.value);
+      thresholdValue.textContent = thresholdSlider.value;
+    });
+
+    window.silenceSecInput = document.getElementById('silenceTimeoutSlider');
+    document.getElementById('silenceTimeoutValue').textContent = window.silenceSecInput.value;
+    window.silenceSecInput.addEventListener('input', () => {
+      document.getElementById('silenceTimeoutValue').textContent = window.silenceSecInput.value;
+    });
+
+    const minSpeechDurationSlider = document.getElementById('minSpeechDurationSlider');
+    document.getElementById('minSpeechDurationValue').textContent = minSpeechDurationSlider.value;
+    minSpeechDurationSlider.addEventListener('input', () => {
+      document.getElementById('minSpeechDurationValue').textContent = minSpeechDurationSlider.value;
+    });
+
     this.initCapture();
     this.setupEventListeners();
   },
-  
+
   // Function to completely reset and restart audio recording
   restartAudioCapture: function() {
     debugLog("Restarting audio capture system");

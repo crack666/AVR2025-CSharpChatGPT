@@ -200,6 +200,11 @@ button.stop-button:hover {
   max-width: 80%;
 }
 
+/* Highlight a message bubble when its audio is playing */
+.message.playing {
+  border: 2px solid #4CAF50;
+}
+
 .controls-row {
   display: flex;
   justify-content: space-between;
@@ -208,7 +213,7 @@ button.stop-button:hover {
 }
 
 .threshold-slider {
-    /*display: flex;*/
+    display: flex;
     align-items: center;
     gap: 10px;
     margin: 10px;
