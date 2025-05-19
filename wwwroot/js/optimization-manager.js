@@ -296,9 +296,15 @@ const optimizationManager = {
       case 'llmResponseStart':
         stats.llmResponseStart = now;
         if (stats.transcriptionReceived > 0) {
+          // Time until first token (chat text start)
+          const delta = now - stats.transcriptionReceived;
           if (!stats.transcriptToLLMLatency) stats.transcriptToLLMLatency = [];
-          stats.transcriptToLLMLatency.push(now - stats.transcriptionReceived);
+          stats.transcriptToLLMLatency.push(delta);
           if (stats.transcriptToLLMLatency.length > 10) stats.transcriptToLLMLatency.shift();
+          // Register as text latency (time until first text displayed)
+          if (!stats.textLatency) stats.textLatency = [];
+          stats.textLatency.push(delta);
+          if (stats.textLatency.length > 10) stats.textLatency.shift();
         }
         break;
       case 'ttsStart':
@@ -322,9 +328,7 @@ const optimizationManager = {
         break;
     }
     
-    // Update UI if optimization panel is visible
-    if (optimizationPanel.style.display !== 'none') {
-      this.updateLatencyStatsUI();
-    }
+    // Always update latency stats UI
+    this.updateLatencyStatsUI();
   }
 };

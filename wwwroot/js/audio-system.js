@@ -201,6 +201,82 @@ const audioSystem = {
   setupEventListeners: function() {
     // Global stop/start button for controlling recording
     stopBtn.addEventListener('click', function stopRecordingHandler() {
+      // HTTP-Post legacy pipeline fallback
+      if (window.optimizationSettings.useLegacyHttp) {
+        // Toggle recording state
+      if (!window.httpRecording) {
+        // Start HTTP recording
+        window.httpRecording = true;
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(stream => {
+            window.httpMediaStream = stream;
+            window.httpChunks = [];
+            const recorder = new MediaRecorder(stream);
+            window.httpRecorder = recorder;
+            recorder.ondataavailable = e => window.httpChunks.push(e.data);
+            recorder.start();
+            status.textContent = 'Recording (HTTP)...';
+            stopBtn.textContent = 'Stop HTTP Recording';
+          })
+            .catch(err => console.error('Error acquiring media for HTTP:', err));
+        } else {
+          // Stop HTTP recording and process
+          window.httpRecording = false;
+          status.textContent = 'Processing (HTTP)...';
+          stopBtn.textContent = 'Aufnahme starten';
+          const recorder = window.httpRecorder;
+          if (recorder && recorder.state === 'recording') {
+            recorder.onstop = async () => {
+              // Track recording end latency
+              optimizationManager.trackLatency('recordingStop');
+              try {
+                const blob = new Blob(window.httpChunks, { type: 'audio/webm' });
+                const fd = new FormData();
+                fd.append('file', blob, 'audio.webm');
+                // Send transcription request
+                const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
+                const transcriptionTime = Date.now();
+                optimizationManager.trackLatency('transcriptionReceived');
+                const data = await resp.json();
+                // Display messages and instrument latencies
+                createUserMessage(data.prompt);
+                const botObj = createBotMessage(data.response);
+                // Text latency
+                const textLat = transcriptionTime - (window.recordingStopTime || transcriptionTime);
+                if (botObj.textSpan) botObj.textSpan.textContent = textLat + ' ms';
+                optimizationManager.trackLatency('llmResponseStart');
+                // Send TTS request
+                const resp2 = await fetch('/api/speech', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ Input: data.response, Voice: voiceSel.value })
+                });
+                const audioBlob = await resp2.blob();
+                const ttsTime = Date.now();
+                optimizationManager.trackLatency('ttsEnd');
+                // Audio latency
+                const audioLat = ttsTime - transcriptionTime;
+                if (botObj.audioSpan) botObj.audioSpan.textContent = audioLat + ' ms';
+                // Play audio
+                const url = URL.createObjectURL(audioBlob);
+                const audio = new Audio(url);
+                audio.oncanplaythrough = () => audio.play();
+                audio.onended = () => URL.revokeObjectURL(url);
+                status.textContent = 'Listening...';
+                // Cleanup media stream
+                window.httpMediaStream.getTracks().forEach(t => t.stop());
+              } catch (err) {
+                console.error('HTTP pipeline error:', err);
+                status.textContent = 'Error in HTTP pipeline';
+              }
+            };
+            // Store recording stop time
+            window.recordingStopTime = Date.now();
+            recorder.stop();
+          }
+        }
+        return;
+      }
       // Store reference to this handler for later restoration
       window.stopRecordingHandler = stopRecordingHandler;
       
@@ -288,11 +364,18 @@ const audioSystem = {
   
   initCapture: async function() {
     // Track the moment the recording/capture starts
-    optimizationManager.trackLatency('recordingStart');
-    if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
-      this.initBrowserASR();
+    // Track recording start for WebSocket, but HTTP mode handles start in manual handler
+    if (!window.optimizationSettings.useLegacyHttp) {
+      // WebSocket mode: start streaming without recording latency start (server does VAD)
+      if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
+        this.initBrowserASR();
+      } else {
+        this.initServerASR();
+      }
     } else {
-      this.initServerASR();
+      // HTTP mode: await manual control via stopBtn
+      status.textContent = 'Bereit (HTTP-Modus)';
+      stopBtn.textContent = 'Aufnahme starten';
     }
   },
   
@@ -457,21 +540,37 @@ const audioSystem = {
     }
     switch (event) {
       case 'prompt':
-        // Track transcription received latency
+        // Record transcription received time
+        const nowT = Date.now();
+        window.lastTranscriptionTime = nowT;
         optimizationManager.trackLatency('transcriptionReceived');
         createUserMessage(data.prompt);
         break;
       case 'token':
-        // Track LLM response start on first token
+        // Record LLM response start and text latency on first token
+        const nowL = Date.now();
         optimizationManager.trackLatency('llmResponseStart');
         if (!window.currentBot) {
-          window.currentBot = createBotMessage('');
+          const botObj = createBotMessage('');
+          window.currentBot = botObj;
+          if (window.lastTranscriptionTime) {
+            const textLat = nowL - window.lastTranscriptionTime;
+            botObj.textSpan.textContent = textLat + ' ms';
+          }
         }
         window.currentBot.content.textContent += data.token;
         break;
       case 'audio-chunk':
-        // Track TTS ready to play on first audio chunk
+        // Record audio latency on first chunk
+        const nowA = Date.now();
         optimizationManager.trackLatency('ttsEnd');
+        if (window.currentBot && !window.currentBot._audioLatencyRecorded) {
+          window.currentBot._audioLatencyRecorded = true;
+          if (window.lastTranscriptionTime) {
+            const audioLat = nowA - window.lastTranscriptionTime;
+            window.currentBot.audioSpan.textContent = audioLat + ' ms';
+          }
+        }
         {
           const bytes = Uint8Array.from(atob(data.chunk), c => c.charCodeAt(0));
           window.audioContext.decodeAudioData(bytes.buffer, buffer => {

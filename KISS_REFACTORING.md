@@ -33,12 +33,18 @@ Dieser Plan beschreibt die notwendigen Schritte, um unsere Audio-→Transkript-�
   - Pipeline-Flags (`UseLegacyHttp`, `DisableVad`, `DisableTokenStreaming`, `DisableProgressiveTts`) werden automatisch angewendet beim Verbindungsaufbau.
 
 ## 7. Latenzmessung im Frontend implementieren
-    - [x] End-to-End-Latenz messen für WebSocket-Streaming:
-      - `recordingStart`: Zeitpunkt, wenn Aufzeichnung beginnt.
-      - `transcriptionReceived`: Zeitpunkt, wenn Transkript (Prompt) empfangen wird.
-      - `llmResponseStart`: Zeitpunkt, wenn erste Tokens empfangen werden.
-      - `ttsEnd`: Zeitpunkt, wenn erstes Audio-Chunk ankommt und abspielbereit ist.
-      - Durchschnittswerte im UI aktualisiert.
+- [x] End-to-End-Latenz messen:
+  * WebSocket-Streaming:
+    - `transcriptionReceived`: Zeitpunkt, wenn Transkript (Prompt) empfangen wird (Ende der Audio-Übertragung).
+    - `llmResponseStart`: Zeitpunkt, wenn erste Tokens empfangen werden (Text-Latenz).
+    - `ttsEnd`: Zeitpunkt, wenn erstes Audio-Chunk ankommt und abspielbereit ist (Audio-Latenz).
+  * HTTP-Post-Modus:
+    - `recordingStop`: Zeitpunkt, wenn manuelle Aufnahme endet.
+    - `transcriptionReceived`: Zeitpunkt, wenn `/api/processAudio`-Antwort empfangen wird.
+    - `llmResponseStart`: Zeitpunkt, wenn Chat-Antwort empfangen wird.
+    - `ttsEnd`: Zeitpunkt, wenn Audio-Blob-Download abgeschlossen.
+- [x] HTTP-Post-Modus ebenfalls lückenlos instrumentiert und individuelle Latenzen an jeder Bot-Message angezeigt.
+- [x] HTTP-Post-Modus ebenfalls lückenlos instrumentiert.
 
 ## 8. Dokumentation und Konfiguration
 + [ ] Beispiel-Section in `appsettings.json` unter `PipelineOptions` ergänzen.

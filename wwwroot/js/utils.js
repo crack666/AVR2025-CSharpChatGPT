@@ -218,17 +218,18 @@ function createBotMessage(text, model = window.modelSel ? window.modelSel.value 
   
   const latencyInfo = document.createElement('div');
   latencyInfo.className = 'message-latency';
-  latencyInfo.innerHTML = '<span class="latency-label">Latenz:</span> ' +
-                         '<span class="latency-text-label">Text:</span> <span class="latency-text-value">berechne...</span> | ' + 
-                         '<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">berechne...</span>';
+  latencyInfo.innerHTML =
+    '<span class="latency-label">Latenz:</span> ' +
+    '<span class="latency-text-label">Text:</span> <span class="latency-text-value">berechne...</span> | ' +
+    '<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">berechne...</span>';
   
   const controls = document.createElement('div');
   controls.className = 'message-controls';
-  
+
   const stopButton = document.createElement('button');
   stopButton.className = 'stop-button';
   stopButton.textContent = 'Audio stoppen';
-  stopButton.style.display = 'none';  // Hide initially until audio is playing
+  stopButton.style.display = 'none';
   
   messageDiv.appendChild(header);
   messageDiv.appendChild(content);
@@ -237,6 +238,8 @@ function createBotMessage(text, model = window.modelSel ? window.modelSel.value 
   controls.appendChild(stopButton);
   chatLogElement.appendChild(messageDiv);
   chatLogElement.scrollTop = chatLogElement.scrollHeight;
-  
-  return { messageDiv, content, stopButton, latencyInfo };
+  // Capture references for latency updates
+  const textSpan = latencyInfo.querySelector('.latency-text-value');
+  const audioSpan = latencyInfo.querySelector('.latency-audio-value');
+  return { messageDiv, content, stopButton, latencyInfo, textSpan, audioSpan };
 }

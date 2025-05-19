@@ -12,7 +12,8 @@ if (string.IsNullOrWhiteSpace(apiKey))
 }
 
 var builder = WebApplication.CreateBuilder(args);
-// Configure Serilog from appsettings.json
+// Remove default logging providers and configure Serilog from appsettings.json
+builder.Logging.ClearProviders();
 builder.Host.UseSerilog((hostingContext, services, loggerConfiguration) =>
 {
     loggerConfiguration
