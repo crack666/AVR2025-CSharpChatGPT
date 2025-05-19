@@ -1,4 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using VoiceAssistant.Core.Models;
 
 [ApiController]
@@ -59,5 +63,37 @@ public class SettingsController : ControllerBase
         _pipelineOptions.DisableTokenStreaming = dto.DisableTokenStreaming;
         _pipelineOptions.DisableProgressiveTts = dto.DisableProgressiveTts;
         return NoContent();
+    }
+    /// <summary>
+    /// Calibrate VAD thresholds based on uploaded WAV sample.
+    /// </summary>
+    [HttpPost("vad/calibrate")]
+    public async Task<ActionResult<VadSettings>> CalibrateAsync([FromForm] IFormFile file)
+    {
+        if (file == null)
+            return BadRequest("No audio file provided.");
+        byte[] data;
+        using (var ms = new MemoryStream())
+        {
+            await file.CopyToAsync(ms);
+            data = ms.ToArray();
+        }
+        const int headerSize = 44;
+        if (data.Length <= headerSize)
+            return BadRequest("Invalid WAV file.");
+        int sampleCount = (data.Length - headerSize) / 2;
+        double sumSquares = 0;
+        for (int i = headerSize; i + 1 < data.Length; i += 2)
+        {
+            short sample = BitConverter.ToInt16(data, i);
+            double norm = sample / 32768.0;
+            sumSquares += norm * norm;
+        }
+        double avgRms = Math.Sqrt(sumSquares / sampleCount);
+        // Derive thresholds
+        _vadSettings.StartThreshold = avgRms * 1.5;
+        _vadSettings.EndThreshold = avgRms * 1.0;
+        // Leave other settings unchanged
+        return Ok(_vadSettings);
     }
 }

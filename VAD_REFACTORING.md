@@ -10,7 +10,8 @@ um die Latenz niedrig zu halten (20 ms‑Frames), aber gleichzeitig robustere 
 - **Ziel:** RMS‑Glättung (EMA), Hysterese‑Thresholds, Hang‑over und Pre‑Speech‑Puffer kombinieren.
 
 ## Schritt-für-Schritt Maßnahmen
-
+- [x] **5. VAD-Kalibrierung per Audio-Beispiel**
+- [x] **6. Automatisierte VAD-Tests mit Elefanten.wav**
 - [x] **1. EMA-Glättung** (Moving Average)
 - [x] **2. Hysterese-Schwellen** (Start- vs. End-Threshold)
 - [x] **3. Hang-over**
@@ -38,11 +39,28 @@ bevor das Segment endgültig geschlossen wird.
 
 ### 4) UI-Sliders
 
-Vier neue Slider in der Debug-UI (HTML & `audio-system.js`):
-- StartThreshold
-- EndThreshold
-- RmsSmoothingWindowSec
-- HangoverDurationSec
+- Vier neue Slider in der Debug-UI (HTML & `audio-system.js`):
+- - StartThreshold
+- - EndThreshold
+- - RmsSmoothingWindowSec
+- - HangoverDurationSec
+  - Optional: Button „VAD kalibrieren“ (Backend-API vorschlagen lassen)
+
+### 5) VAD-Kalibrierung via Backend
+- Neuer Endpoint POST `/api/settings/vad/calibrate` in SettingsController oder neuem CalibrationController
+- Payload: kurzer Audio-Blob (z.B. Elefanten.wav oder Live-Aufnahme)
+- Server führt RMS-Analyse durch (Noise-Floor, Peak, Varianz) und schlägt Empfehlungen vor:
+  - `StartThreshold = noiseFloor * 1.5`
+  - `EndThreshold = noiseFloor * 1.0`
+  - ggf. `RmsSmoothingWindowSec`, `HangoverDurationSec` basierend auf Analyse
+- Response: JSON mit empfohlenen `VadSettings`
+- Frontend: „VAD kalibrieren“-Button im Optimierungs-Panel veranlasst POST, lädt Empfehlungen und zeigt sie in den Slidern an
+  - Änderungen können dann via PUT `/api/settings` übernommen werden
+
+### 6) Automatisierte VAD-Tests mit Elefanten.wav
+- Integrationstest für `/api/settings/vad/calibrate` Endpoint mit Elefanten.wav
+- Verifiziere, dass empfohlene Thresholds innerhalb erwarteter Werte liegen und zu vollständigem Transkript führen
+- Dokumentiere Testroutinen im `VoiceAssistant.Tests` Projekt
 
 ---
 

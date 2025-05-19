@@ -28,6 +28,9 @@ const optimizationManager = {
     this.applyOptimizationSettingsBtn = document.getElementById('applyOptimizationSettings');
     this.resetOptimizationSettingsBtn = document.getElementById('resetOptimizationSettings');
     this.resetLatencyStatsBtn = document.getElementById('resetLatencyStats');
+    // VAD calibration input and button
+    this.vadSampleInput = document.getElementById('vadSampleInput');
+    this.calibrateVadBtn = document.getElementById('calibrateVadBtn');
     
     // Create optimization settings object
     window.optimizationSettings = {
@@ -123,6 +126,38 @@ const optimizationManager = {
   },
   
   setupEventListeners: function() {
+    // VAD calibration button handler
+    this.calibrateVadBtn.addEventListener('click', async () => {
+      if (!this.vadSampleInput.files.length) {
+        alert('Bitte eine Audiodatei zum Kalibrieren auswählen.');
+        return;
+      }
+      const file = this.vadSampleInput.files[0];
+      const form = new FormData();
+      form.append('file', file, file.name);
+      status.textContent = 'VAD kalibrieren...';
+      try {
+        const resp = await fetch('/api/settings/vad/calibrate', { method: 'POST', body: form });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const settings = await resp.json();
+        // Update sliders
+        document.getElementById('thresholdSlider').value = settings.StartThreshold;
+        document.getElementById('startThresholdSlider').value = settings.StartThreshold;
+        document.getElementById('endThresholdSlider').value = settings.EndThreshold;
+        document.getElementById('smoothingWindowSlider').value = settings.RmsSmoothingWindowSec;
+        document.getElementById('hangoverSlider').value = settings.HangoverDurationSec;
+        // Reflect values
+        document.getElementById('thresholdValue').textContent = settings.StartThreshold;
+        document.getElementById('startThresholdValue').textContent = settings.StartThreshold;
+        document.getElementById('endThresholdValue').textContent = settings.EndThreshold;
+        document.getElementById('smoothingWindowValue').textContent = settings.RmsSmoothingWindowSec;
+        document.getElementById('hangoverValue').textContent = settings.HangoverDurationSec;
+        status.textContent = 'VAD-Kalibrierung abgeschlossen';
+      } catch (err) {
+        console.error('VAD calibration error', err);
+        status.textContent = 'Fehler bei VAD-Kalibrierung';
+      }
+    });
     // TTS chunk size slider
     this.ttsDynamicChunkSizeSlider.addEventListener('input', () => {
       this.ttsDynamicChunkSizeValue.textContent = this.ttsDynamicChunkSizeSlider.value;
