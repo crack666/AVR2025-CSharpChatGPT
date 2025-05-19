@@ -84,7 +84,15 @@ function stopAllAudio() {
     currentUtterance = null;
   }
   
-  // Reset all progressive TTS playback
+  // Stop all AudioContext-based buffer sources
+  if (window.allAudioSources) {
+    window.allAudioSources.forEach(src => {
+      try { src.stop(); } catch { }
+    });
+    window.allAudioSources = [];
+  }
+  
+  // Reset all progressive TTS playback (EventSource)
   if (window.eventSource) {
     window.eventSource.close();
   }
@@ -100,6 +108,7 @@ function stopAllAudio() {
     window.allAudioElements = [];
   }
   
+  // Do not close WebSocket - only stop audio playback
   // CRITICAL: Make sure we re-enable audio processing regardless of how audio was stopped
   window.isProcessingOrPlayingAudio = false;
   

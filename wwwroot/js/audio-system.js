@@ -504,6 +504,15 @@ const audioSystem = {
           // record text latency
           const textTime = Date.now();
           const botObj = createBotMessage(data.response);
+          // Show stop button and attach handler for HTTP audio
+          botObj.stopButton.style.display = 'inline-block';
+          botObj._audioStopped = false;
+          botObj.stopButton.onclick = () => {
+            botObj._audioStopped = true;
+            if (botObj.audioElement) botObj.audioElement.pause();
+            botObj.stopButton.style.display = 'none';
+            stopAllAudio();
+          };
           if (botObj.textSpan) {
             const delta = textTime - stopTime;
             botObj.textSpan.textContent = delta + ' ms';
@@ -519,8 +528,16 @@ const audioSystem = {
           optimizationManager.trackLatency('ttsEnd');
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
+          // Track HTMLAudioElement for stops
+          window.allAudioElements = window.allAudioElements || [];
+          window.allAudioElements.push(audio);
+          botObj.audioElement = audio;
           audio.oncanplaythrough = () => audio.play();
-          audio.onended = () => URL.revokeObjectURL(audioUrl);
+          audio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            // Hide stop button when done
+            if (botObj.stopButton) botObj.stopButton.style.display = 'none';
+          };
           status.textContent = 'Bereit (HTTP-Modus)';
           // cleanup
           window.httpMediaStream.getTracks().forEach(t => t.stop());
@@ -623,20 +640,43 @@ const audioSystem = {
         createUserMessage(data.prompt);
         break;
       case 'token':
-        // Record LLM response start and text latency on first token
-        const nowL = Date.now();
-        optimizationManager.trackLatency('llmResponseStart');
+        // On first token of a new response, stop previous audio and create new bot message
         if (!window.currentBot) {
+          stopAllAudio();
           const botObj = createBotMessage('');
+          botObj._audioStopped = false;
           window.currentBot = botObj;
+          // Track LLM response start and text latency
+          const nowL = Date.now();
+          optimizationManager.trackLatency('llmResponseStart');
           if (window.lastTranscriptionTime) {
             const textLat = nowL - window.lastTranscriptionTime;
             botObj.textSpan.textContent = textLat + ' ms';
           }
+          // Show stop button and attach handler
+          botObj.stopButton.style.display = 'inline-block';
+          botObj.stopButton.onclick = () => {
+            // Mark stopped to ignore further chunks
+            botObj._audioStopped = true;
+            // Stop WebSocket AudioContext source if present
+            if (botObj.audioSource) {
+              try { botObj.audioSource.stop(); } catch {};
+            }
+            // Stop HTML AudioElement if present
+            if (botObj.audioElement) {
+              botObj.audioElement.pause();
+            }
+            botObj.stopButton.style.display = 'none';
+            stopAllAudio();
+          };
         }
         window.currentBot.content.textContent += data.token;
         break;
       case 'audio-chunk':
+        // If user stopped this message's audio, skip further chunks
+        if (window.currentBot && window.currentBot._audioStopped) {
+          break;
+        }
         // Record audio latency on first chunk
         const nowA = Date.now();
         optimizationManager.trackLatency('ttsEnd');
@@ -654,6 +694,13 @@ const audioSystem = {
             src.buffer = buffer;
             src.connect(window.audioContext.destination);
             src.start();
+            // Track for stopAllAudio
+            window.allAudioSources = window.allAudioSources || [];
+            window.allAudioSources.push(src);
+            // Attach to current bot for per-message stop
+            if (window.currentBot) {
+              window.currentBot.audioSource = src;
+            }
           });
         }
         break;
