@@ -194,7 +194,13 @@ const audioSystem = {
     
     // Small delay to ensure previous resources are cleaned up
     setTimeout(() => {
-      this.initServerASR();
+      // Re-initialize capture based on current pipeline mode (HTTP or WebSocket)
+      this.initCapture();
+      // If in HTTP legacy mode, auto-start HTTP pipeline
+      if (window.optimizationSettings.useLegacyHttp) {
+        debugLog('Auto-starting HTTP pipeline after restart');
+        this.startHttpPipeline();
+      }
     }, 300);
   },
   
@@ -455,6 +461,76 @@ const audioSystem = {
     };
 
     status.textContent = 'Zuhören...';
+  },
+  // Start the HTTP (legacy) audio processing pipeline
+  startHttpPipeline: function() {
+    if (window.httpRecording) return;
+    debugLog('Starting HTTP pipeline');
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        window.httpMediaStream = stream;
+        window.httpChunks = [];
+        const recorder = new MediaRecorder(stream);
+        window.httpRecorder = recorder;
+        recorder.ondataavailable = e => window.httpChunks.push(e.data);
+        recorder.start();
+        status.textContent = 'Recording (HTTP)...';
+        stopBtn.textContent = 'Stop HTTP Recording';
+        window.httpRecording = true;
+      })
+      .catch(err => console.error('Error acquiring media for HTTP:', err));
+  },
+  // Stop the HTTP pipeline and send audio to server
+  stopHttpPipeline: function() {
+    if (!window.httpRecording) return;
+    debugLog('Stopping HTTP pipeline');
+    window.httpRecording = false;
+    status.textContent = 'Processing (HTTP)...';
+    stopBtn.textContent = 'Aufnahme starten';
+    const recorder = window.httpRecorder;
+    if (recorder && recorder.state === 'recording') {
+      recorder.onstop = async () => {
+        const stopTime = Date.now();
+        window.recordingStopTime = stopTime;
+        try {
+          const blob = new Blob(window.httpChunks, { type: 'audio/webm' });
+          const fd = new FormData();
+          fd.append('file', blob, 'audio.webm');
+          // transcription
+          const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
+          optimizationManager.trackLatency('transcriptionReceived');
+          const data = await resp.json();
+          const userMsg = createUserMessage(data.prompt);
+          // record text latency
+          const textTime = Date.now();
+          const botObj = createBotMessage(data.response);
+          if (botObj.textSpan) {
+            const delta = textTime - stopTime;
+            botObj.textSpan.textContent = delta + ' ms';
+          }
+          optimizationManager.trackLatency('llmResponseStart');
+          // TTS
+          const resp2 = await fetch('/api/speech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Input: data.response, Voice: voiceSel.value })
+          });
+          const audioBlob = await resp2.blob();
+          optimizationManager.trackLatency('ttsEnd');
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          audio.oncanplaythrough = () => audio.play();
+          audio.onended = () => URL.revokeObjectURL(audioUrl);
+          status.textContent = 'Bereit (HTTP-Modus)';
+          // cleanup
+          window.httpMediaStream.getTracks().forEach(t => t.stop());
+        } catch (err) {
+          console.error('HTTP pipeline error:', err);
+          status.textContent = 'Error in HTTP pipeline';
+        }
+      };
+      recorder.stop();
+    }
   },
   
   updateAudioVisualization: function(rms) {
