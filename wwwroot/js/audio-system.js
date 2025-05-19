@@ -287,6 +287,8 @@ const audioSystem = {
   },
   
   initCapture: async function() {
+    // Track the moment the recording/capture starts
+    optimizationManager.trackLatency('recordingStart');
     if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
       this.initBrowserASR();
     } else {
@@ -455,15 +457,21 @@ const audioSystem = {
     }
     switch (event) {
       case 'prompt':
+        // Track transcription received latency
+        optimizationManager.trackLatency('transcriptionReceived');
         createUserMessage(data.prompt);
         break;
       case 'token':
+        // Track LLM response start on first token
+        optimizationManager.trackLatency('llmResponseStart');
         if (!window.currentBot) {
           window.currentBot = createBotMessage('');
         }
         window.currentBot.content.textContent += data.token;
         break;
       case 'audio-chunk':
+        // Track TTS ready to play on first audio chunk
+        optimizationManager.trackLatency('ttsEnd');
         {
           const bytes = Uint8Array.from(atob(data.chunk), c => c.charCodeAt(0));
           window.audioContext.decodeAudioData(bytes.buffer, buffer => {

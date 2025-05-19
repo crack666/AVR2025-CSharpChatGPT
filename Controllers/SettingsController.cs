@@ -6,9 +6,13 @@ using VoiceAssistant.Core.Models;
 public class SettingsController : ControllerBase
 {
     private readonly VadSettings _vadSettings;
+    private readonly PipelineOptions _pipelineOptions;
 
-    public SettingsController(VadSettings vadSettings)
-        => _vadSettings = vadSettings;
+    public SettingsController(VadSettings vadSettings, PipelineOptions pipelineOptions)
+    {
+        _vadSettings = vadSettings;
+        _pipelineOptions = pipelineOptions;
+    }
 
     [HttpGet]
     public ActionResult<VadSettings> Get()
@@ -36,4 +40,24 @@ public class SettingsController : ControllerBase
             _vadSettings.HangoverDurationSec = dto.HangoverDurationSec;
         return NoContent();
     }
-}
+
+    /// <summary>
+    /// Get current pipeline feature flags.
+    /// </summary>
+    [HttpGet("pipeline")]
+    public ActionResult<PipelineOptions> GetPipelineOptions()
+        => Ok(_pipelineOptions);
+
+    /// <summary>
+    /// Update pipeline feature flags.
+    /// </summary>
+    [HttpPut("pipeline")]
+    public IActionResult UpdatePipelineOptions([FromBody] PipelineOptions dto)
+    {
+        _pipelineOptions.UseLegacyHttp = dto.UseLegacyHttp;
+        _pipelineOptions.DisableVad = dto.DisableVad;
+        _pipelineOptions.DisableTokenStreaming = dto.DisableTokenStreaming;
+        _pipelineOptions.DisableProgressiveTts = dto.DisableProgressiveTts;
+        return NoContent();
+    }
+}

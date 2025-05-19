@@ -21,6 +21,8 @@ const optimizationManager = {
     this.useEarlyAudioProcessingCheckbox = document.getElementById('useEarlyAudioProcessing');
     this.useCachedAudioContextCheckbox = document.getElementById('useCachedAudioContext');
     this.useSmartChunkSplittingCheckbox = document.getElementById('useSmartChunkSplitting');
+    this.disableVadCheckbox = document.getElementById('disableVad');
+    this.useLegacyHttpCheckbox = document.getElementById('useLegacyHttp');
     this.ttsDynamicChunkSizeSlider = document.getElementById('ttsDynamicChunkSize');
     this.ttsDynamicChunkSizeValue = document.getElementById('ttsDynamicChunkSizeValue');
     this.applyOptimizationSettingsBtn = document.getElementById('applyOptimizationSettings');
@@ -35,6 +37,9 @@ const optimizationManager = {
       useEarlyAudioProcessing: false,
       useCachedAudioContext: false,
       useSmartChunkSplitting: true,
+      // New pipeline flags
+      disableVad: false,
+      useLegacyHttp: false,
       ttsDynamicChunkSize: 100,
       
       // Latency tracking
@@ -54,12 +59,29 @@ const optimizationManager = {
       }
     };
     
-    // Load optimization settings from localStorage if available
+    // Load optimization settings from server or localStorage
     try {
-      const savedSettings = localStorage.getItem('optimizationSettings');
-      if (savedSettings) {
-        const parsed = JSON.parse(savedSettings);
-        window.optimizationSettings = {...window.optimizationSettings, ...parsed};
+      // Try fetch pipeline options from server
+      fetch('/api/settings/pipeline')
+        .then(res => res.json())
+        .then(dto => {
+          // Map server flags to UI settings
+          window.optimizationSettings.useProgressiveTTS = !dto.DisableProgressiveTts;
+          window.optimizationSettings.useTokenStreaming = !dto.DisableTokenStreaming;
+          window.optimizationSettings.useChunkBasedAudio = !dto.UseLegacyHttp;
+          // Update local storage and UI
+          localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
+          this.updateOptimizationUIFromSettings();
+        })
+        .catch(_ => {
+          // Fallback to localStorage
+          const savedSettings = localStorage.getItem('optimizationSettings');
+          if (savedSettings) {
+            const parsed = JSON.parse(savedSettings);
+            window.optimizationSettings = {...window.optimizationSettings, ...parsed};
+            this.updateOptimizationUIFromSettings();
+          }
+        });
         
         // Ensure new arrays exist (backwards compatibility)
         if (!window.optimizationSettings.latencyStats.textLatency) {
@@ -73,7 +95,6 @@ const optimizationManager = {
         }
         
         this.updateOptimizationUIFromSettings();
-      }
     } catch (e) {
       console.error("Error loading saved optimization settings:", e);
     }
@@ -115,6 +136,8 @@ const optimizationManager = {
       window.optimizationSettings.useProgressiveTTS = this.useProgressiveTTSCheckbox.checked;
       window.optimizationSettings.useTokenStreaming = this.useTokenStreamingCheckbox.checked;
       window.optimizationSettings.useChunkBasedAudio = this.useChunkBasedAudioCheckbox.checked;
+      window.optimizationSettings.disableVad = this.disableVadCheckbox.checked;
+      window.optimizationSettings.useLegacyHttp = this.useLegacyHttpCheckbox.checked;
       window.optimizationSettings.useEarlyAudioProcessing = this.useEarlyAudioProcessingCheckbox.checked;
       window.optimizationSettings.useCachedAudioContext = this.useCachedAudioContextCheckbox.checked;
       window.optimizationSettings.useSmartChunkSplitting = this.useSmartChunkSplittingCheckbox.checked;
@@ -131,6 +154,18 @@ const optimizationManager = {
       
       // Save settings to localStorage for persistence
       localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
+      // Push pipeline options to server SettingsController
+      const pipelineDto = {
+        UseLegacyHttp: window.optimizationSettings.useLegacyHttp,
+        DisableVad: window.optimizationSettings.disableVad,
+        DisableTokenStreaming: !window.optimizationSettings.useTokenStreaming,
+        DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS
+      };
+      fetch('/api/settings/pipeline', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pipelineDto)
+      }).catch(err => console.error('Error updating pipeline settings:', err));
       
       debugLog("Optimierungseinstellungen angewendet");
       status.textContent = 'Optimierungseinstellungen angewendet';
@@ -210,6 +245,8 @@ const optimizationManager = {
     this.useProgressiveTTSCheckbox.checked = window.optimizationSettings.useProgressiveTTS;
     this.useTokenStreamingCheckbox.checked = window.optimizationSettings.useTokenStreaming;
     this.useChunkBasedAudioCheckbox.checked = window.optimizationSettings.useChunkBasedAudio;
+    this.disableVadCheckbox.checked = window.optimizationSettings.disableVad;
+    this.useLegacyHttpCheckbox.checked = window.optimizationSettings.useLegacyHttp;
     this.useEarlyAudioProcessingCheckbox.checked = window.optimizationSettings.useEarlyAudioProcessing;
     this.useCachedAudioContextCheckbox.checked = window.optimizationSettings.useCachedAudioContext;
     this.useSmartChunkSplittingCheckbox.checked = window.optimizationSettings.useSmartChunkSplitting;
@@ -235,6 +272,11 @@ const optimizationManager = {
   
   // Function to track latency at different stages
   trackLatency: function(stage, latencyElement = null) {
+    if (window.optimizationSettings === undefined)
+    {
+      console.log('track latency skipped.')
+      return;
+    }
     const now = Date.now();
     const stats = window.optimizationSettings.latencyStats;
     let totalLatencyValue = 0;

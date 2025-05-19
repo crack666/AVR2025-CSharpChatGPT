@@ -20,6 +20,10 @@ builder.Host.UseSerilog((hostingContext, services, loggerConfiguration) =>
         .Enrich.FromLogContext()
         .WriteTo.Console();
 });
+// Bind pipeline feature flags from configuration
+builder.Services.Configure<PipelineOptions>(builder.Configuration.GetSection("PipelineOptions"));
+// Register PipelineOptions instance for runtime modification
+builder.Services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<PipelineOptions>>().Value);
 
 // Configure shared HTTP/2 HttpClient as singleton with persistent connections
 builder.Services.AddSingleton(sp =>
@@ -57,12 +61,18 @@ var app = builder.Build();
 var logger = app.Logger;
 // Enable detailed exception page for debugging
 app.UseDeveloperExceptionPage();
-
 // Enable WebSocket support for backend VAD and audio streaming
 app.UseWebSockets();
 // Map WebSocket endpoint for real-time audio streaming
 app.Map("/ws/audio", async context =>
 {
+    var pipelineOptions = context.RequestServices.GetRequiredService<PipelineOptions>();
+    // If legacy HTTP mode is enabled, disable WebSocket endpoint
+    if (pipelineOptions.UseLegacyHttp)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
     if (context.WebSockets.IsWebSocketRequest)
     {
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();

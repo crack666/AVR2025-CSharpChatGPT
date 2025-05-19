@@ -12,6 +12,7 @@ using VoiceAssistant.Core.Models;
 using VoiceAssistant.Core.Services;
 using VoiceAssistant.Plugins.OpenAI;
 using WebRtcVadSharp;
+using VoiceAssistant.Core.Models;
 
 namespace VoiceAssistant
 {
@@ -20,6 +21,7 @@ namespace VoiceAssistant
     /// </summary>
     public class WebSocketAudioService
     {
+        private readonly PipelineOptions _pipelineOptions;
         private readonly IRecognizer _recognizer;
         private readonly IChatService _chatService;
         private readonly ChatLogManager _chatLogManager;
@@ -50,7 +52,8 @@ namespace VoiceAssistant
             ChatLogManager chatLogManager,
             ISynthesizer synthesizer,
             ILogger<WebSocketAudioService> logger,
-            VadSettings settings)
+            VadSettings settings,
+            PipelineOptions pipelineOptions)
         {
             _recognizer = recognizer;
             _chatService = chatService;
@@ -58,6 +61,7 @@ namespace VoiceAssistant
             _logger = logger;
             _synthesizer = synthesizer;
             _settings = settings;
+            _pipelineOptions = pipelineOptions;
             // Initialize WebRTC VAD with desired mode, sample rate, and frame length
             _vad = new WebRtcVad
             {
@@ -117,6 +121,9 @@ namespace VoiceAssistant
                 var frame = new byte[_frameBytes];
                 Array.Copy(buffer, frame, _frameBytes);
                 rawAudioBuffer.AddRange(frame);
+                // if VAD disabled, skip VAD-based segmentation
+                if (_pipelineOptions.DisableVad)
+                    continue;
                 // maintain pre-speech ring buffer for including a bit of audio before VAD start
                 if (preSpeechFrames > 0)
                 {
@@ -205,10 +212,12 @@ namespace VoiceAssistant
                 _chatLogManager.AddMessage(ChatRole.User, prompt);
                 await SendEventAsync(webSocket, "prompt", new { prompt });
 
-                // Generate chat response and stream tokens if supported
+                // Generate chat response; optionally stream tokens
                 string reply;
-                if (_chatService is StreamingOpenAIChatService streaming)
+                bool useTokenStreaming = !_pipelineOptions.DisableTokenStreaming && _chatService is StreamingOpenAIChatService;
+                if (useTokenStreaming)
                 {
+                    var streaming = (StreamingOpenAIChatService)_chatService;
                     reply = await streaming.GenerateStreamingResponseAsync(
                         _chatLogManager.GetMessages(),
                         async token =>
@@ -230,14 +239,16 @@ namespace VoiceAssistant
                 {
                     var voice = _ttsVoice;
                     _logger.LogInformation("Using TTS voice: {Voice}", voice);
-                    if (_synthesizer is ProgressiveTTSSynthesizer prog)
+                    // Stream TTS audio chunks or single shot based on feature flag
+                    bool useProgressive = !_pipelineOptions.DisableProgressiveTts && _synthesizer is ProgressiveTTSSynthesizer;
+                    if (useProgressive)
                     {
+                        var prog = (ProgressiveTTSSynthesizer)_synthesizer;
                         await prog.ChunkedSynthesisAsync(
                             reply,
                             voice,
                             chunk =>
                             {
-                                // Synchronously send each audio chunk
                                 SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(chunk) })
                                     .GetAwaiter().GetResult();
                             });
