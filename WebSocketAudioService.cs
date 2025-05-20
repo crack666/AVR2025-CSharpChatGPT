@@ -272,10 +272,12 @@ namespace VoiceAssistant
                     reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
                     await SendEventAsync(webSocket, "token", new { token = reply });
                 }
-                var botMsg = _chatLogManager.AddMessage(ChatRole.Bot, reply);
-                // annotate metadata for UI
-                botMsg.Model = "gpt-3.5-turbo";
-                botMsg.Voice = _ttsVoice;
+                // Annotate chat log entry with current pipeline settings
+                var botMsg = _chatLogManager.AddMessage(
+                    ChatRole.Bot,
+                    reply,
+                    _pipelineOptions.ChatModel,
+                    _pipelineOptions.TtsVoice);
                 _logger.LogInformation("Reply: '{Reply}'", reply);
 
                 // TTS

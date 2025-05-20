@@ -1,8 +1,7 @@
 const FrameDurationMs = 20;
 const TargetSampleRate = 16000;
 const audioQueue = [];
-let isPlaying = false;
-let currentSource = null;
+let isLoopActive = false;
 let nextPlayTime = null;          // AudioContext-Zeit, zu der der nächste Chunk starten soll
 
 // Spielt den nächsten Buffer, sobald keiner läuft
@@ -34,28 +33,36 @@ function playNext() {
 
     src.start();
 }*/
-function playNext() {
-    console.log('[playNext] called, isPlaying=', isPlaying, 'queueLen=', audioQueue.length);
+// Schedule playback loop if not already active
+function scheduleNext() {
     if (audioQueue.length === 0) {
-        console.log('[playNext] queue empty → stopping');
-        isPlaying = false;
+        isLoopActive = false;
+        console.log('[scheduleNext] queue empty → stopping');
         return;
     }
-
     const buffer = audioQueue.shift();
-    console.log('[playNext] playing chunk, remaining queue=', audioQueue.length);
+    console.log('[scheduleNext] playing chunk, remaining queue=', audioQueue.length);
     const src = window.audioContext.createBufferSource();
     src.buffer = buffer;
     src.connect(window.audioContext.destination);
-
-    isPlaying = true;
+    // Track for stopAllAudio
+    window.allAudioSources = window.allAudioSources || [];
+    window.allAudioSources.push(src);
+    // Per-message tracking
+    if (window.currentBot) window.currentBot.audioSource = src;
     src.onended = () => {
         console.log('[onended] chunk finished');
-        isPlaying = false;            // mark as stopped *vor* nächstem playNext-Aufruf
-        playNext();                   // next chunk
+        scheduleNext();
     };
-
     src.start();
+    isLoopActive = true;
+}
+// Entry to start playback loop
+function playLoop() {
+    if (!isLoopActive) {
+        console.log('[playLoop] starting loop, queueLen=', audioQueue.length);
+        scheduleNext();
+    }
 }
 
 // Audio system management
@@ -485,13 +492,8 @@ const audioSystem = {
     let sampleBuffer = [];
 
     const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    // Build WebSocket URL with model and voice query parameters
-    const params = new URLSearchParams({
-      model: modelSel.value,
-      voice: voiceSel.value
-    });
-    const wsUrl = `${wsProtocol}://${location.host}/ws/audio?${params.toString()}`;
-    const socket = new WebSocket(wsUrl);
+    // Connect to WebSocket endpoint (server will use settings from SettingsController)
+    const socket = new WebSocket(`${wsProtocol}://${location.host}/ws/audio`);
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => debugLog('WebSocketAudioService connected');
     socket.onerror = err => console.error('WebSocket error', err);
@@ -764,13 +766,9 @@ const audioSystem = {
 
             // 3. In die Queue schieben
             audioQueue.push(audioBuffer);
-
-            // 4. Falls gerade nichts spielt, sofort loslegen
             console.log('[chunk] enqueued, queueLen=', audioQueue.length);
-            if (!isPlaying) {
-                console.log('[chunk] not playing → start playNext');
-                playNext();
-            }
+            // Start playback loop if not already active
+            playLoop();
         } catch (err) {
             console.error('Fehler beim Dekodieren des Audio-Chunks', err);
         }

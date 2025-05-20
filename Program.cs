@@ -21,10 +21,10 @@ builder.Host.UseSerilog((hostingContext, services, loggerConfiguration) =>
         .Enrich.FromLogContext()
         .WriteTo.Console();
 });
-// Bind pipeline feature flags from configuration
-builder.Services.Configure<PipelineOptions>(builder.Configuration.GetSection("PipelineOptions"));
-// Register PipelineOptions instance for runtime modification
-builder.Services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<PipelineOptions>>().Value);
+// Bind and register pipeline feature flags as mutable singleton
+var pipelineOptions = new PipelineOptions();
+builder.Configuration.GetSection("PipelineOptions").Bind(pipelineOptions);
+builder.Services.AddSingleton(pipelineOptions);
 
 // Configure shared HTTP/2 HttpClient as singleton with persistent connections
 builder.Services.AddSingleton(sp =>

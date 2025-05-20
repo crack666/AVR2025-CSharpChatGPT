@@ -17,14 +17,14 @@ public class SettingsController : ControllerBase
     [HttpPut]
     public IActionResult Update([FromBody] VadSettings dto)
     {
-        // WebRTC-VAD Mode immer übernehmen
+        // WebRTC-VAD Mode immer ï¿½bernehmen
         _vadSettings.OperatingMode = dto.OperatingMode;
 
         // Statische VorverstÃ¤rkung (Pre-Amplification)
         if (dto.PreAmplification > 0f)
             _vadSettings.PreAmplification = dto.PreAmplification;
 
-        // Mindest-Sprechdauer für Start
+        // Mindest-Sprechdauer fï¿½r Start
         if (dto.MinSpeechDurationSec > 0)
             _vadSettings.MinSpeechDurationSec = dto.MinSpeechDurationSec;
 
@@ -32,7 +32,7 @@ public class SettingsController : ControllerBase
         if (dto.PreSpeechDurationSec > 0)
             _vadSettings.PreSpeechDurationSec = dto.PreSpeechDurationSec;
 
-        // Hangover-Dauer für Ende
+        // Hangover-Dauer fï¿½r Ende
         if (dto.HangoverDurationSec > 0)
             _vadSettings.HangoverDurationSec = dto.HangoverDurationSec;
 
@@ -44,11 +44,11 @@ public class SettingsController : ControllerBase
         if (dto.NoiseThresholdFactor > 0)
             _vadSettings.NoiseThresholdFactor = dto.NoiseThresholdFactor;
 
-        // EMA-Alpha für Noise-Floor-SchÃ¤tzung (0 < Î± < 1)
+        // EMA-Alpha fï¿½r Noise-Floor-SchÃ¤tzung (0 < Î± < 1)
         if (dto.NoiseFloorAlpha > 0 && dto.NoiseFloorAlpha < 1)
             _vadSettings.NoiseFloorAlpha = dto.NoiseFloorAlpha;
 
-        // Untergrenze für Noise-Floor
+        // Untergrenze fï¿½r Noise-Floor
         if (dto.MinNoiseFloor > 0)
             _vadSettings.MinNoiseFloor = dto.MinNoiseFloor;
 
@@ -76,6 +76,8 @@ public class SettingsController : ControllerBase
         _pipelineOptions.DisableVad = dto.DisableVad;
         _pipelineOptions.DisableTokenStreaming = dto.DisableTokenStreaming;
         _pipelineOptions.DisableProgressiveTts = dto.DisableProgressiveTts;
+        _pipelineOptions.ChatModel = dto.ChatModel;
+        _pipelineOptions.TtsVoice = dto.TtsVoice;
         return NoContent();
     }
     /// <summary>
