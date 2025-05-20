@@ -79,11 +79,13 @@ app.Map("/ws/audio", async context =>
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
         var service = context.RequestServices.GetRequiredService<WebSocketAudioService>();
         // Read desired chat model from query, default gpt-3.5-turbo
+        /*
         var model = context.Request.Query["model"].ToString();
         service.ChatModel = string.IsNullOrEmpty(model) ? "gpt-3.5-turbo" : model;
         // Read desired TTS voice from query, default nova
         var voice = context.Request.Query["voice"].ToString();
         service.TtsVoice = string.IsNullOrEmpty(voice) ? "nova" : voice;
+        */
         await service.HandleAsync(webSocket);
     }
     else

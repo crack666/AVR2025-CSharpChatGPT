@@ -3,12 +3,10 @@ const optimizationManager = {
   // Optimization settings references
   useProgressiveTTSCheckbox: null,
   useTokenStreamingCheckbox: null,
-  useChunkBasedAudioCheckbox: null,
-  useEarlyAudioProcessingCheckbox: null,
-  useCachedAudioContextCheckbox: null,
-  useSmartChunkSplittingCheckbox: null,
-  ttsDynamicChunkSizeSlider: null,
-  ttsDynamicChunkSizeValue: null,
+  disableVadCheckbox: null,
+  useLegacyHttpCheckbox: null,
+  vadSampleInput: null,
+  calibrateVadBtn: null,
   applyOptimizationSettingsBtn: null,
   resetOptimizationSettingsBtn: null,
   resetLatencyStatsBtn: null,
@@ -17,14 +15,14 @@ const optimizationManager = {
     // Initialize UI references
     this.useProgressiveTTSCheckbox = document.getElementById('useProgressiveTTS');
     this.useTokenStreamingCheckbox = document.getElementById('useTokenStreaming');
-    this.useChunkBasedAudioCheckbox = document.getElementById('useChunkBasedAudio');
-    this.useEarlyAudioProcessingCheckbox = document.getElementById('useEarlyAudioProcessing');
-    this.useCachedAudioContextCheckbox = document.getElementById('useCachedAudioContext');
-    this.useSmartChunkSplittingCheckbox = document.getElementById('useSmartChunkSplitting');
+    // Removed: useChunkBasedAudioCheckbox not used
+    // Removed: useEarlyAudioProcessingCheckbox not used
+    // Removed: useCachedAudioContextCheckbox not used
+    // Removed: useSmartChunkSplittingCheckbox not used
     this.disableVadCheckbox = document.getElementById('disableVad');
     this.useLegacyHttpCheckbox = document.getElementById('useLegacyHttp');
-    this.ttsDynamicChunkSizeSlider = document.getElementById('ttsDynamicChunkSize');
-    this.ttsDynamicChunkSizeValue = document.getElementById('ttsDynamicChunkSizeValue');
+    // Removed: ttsDynamicChunkSizeSlider not used
+    // Removed: ttsDynamicChunkSizeValue not used
     this.applyOptimizationSettingsBtn = document.getElementById('applyOptimizationSettings');
     this.resetOptimizationSettingsBtn = document.getElementById('resetOptimizationSettings');
     this.resetLatencyStatsBtn = document.getElementById('resetLatencyStats');
@@ -36,14 +34,9 @@ const optimizationManager = {
     window.optimizationSettings = {
       useProgressiveTTS: true,
       useTokenStreaming: true,
-      useChunkBasedAudio: true,
-      useEarlyAudioProcessing: false,
-      useCachedAudioContext: false,
-      useSmartChunkSplitting: true,
-      // New pipeline flags
+      // Core pipeline flags
       disableVad: false,
       useLegacyHttp: false,
-      ttsDynamicChunkSize: 100,
       
       // Latency tracking
       latencyStats: {
@@ -71,7 +64,11 @@ const optimizationManager = {
           // Map server flags to UI settings
           window.optimizationSettings.useProgressiveTTS = !dto.DisableProgressiveTts;
           window.optimizationSettings.useTokenStreaming = !dto.DisableTokenStreaming;
-          window.optimizationSettings.useChunkBasedAudio = !dto.UseLegacyHttp;
+          window.optimizationSettings.disableVad = dto.DisableVad;
+          window.optimizationSettings.useLegacyHttp = dto.UseLegacyHttp;
+          // Model and voice
+          modelSel.value = dto.ChatModel;
+          voiceSel.value = dto.TtsVoice;
           // Update local storage and UI
           localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
           this.updateOptimizationUIFromSettings();
@@ -158,10 +155,6 @@ const optimizationManager = {
         status.textContent = 'Fehler bei VAD-Kalibrierung';
       }
     });
-    // TTS chunk size slider
-    this.ttsDynamicChunkSizeSlider.addEventListener('input', () => {
-      this.ttsDynamicChunkSizeValue.textContent = this.ttsDynamicChunkSizeSlider.value;
-    });
     
     // Apply optimization settings button
     this.applyOptimizationSettingsBtn.addEventListener('click', () => {
@@ -176,7 +169,6 @@ const optimizationManager = {
       window.optimizationSettings.useEarlyAudioProcessing = this.useEarlyAudioProcessingCheckbox.checked;
       window.optimizationSettings.useCachedAudioContext = this.useCachedAudioContextCheckbox.checked;
       window.optimizationSettings.useSmartChunkSplitting = this.useSmartChunkSplittingCheckbox.checked;
-      window.optimizationSettings.ttsDynamicChunkSize = parseInt(this.ttsDynamicChunkSizeSlider.value);
       
       // Apply settings to dropdown
       if (!window.optimizationSettings.useProgressiveTTS && !window.optimizationSettings.useTokenStreaming) {
@@ -194,7 +186,9 @@ const optimizationManager = {
         UseLegacyHttp: window.optimizationSettings.useLegacyHttp,
         DisableVad: window.optimizationSettings.disableVad,
         DisableTokenStreaming: !window.optimizationSettings.useTokenStreaming,
-        DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS
+        DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS,
+        ChatModel: modelSel.value,
+        TtsVoice: voiceSel.value
       };
       fetch('/api/settings/pipeline', {
         method: 'PUT',
@@ -285,8 +279,6 @@ const optimizationManager = {
     this.useEarlyAudioProcessingCheckbox.checked = window.optimizationSettings.useEarlyAudioProcessing;
     this.useCachedAudioContextCheckbox.checked = window.optimizationSettings.useCachedAudioContext;
     this.useSmartChunkSplittingCheckbox.checked = window.optimizationSettings.useSmartChunkSplitting;
-    this.ttsDynamicChunkSizeSlider.value = window.optimizationSettings.ttsDynamicChunkSize;
-    this.ttsDynamicChunkSizeValue.textContent = window.optimizationSettings.ttsDynamicChunkSize;
     
     // Update latency stats
     this.updateLatencyStatsUI();

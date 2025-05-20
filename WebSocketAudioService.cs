@@ -14,9 +14,6 @@ namespace VoiceAssistant
     /// </summary>
     public class WebSocketAudioService
     {
-        // Chat model identifier provided by client (default: gpt-3.5-turbo)
-        private string _chatModel = "gpt-3.5-turbo";
-        public string ChatModel { get => _chatModel; set => _chatModel = value; }
         private readonly PipelineOptions _pipelineOptions;
         private readonly IRecognizer _recognizer;
         private readonly IChatService _chatService;
@@ -36,8 +33,7 @@ namespace VoiceAssistant
         private double _noiseFloor;
         private double _silenceDurationSec = 0;
 
-        private string _ttsVoice = "nova";
-        public string TtsVoice { get => _ttsVoice; set => _ttsVoice = value; }
+        // TTS voice identifier from pipeline options; no internal storage
 
         public WebSocketAudioService(
             IRecognizer recognizer,
@@ -281,7 +277,7 @@ namespace VoiceAssistant
                 _logger.LogInformation("Reply: '{Reply}'", reply);
 
                 // TTS
-                var voice = _ttsVoice;
+                var voice = _pipelineOptions.TtsVoice;
                 _logger.LogInformation("Using TTS voice: {Voice}", voice);
                 bool prog = !_pipelineOptions.DisableProgressiveTts && _synthesizer is ProgressiveTTSSynthesizer;
                 if (prog)

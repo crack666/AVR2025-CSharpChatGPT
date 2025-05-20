@@ -7,14 +7,18 @@ Dieser Plan stellt sicher, dass jede im Frontend angebotene Optimierungsoption:
 3. Nicht deaktivierbare Optionen entweder zusammengeführt oder ausgegraut werden.
 
 ## 1. Audit aller UI-Toggles
-- [ ] Liste aller Checkboxen/Optionen im Optimierungs-Panel erfassen:
-  * Progressive TTS
-  * Token-Streaming
-  * Chunk-basierte Audioverarbeitung
-  * VAD deaktivieren
-  * Legacy HTTP-Modus
-  * (ggf. weitere Optionen: Smart Chunk Splitting, Early Audio Processing, Cached AudioContext)
-  * TTS Chunk-Größe Slider
+- [x] Liste aller Checkboxen/Optionen im Optimierungs-Panel erfasst und bewertet:
+  * Progressive TTS (DisableProgressiveTts) – Backend-Flag vorhanden, wirksam in WS & HTTP.
+  * Token-Streaming (DisableTokenStreaming) – Backend-Flag vorhanden, wirksam in WS; HTTP immer non-streaming.
+  * Chunk-basierte Audioverarbeitung – *nicht konfigurierbar* (immer chunk16k), UI-Option entfernt/deaktiviert.
+  * VAD deaktivieren (DisableVad) – Backend-Flag vorhanden, wirksam in WS (HTTP irrelevant).
+  * Legacy HTTP-Modus (UseLegacyHttp) – Backend-Flag vorhanden, schaltet zwischen WS- und HTTP-Pfad um.
+  * Smart Chunk Splitting – *nicht implementiert*, UI-Option entfernen oder ausgrauen.
+  * Early Audio Processing – *nicht implementiert*, UI-Option entfernen oder ausgrauen.
+  * AudioContext Cache – *nicht implementiert*, UI-Option entfernen oder ausgrauen.
+  * TTS Chunk-Größe Slider – *UI only*, noch nicht in ProgressiveTTSSynthesizer verwendet.
+  * ChatModel Dropdown – mappt zu `PipelineOptions.ChatModel`, wirksam in WS & HTTP.
+  * Voice Dropdown – mappt zu `PipelineOptions.TtsVoice`, wirksam in WS & HTTP.
 
 ## 2. Mapping zu Backend-Flags
 - [ ] Für jede UI-Option prüfen:
@@ -43,7 +47,16 @@ Dieser Plan stellt sicher, dass jede im Frontend angebotene Optimierungsoption:
   * DisableTokenStreaming (HTTP ist non-streaming by design).
   * DisableProgressiveTts → fw. zu HTTP-Synthesizer (ggf. implementieren).
 
-## 7. UI-Update
+## 7. True Streaming Pipeline (Chat + TTS)
+- [ ] In `WebSocketAudioService.ProcessSegmentAsync`, statt separat auf das vollständige Chat-Reply zu warten,
+      nutzen wir `StreamingOpenAIChatService.GenerateStreamingResponseAsync` mit Token-Callback:
+  * Im Token-Callback sofort Teil-Audio per `ProgressiveTTSSynthesizer` anfordern.
+  * So laufen Text- und Audio-Streaming in einer Pipeline.
+  * Abschließend evtl. letzte Tokens-Audio synchronisieren.
+  * Ziel: Minimale End-to-End-Latenz durch Parallelisierung.
+  * Schritt 7 wird komplett als Experiment implementiert und evaluiert, nicht zwingend für GA.
+
+## 8. UI-Update
 - [ ] Halte `optimization-manager.js` so minimal wie möglich:
   * Nur Checkboxen für Flags, die tatsächlich existieren.
   * Kein `useEarlyAudioProcessing`, `useCachedAudioContext` oder `useSmartChunkSplitting`, wenn nicht wirksam abschaltbar.

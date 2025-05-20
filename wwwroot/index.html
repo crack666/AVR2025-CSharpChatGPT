@@ -69,13 +69,6 @@
             </div>
 
             <div>
-                <label><input type="checkbox" id="useChunkBasedAudio" checked> Chunk-basierte Audioverarbeitung</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    Audio wird in Chunks verarbeitet statt als Ganzes.
-                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-                </div>
-            </div>
-            <div>
                 <label><input type="checkbox" id="disableVad"> VAD deaktivieren</label>
                 <div class="setting-description" style="font-size: 0.9em; color: #666;">
                     Spracherkennung verwendet keine Sprachaktivitäts-detektion (gesamte Aufnahme wird verarbeitet).
@@ -90,36 +83,11 @@
                 </div>
             </div>
 
-            <div>
-                <label><input type="checkbox" id="useEarlyAudioProcessing"> Frühe Audio-Verarbeitung</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    Audio wird verarbeitet, bevor die Stille erkannt wird.
-                    <br><span style="font-style: italic; color: #dc3545;">✗ Nur im Browser</span>
-                </div>
-            </div>
 
-            <div>
-                <label><input type="checkbox" id="useCachedAudioContext"> Audio-Context Cache</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    AudioContext wird wiederverwendet statt neu erstellt.
-                    <br><span style="font-style: italic; color: #dc3545;">✗ Nur im Browser</span>
-                </div>
-            </div>
 
-            <div>
-                <label><input type="checkbox" id="useSmartChunkSplitting" checked> Intelligente Chunk-Aufteilung</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    Chunks werden an sinnvollen Stellen (Satzenden) getrennt.
-                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-                </div>
-            </div>
         </div>
 
-        <div style="margin-bottom: 15px;">
-            <label for="ttsDynamicChunkSize">TTS Chunk-Größe:</label>
-            <input type="range" id="ttsDynamicChunkSize" min="10" max="500" step="10" value="100">
-            <span id="ttsDynamicChunkSizeValue">100</span> Zeichen
-        </div>
+        <!-- Removed TTS Chunk-Größe Slider (not implemented) -->
 
         <div>
             <button id="applyOptimizationSettings" class="secondary">Einstellungen anwenden</button>
