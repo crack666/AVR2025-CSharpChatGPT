@@ -14,6 +14,9 @@ namespace VoiceAssistant
     /// </summary>
     public class WebSocketAudioService
     {
+        // Chat model identifier provided by client (default: gpt-3.5-turbo)
+        private string _chatModel = "gpt-3.5-turbo";
+        public string ChatModel { get => _chatModel; set => _chatModel = value; }
         private readonly PipelineOptions _pipelineOptions;
         private readonly IRecognizer _recognizer;
         private readonly IChatService _chatService;

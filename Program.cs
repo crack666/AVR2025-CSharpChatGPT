@@ -68,9 +68,9 @@ app.UseWebSockets();
 app.Map("/ws/audio", async context =>
 {
     var pipelineOptions = context.RequestServices.GetRequiredService<PipelineOptions>();
-    // If legacy HTTP mode is enabled, disable WebSocket endpoint
     if (pipelineOptions.UseLegacyHttp)
     {
+        // Legacy HTTP mode: do not accept WebSocket
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         return;
     }
@@ -78,7 +78,10 @@ app.Map("/ws/audio", async context =>
     {
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
         var service = context.RequestServices.GetRequiredService<WebSocketAudioService>();
-        // Read desired TTS voice from query string (default to nova)
+        // Read desired chat model from query, default gpt-3.5-turbo
+        var model = context.Request.Query["model"].ToString();
+        service.ChatModel = string.IsNullOrEmpty(model) ? "gpt-3.5-turbo" : model;
+        // Read desired TTS voice from query, default nova
         var voice = context.Request.Query["voice"].ToString();
         service.TtsVoice = string.IsNullOrEmpty(voice) ? "nova" : voice;
         await service.HandleAsync(webSocket);

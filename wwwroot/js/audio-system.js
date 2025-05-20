@@ -485,7 +485,13 @@ const audioSystem = {
     let sampleBuffer = [];
 
     const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${wsProtocol}://${location.host}/ws/audio`);
+    // Build WebSocket URL with model and voice query parameters
+    const params = new URLSearchParams({
+      model: modelSel.value,
+      voice: voiceSel.value
+    });
+    const wsUrl = `${wsProtocol}://${location.host}/ws/audio?${params.toString()}`;
+    const socket = new WebSocket(wsUrl);
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => debugLog('WebSocketAudioService connected');
     socket.onerror = err => console.error('WebSocket error', err);

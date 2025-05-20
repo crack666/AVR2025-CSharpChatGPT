@@ -28,11 +28,17 @@ namespace VoiceAssistant.Core.Services
         /// <param name="role">Role of the message sender.</param>
         /// <param name="content">Text content of the message.</param>
         /// <returns>The created ChatMessage object.</returns>
+        /// <summary>
+        /// Adds a new message without model/voice metadata.
+        /// </summary>
         public ChatMessage AddMessage(ChatRole role, string content)
+            => AddMessage(role, content, model: null, voice: null);
+
+        /// <summary>
+        /// Adds a new message with optional model/voice metadata.
+        /// </summary>
+        public ChatMessage AddMessage(ChatRole role, string content, string? model, string? voice)
         {
-            // Use optional model/voice only for Bot messages; retrieve from DI context if needed
-            var model = role == ChatRole.Bot ? null : null;  // to be updated by caller via overload
-            var voice = role == ChatRole.Bot ? null : null;
             var message = new ChatMessage(Guid.NewGuid(), role, content, DateTime.UtcNow, model, voice);
             lock (_lock)
             {
