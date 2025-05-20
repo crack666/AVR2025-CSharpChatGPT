@@ -12,12 +12,16 @@ namespace VoiceAssistant.Core.Models
         public string Content { get; }
         public DateTime Timestamp { get; }
 
-        public ChatMessage(Guid id, ChatRole role, string content, DateTime timestamp)
+        public string? Model { get; set; }
+        public string? Voice { get; set; }
+        public ChatMessage(Guid id, ChatRole role, string content, DateTime timestamp, string? model = null, string? voice = null)
         {
             Id = id;
             Role = role;
             Content = content;
             Timestamp = timestamp;
+            Model = model;
+            Voice = voice;
         }
     }
 }

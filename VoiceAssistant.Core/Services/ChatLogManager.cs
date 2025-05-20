@@ -30,7 +30,10 @@ namespace VoiceAssistant.Core.Services
         /// <returns>The created ChatMessage object.</returns>
         public ChatMessage AddMessage(ChatRole role, string content)
         {
-            var message = new ChatMessage(Guid.NewGuid(), role, content, DateTime.UtcNow);
+            // Use optional model/voice only for Bot messages; retrieve from DI context if needed
+            var model = role == ChatRole.Bot ? null : null;  // to be updated by caller via overload
+            var voice = role == ChatRole.Bot ? null : null;
+            var message = new ChatMessage(Guid.NewGuid(), role, content, DateTime.UtcNow, model, voice);
             lock (_lock)
             {
                 _messages.Add(message);

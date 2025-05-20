@@ -40,7 +40,10 @@ public class AudioController : ControllerBase
 
         _chatLogManager.AddMessage(ChatRole.User, prompt);
         var reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
-        _chatLogManager.AddMessage(ChatRole.Bot, reply);
+        var botMsg = _chatLogManager.AddMessage(ChatRole.Bot, reply);
+        // annotate metadata for UI
+        botMsg.Model = Request.Form["model"].ToString();
+        botMsg.Voice = null;
 
         return new JsonResult(new { prompt, response = reply });
     }

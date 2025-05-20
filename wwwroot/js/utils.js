@@ -206,7 +206,7 @@ function createUserMessage(text) {
 }
 
 // Create a bot message bubble with optional audio
-function createBotMessage(text, model = window.modelSel ? window.modelSel.value : 'default') {
+function createBotMessage(text, model = (window.modelSel ? window.modelSel.value : 'default'), voice) {
   // Make sure we have the latest reference to chatLog
   const chatLogElement = window.chatLog || document.getElementById('chatLog');
   if (!chatLogElement) {
@@ -219,7 +219,10 @@ function createBotMessage(text, model = window.modelSel ? window.modelSel.value 
   
   const header = document.createElement('div');
   header.className = 'message-header';
-  header.textContent = `Assistant (${model})`;
+  let title = `Assistant (${model}`;
+  if (voice) title += `, ${voice}`;
+  title += ')';
+  header.textContent = title;
   
   const content = document.createElement('div');
   content.className = 'message-content';

@@ -1,23 +1,16 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using VoiceAssistant.Core.Interfaces;
 using VoiceAssistant.Core.Models;
 using VoiceAssistant.Core.Services;
 using VoiceAssistant.Plugins.OpenAI;
 using WebRtcVadSharp;
-using VoiceAssistant.Core.Models;
 
 namespace VoiceAssistant
 {
     /// <summary>
-    /// Service for handling WebSocket-based audio streaming with VAD and chat integration.
+    /// Service for handling WebSocket-based audio streaming with robust VAD segmentation.
     /// </summary>
     public class WebSocketAudioService
     {
@@ -28,23 +21,20 @@ namespace VoiceAssistant
         private readonly ILogger<WebSocketAudioService> _logger;
         private readonly ISynthesizer _synthesizer;
         private readonly WebRtcVad _vad;
-
-        private const int SampleRate = 16000;
-        private const int FrameDurationMs = 20;
-        private readonly int _frameBytes;
         private readonly VadSettings _settings;
 
-        // EMA smoothing for RMS
-        private readonly double _emaAlpha;
-        private float _emaRms;
+        private const int SampleRate = 16000;
+        private const int Channels = 1;
+        private const int BitsPerSample = 16;
+        private const int FrameDurationMs = 20;
+        private readonly int _frameBytes;
 
-        // TTS voice identifier provided by client (default: nova)
+        // Noise floor estimation
+        private double _noiseFloor;
+        private double _silenceDurationSec = 0;
+
         private string _ttsVoice = "nova";
-        public string TtsVoice
-        {
-            get => _ttsVoice;
-            set => _ttsVoice = value;
-        }
+        public string TtsVoice { get => _ttsVoice; set => _ttsVoice = value; }
 
         public WebSocketAudioService(
             IRecognizer recognizer,
@@ -58,271 +48,263 @@ namespace VoiceAssistant
             _recognizer = recognizer;
             _chatService = chatService;
             _chatLogManager = chatLogManager;
-            _logger = logger;
             _synthesizer = synthesizer;
+            _logger = logger;
             _settings = settings;
             _pipelineOptions = pipelineOptions;
-            // Initialize WebRTC VAD with desired mode, sample rate, and frame length
+
             _vad = new WebRtcVad
             {
-                OperatingMode = WebRtcVadSharp.OperatingMode.Aggressive,
-                SampleRate     = WebRtcVadSharp.SampleRate.Is16kHz,
-                FrameLength    = WebRtcVadSharp.FrameLength.Is20ms
+                OperatingMode = _settings.OperatingMode,
+                SampleRate = WebRtcVadSharp.SampleRate.Is16kHz,
+                FrameLength = FrameLength.Is20ms
             };
-            _frameBytes = SampleRate * 2 * FrameDurationMs / 1000;
-            _emaAlpha = FrameDurationMs / (_settings.RmsSmoothingWindowSec * 1000.0);
-            _emaRms = 0;
+
+            _frameBytes = SampleRate * Channels * BitsPerSample / 8 * FrameDurationMs / 1000;
+
+            // Initialize noise floor via short calibration window
+            _noiseFloor = MeasureInitialNoiseFloor();
+        }
+
+        private double MeasureInitialNoiseFloor()
+        {
+            // Implement a short capture of ambient noise (e.g., 1 second) to set MinNoiseFloor
+            // For simplicity, use MinNoiseFloor as initial value
+            return _settings.MinNoiseFloor;
         }
 
         public async Task HandleAsync(WebSocket webSocket)
         {
             _logger.LogInformation("WebSocket /ws/audio connected");
             _logger.LogInformation(
-                "VAD Settings: StartThreshold={StartThreshold:F4}, EndThreshold={EndThreshold:F4}, RmsSmoothingWindowSec={RmsSmoothingWindowSec:F2}, HangoverDurationSec={HangoverDurationSec:F2}, MinSpeechDurationSec={MinSpeechDurationSec:F2}, PreSpeechDurationSec={PreSpeechDurationSec:F2}",
-                _settings.StartThreshold,
-                _settings.EndThreshold,
-                _settings.RmsSmoothingWindowSec,
-                _settings.HangoverDurationSec,
+                "VAD Settings: Mode={Mode}, PreAmp={PreAmp:F1}, MinSpeech={MinSpeech:F2}s, PreSpeech={PreSpeech:F2}s, Hangover={Hangover:F2}s",
+                _settings.OperatingMode,
+                _settings.PreAmplification,
                 _settings.MinSpeechDurationSec,
-                _settings.PreSpeechDurationSec);
-            var segmentBuffer = new List<byte>();
+                _settings.PreSpeechDurationSec,
+                _settings.HangoverDurationSec);
+
+            var rawAudio = new List<byte>();
             var buffer = new byte[_frameBytes];
-            // Ring buffer to pre-store frames before speech start
-            var preSpeechFrames = (int)(_settings.PreSpeechDurationSec * 1000 / FrameDurationMs);
+            int preFrames = (int)(_settings.PreSpeechDurationSec * 1000 / FrameDurationMs);
+            int startFrames = (int)(_settings.MinSpeechDurationSec * 1000 / FrameDurationMs);
+            int endFrames = (int)(_settings.HangoverDurationSec * 1000 / FrameDurationMs);
+
             var preBuffer = new Queue<byte[]>();
-            // VAD state counters
-            var inSpeech = false;
-            var speechFrameCount = 0;
-            var noSpeechFrames = 0;
-            // Minimum frames before starting speech segment
-            var minSpeechFrames = (int)(_settings.MinSpeechDurationSec * 1000 / FrameDurationMs);
-            var rawAudioBuffer = new List<byte>();
-            var segmentProcessed = false;
+            var segmentBuffer = new List<byte>();
+            bool inSpeech = false;
+            int consecSpeech = 0;
+            int consecSilence = 0;
 
             while (webSocket.State == WebSocketState.Open)
             {
                 var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    if (!segmentProcessed)
-                    {
-                        var allBytes = rawAudioBuffer.ToArray();
-                        await ProcessSegmentAsync(allBytes, webSocket);
-                    }
+                    if (segmentBuffer.Count > 0)
+                        await ProcessSegmentAsync(segmentBuffer.ToArray(), webSocket);
                     await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
                     break;
                 }
                 if (result.MessageType != WebSocketMessageType.Binary || result.Count != _frameBytes)
-                {
-                    _logger.LogInformation("Ignored frame of length {Length} and type {Type}", result.Count, result.MessageType);
                     continue;
-                }
 
+                // Copy frame
                 var frame = new byte[_frameBytes];
                 Array.Copy(buffer, frame, _frameBytes);
-                rawAudioBuffer.AddRange(frame);
-                // if VAD disabled, skip VAD-based segmentation
-                if (_pipelineOptions.DisableVad)
-                    continue;
-                // maintain pre-speech ring buffer for including a bit of audio before VAD start
-                if (preSpeechFrames > 0)
+                rawAudio.AddRange(frame);
+
+                if (_pipelineOptions.DisableVad) continue;
+
+                // Pre-amplify
+                ApplyPreAmplification(frame);
+
+                // Calculate per-frame RMS
+                double frameRms = CalculateRms(frame);
+
+                // Run VAD
+                bool hasSpeech = _vad.HasSpeech(frame);
+
+                // Track silence duration
+                if (!hasSpeech)
+                    _silenceDurationSec += FrameDurationMs / 1000.0;
+                else
+                    _silenceDurationSec = 0;
+
+                // Update noise floor only after sustained silence
+                if (!hasSpeech && _silenceDurationSec >= _settings.SilenceAdaptationTimeSec)
                 {
-                    preBuffer.Enqueue(frame);
-                    if (preBuffer.Count > preSpeechFrames)
-                        preBuffer.Dequeue();
+                    _noiseFloor = Math.Max(_settings.MinNoiseFloor,
+                        _settings.NoiseFloorAlpha * _noiseFloor + (1 - _settings.NoiseFloorAlpha) * frameRms);
                 }
 
-                // Compute RMS amplitude and apply amplitude threshold
-                var rms = ComputeRms(frame);
-                _emaRms = (float)(_emaAlpha * rms + (1 - _emaAlpha) * _emaRms);
-                var smoothRms = _emaRms;
-                _logger.LogTrace("Smoothed RMS: {SmoothRms:F4}", smoothRms);
-                // VAD decision: hysteresis thresholds for start vs. end
-                var rmsThreshold = inSpeech ? _settings.EndThreshold : _settings.StartThreshold;
-                var passesThreshold = smoothRms >= rmsThreshold;
-                var vadSpeech = _vad.HasSpeech(frame);
-                var isSpeech = vadSpeech || passesThreshold;
+                // Compute dynamic threshold
+                double dynamicThreshold = Math.Max(_settings.MinNoiseFloor,
+                    _noiseFloor * _settings.NoiseThresholdFactor);
+
+                // Combined decision
+                bool isSpeech = hasSpeech && frameRms >= dynamicThreshold;
+
+                // Pre-roll
+                preBuffer.Enqueue(frame);
+                if (preBuffer.Count > preFrames)
+                    preBuffer.Dequeue();
 
                 if (!inSpeech)
                 {
-                    // Count frames until minimum speech duration is reached
-                    if (isSpeech)
+                    if (isSpeech && ++consecSpeech >= startFrames)
                     {
-                        speechFrameCount++;
-                        if (speechFrameCount >= minSpeechFrames)
-                        {
-                            inSpeech = true;
-                            _logger.LogInformation("VAD: speech start detected");
-                            segmentBuffer.Clear();
-                            // prepend buffered frames collected before detection
-                            if (preSpeechFrames > 0)
-                                foreach (var buf in preBuffer)
-                                    segmentBuffer.AddRange(buf);
-                            noSpeechFrames = 0;
-                        }
+                        inSpeech = true;
+                        consecSilence = 0;
+                        segmentBuffer.Clear();
+                        foreach (var buf in preBuffer) segmentBuffer.AddRange(buf);
+                        _logger.LogInformation("VAD: Speech started");
                     }
-                    else
+                    else if (!isSpeech)
                     {
-                        speechFrameCount = 0;
+                        consecSpeech = 0;
                     }
                 }
                 else
                 {
                     segmentBuffer.AddRange(frame);
-                    if (isSpeech)
+                    if (!isSpeech && ++consecSilence >= endFrames)
                     {
-                        noSpeechFrames = 0;
+                        inSpeech = false;
+                        _logger.LogInformation("VAD: Speech ended ({Bytes} bytes)", segmentBuffer.Count);
+                        await ProcessSegmentAsync(segmentBuffer.ToArray(), webSocket);
+                        segmentBuffer.Clear();
+                        consecSpeech = consecSilence = 0;
                     }
-                    else
+                    else if (isSpeech)
                     {
-                        noSpeechFrames++;
-                        var hangoverFrameThreshold = (int)(_settings.HangoverDurationSec * 1000 / FrameDurationMs);
-                        if (noSpeechFrames > hangoverFrameThreshold)
-                        {
-                            inSpeech = false;
-                            _logger.LogInformation("VAD: speech end detected, bytes={Bytes}", segmentBuffer.Count);
-                            var segmentCopy = segmentBuffer.ToArray();
-                            segmentBuffer.Clear();
-                            // reset counters for next phrase
-                            speechFrameCount = 0;
-                            noSpeechFrames = 0;
-                            await ProcessSegmentAsync(segmentCopy, webSocket);
-                            segmentProcessed = true;
-                        }
+                        consecSilence = 0;
                     }
                 }
             }
         }
 
-        private async Task ProcessSegmentAsync(byte[] audioBytes, WebSocket webSocket)
+        private void ApplyPreAmplification(byte[] frame)
         {
-            try
+            if (_settings.PreAmplification == 1.0f) return;
+            for (int i = 0; i < frame.Length; i += 2)
             {
-                _logger.LogInformation("Processing audio segment of {Bytes} bytes", audioBytes.Length);
-                string prompt;
-                using var ms = new MemoryStream();
-                var header = CreateWavHeader(audioBytes.Length, SampleRate, channels: 1, bitsPerSample: 16);
-                ms.Write(header, 0, header.Length);
-                ms.Write(audioBytes, 0, audioBytes.Length);
-                ms.Position = 0;
-                prompt = await _recognizer.RecognizeAsync(ms, "audio/wav", "segment.wav");
-                // Log transcription result and its length
-                _logger.LogInformation("Transcription prompt: {Prompt} (length {Length})", prompt, prompt.Length);
-
-                _chatLogManager.AddMessage(ChatRole.User, prompt);
-                await SendEventAsync(webSocket, "prompt", new { prompt });
-
-                // Generate chat response; optionally stream tokens
-                string reply;
-                bool useTokenStreaming = !_pipelineOptions.DisableTokenStreaming && _chatService is StreamingOpenAIChatService;
-                if (useTokenStreaming)
-                {
-                    var streaming = (StreamingOpenAIChatService)_chatService;
-                    reply = await streaming.GenerateStreamingResponseAsync(
-                        _chatLogManager.GetMessages(),
-                        async token =>
-                        {
-                            await SendEventAsync(webSocket, "token", new { token });
-                        });
-                }
-                else
-                {
-                    reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
-                    await SendEventAsync(webSocket, "token", new { token = reply });
-                }
-                _chatLogManager.AddMessage(ChatRole.Bot, reply);
-                // Log chat reply
-                _logger.LogInformation("Chat reply: {Reply}", reply);
-
-                // Stream TTS audio chunks (base64-encoded) over WebSocket
-                try
-                {
-                    var voice = _ttsVoice;
-                    _logger.LogInformation("Using TTS voice: {Voice}", voice);
-                    // Stream TTS audio chunks or single shot based on feature flag
-                    bool useProgressive = !_pipelineOptions.DisableProgressiveTts && _synthesizer is ProgressiveTTSSynthesizer;
-                    if (useProgressive)
-                    {
-                        var prog = (ProgressiveTTSSynthesizer)_synthesizer;
-                        await prog.ChunkedSynthesisAsync(
-                            reply,
-                            voice,
-                            chunk =>
-                            {
-                                SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(chunk) })
-                                    .GetAwaiter().GetResult();
-                            });
-                    }
-                    else
-                    {
-                        var audioBytesOut = await _synthesizer.SynthesizeAsync(reply, voice);
-                        await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(audioBytesOut) });
-                    }
-                    await SendEventAsync(webSocket, "audio-done", null);
-                }
-                catch (Exception ttsEx)
-                {
-                    _logger.LogError(ttsEx, "Error during TTS streaming");
-                    await SendEventAsync(webSocket, "error", new { error = ttsEx.Message });
-                }
-
-                // Signal completion of this segment
-                await SendEventAsync(webSocket, "done", null);
+                short sample = BitConverter.ToInt16(frame, i);
+                int amplified = (int)(sample * _settings.PreAmplification);
+                amplified = Math.Clamp(amplified, short.MinValue, short.MaxValue);
+                var bytes = BitConverter.GetBytes((short)amplified);
+                frame[i] = bytes[0];
+                frame[i + 1] = bytes[1];
             }
-            catch (Exception ex)
+        }
+
+        private static double CalculateRms(byte[] frame)
+        {
+            double sum = 0;
+            int count = frame.Length / 2;
+            for (int i = 0; i < frame.Length; i += 2)
             {
-                _logger.LogError(ex, "Error in audio segment processing");
-                await SendEventAsync(webSocket, "error", new { error = ex.Message });
+                short sample = BitConverter.ToInt16(frame, i);
+                sum += sample * sample;
             }
+            return Math.Sqrt(sum / count) / short.MaxValue;
         }
 
-        private static async Task SendEventAsync(WebSocket webSocket, string eventName, object? data)
+        private byte[] CreateWavHeader(int dataLength)
         {
-            var json = data != null
-                ? JsonSerializer.Serialize(new { @event = eventName, data })
-                : JsonSerializer.Serialize(new { @event = eventName });
-            var bytes = Encoding.UTF8.GetBytes(json);
-            await webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
-        }
-
-        private static byte[] CreateWavHeader(int dataLength, int sampleRate, int channels, int bitsPerSample)
-        {
-            int bytesPerSample = bitsPerSample / 8;
-            int byteRate = sampleRate * channels * bytesPerSample;
-            short blockAlign = (short)(channels * bytesPerSample);
-            using var headerStream = new MemoryStream();
-            using var writer = new BinaryWriter(headerStream, Encoding.UTF8, leaveOpen: true);
+            int byteRate = SampleRate * Channels * BitsPerSample / 8;
+            short blockAlign = (short)(Channels * BitsPerSample / 8);
+            using var ms = new MemoryStream();
+            using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
             writer.Write(Encoding.ASCII.GetBytes("RIFF"));
             writer.Write(36 + dataLength);
             writer.Write(Encoding.ASCII.GetBytes("WAVE"));
             writer.Write(Encoding.ASCII.GetBytes("fmt "));
             writer.Write(16);
             writer.Write((short)1);
-            writer.Write((short)channels);
-            writer.Write(sampleRate);
+            writer.Write((short)Channels);
+            writer.Write(SampleRate);
             writer.Write(byteRate);
             writer.Write(blockAlign);
-            writer.Write((short)bitsPerSample);
+            writer.Write((short)BitsPerSample);
             writer.Write(Encoding.ASCII.GetBytes("data"));
             writer.Write(dataLength);
             writer.Flush();
-            return headerStream.ToArray();
+            return ms.ToArray();
         }
 
-    /// <summary>
-    /// Computes the RMS amplitude of a 16-bit PCM audio frame.
-    /// </summary>
-    private static float ComputeRms(byte[] frame)
-    {
-        int sampleCount = frame.Length / 2;
-        double sumSquares = 0;
-        for (int i = 0; i < frame.Length; i += 2)
+        private async Task ProcessSegmentAsync(byte[] audioBytes, WebSocket webSocket)
         {
-            short sample = BitConverter.ToInt16(frame, i);
-            float norm = sample / 32768f;
-            sumSquares += norm * norm;
+            double durationSec = (double)audioBytes.Length / (SampleRate * Channels * BitsPerSample / 8);
+            if (durationSec < _settings.MinSegmentDurationSec)
+            {
+                _logger.LogInformation("Segment verworfen: Dauer {Duration:F3}s < Min {MinSec:F3}s", durationSec, _settings.MinSegmentDurationSec);
+                return;
+            }
+            try
+            {
+                _logger.LogInformation("Processing segment: {Bytes} bytes", audioBytes.Length);
+                using var ms = new MemoryStream();
+                var header = CreateWavHeader(audioBytes.Length);
+                ms.Write(header, 0, header.Length);
+                ms.Write(audioBytes, 0, audioBytes.Length);
+                ms.Position = 0;
+
+                string prompt = await _recognizer.RecognizeAsync(ms, "audio/wav", "segment.wav");
+                _logger.LogInformation("Transcription: '{Prompt}'", prompt);
+
+                _chatLogManager.AddMessage(ChatRole.User, prompt);
+                await SendEventAsync(webSocket, "prompt", new { prompt });
+
+                string reply;
+                if (!_pipelineOptions.DisableTokenStreaming && _chatService is StreamingOpenAIChatService)
+                {
+                    var streaming = (StreamingOpenAIChatService)_chatService;
+                    reply = await streaming.GenerateStreamingResponseAsync(
+                        _chatLogManager.GetMessages(),
+                        async token => await SendEventAsync(webSocket, "token", new { token }));
+                }
+                else
+                {
+                    reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
+                    await SendEventAsync(webSocket, "token", new { token = reply });
+                }
+                var botMsg = _chatLogManager.AddMessage(ChatRole.Bot, reply);
+                // annotate metadata for UI
+                botMsg.Model = "gpt-3.5-turbo";
+                botMsg.Voice = _ttsVoice;
+                _logger.LogInformation("Reply: '{Reply}'", reply);
+
+                // TTS
+                var voice = _ttsVoice;
+                _logger.LogInformation("Using TTS voice: {Voice}", voice);
+                bool prog = !_pipelineOptions.DisableProgressiveTts && _synthesizer is ProgressiveTTSSynthesizer;
+                if (prog)
+                {
+                    var synth = (ProgressiveTTSSynthesizer)_synthesizer;
+                    await synth.ChunkedSynthesisAsync(reply, voice, chunk =>
+                        SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(chunk) }).GetAwaiter().GetResult());
+                }
+                else
+                {
+                    var audioOut = await _synthesizer.SynthesizeAsync(reply, voice);
+                    await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(audioOut) });
+                }
+                await SendEventAsync(webSocket, "audio-done", null);
+                await SendEventAsync(webSocket, "done", null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing segment");
+                await SendEventAsync(webSocket, "error", new { error = ex.Message });
+            }
         }
-        return (float)Math.Sqrt(sumSquares / sampleCount);
-    }
+
+        private static async Task SendEventAsync(WebSocket webSocket, string eventName, object data)
+        {
+            var payload = JsonSerializer.Serialize(new { @event = eventName, data });
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            await webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
     }
 }

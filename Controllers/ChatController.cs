@@ -22,4 +22,13 @@ public class ChatController : ControllerBase
         _logger.LogInformation("Chat history cleared");
         return Ok(new { success = true, message = "Chat history cleared" });
     }
+    /// <summary>
+    /// Retrieves the full chat log.
+    /// </summary>
+    [HttpGet("chatLog")]
+    public ActionResult<System.Collections.Generic.IReadOnlyList<VoiceAssistant.Core.Models.ChatMessage>> GetChatLog()
+    {
+        var logs = _chatLogManager.GetMessages();
+        return Ok(logs);
+    }
 }

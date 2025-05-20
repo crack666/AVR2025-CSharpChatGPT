@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using System;
-using System.IO;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
 using VoiceAssistant.Core.Models;
 
 [ApiController]
@@ -18,30 +14,48 @@ public class SettingsController : ControllerBase
         _pipelineOptions = pipelineOptions;
     }
 
-    [HttpGet]
-    public ActionResult<VadSettings> Get()
-        => Ok(_vadSettings);
-
     [HttpPut]
     public IActionResult Update([FromBody] VadSettings dto)
     {
-        _vadSettings.Threshold           = dto.Threshold;
-        _vadSettings.SilenceTimeoutSec   = dto.SilenceTimeoutSec;
-        _vadSettings.MinSpeechDurationSec= dto.MinSpeechDurationSec;
-        // only override pre-buffer if provided (>0)
+        // WebRTC-VAD Mode immer übernehmen
+        _vadSettings.OperatingMode = dto.OperatingMode;
+
+        // Statische VorverstÃ¤rkung (Pre-Amplification)
+        if (dto.PreAmplification > 0f)
+            _vadSettings.PreAmplification = dto.PreAmplification;
+
+        // Mindest-Sprechdauer für Start
+        if (dto.MinSpeechDurationSec > 0)
+            _vadSettings.MinSpeechDurationSec = dto.MinSpeechDurationSec;
+
+        // Pre-Roll Puffer
         if (dto.PreSpeechDurationSec > 0)
             _vadSettings.PreSpeechDurationSec = dto.PreSpeechDurationSec;
-        // override smoothing window (EMA) if provided (>0)
-        if (dto.RmsSmoothingWindowSec > 0)
-            _vadSettings.RmsSmoothingWindowSec = dto.RmsSmoothingWindowSec;
-        // override hysteresis thresholds if provided (>0)
-        if (dto.StartThreshold > 0)
-            _vadSettings.StartThreshold = dto.StartThreshold;
-        if (dto.EndThreshold > 0)
-            _vadSettings.EndThreshold = dto.EndThreshold;
-        // override hang-over duration if provided (>0)
+
+        // Hangover-Dauer für Ende
         if (dto.HangoverDurationSec > 0)
             _vadSettings.HangoverDurationSec = dto.HangoverDurationSec;
+
+        // Mindestsegmentdauer (Post-Filter)
+        if (dto.MinSegmentDurationSec > 0)
+            _vadSettings.MinSegmentDurationSec = dto.MinSegmentDurationSec;
+
+        // Dynamischer RMS-Schwellwert (Noise-Factor)
+        if (dto.NoiseThresholdFactor > 0)
+            _vadSettings.NoiseThresholdFactor = dto.NoiseThresholdFactor;
+
+        // EMA-Alpha für Noise-Floor-SchÃ¤tzung (0 < Î± < 1)
+        if (dto.NoiseFloorAlpha > 0 && dto.NoiseFloorAlpha < 1)
+            _vadSettings.NoiseFloorAlpha = dto.NoiseFloorAlpha;
+
+        // Untergrenze für Noise-Floor
+        if (dto.MinNoiseFloor > 0)
+            _vadSettings.MinNoiseFloor = dto.MinNoiseFloor;
+
+        // Wie lange Stille bevor sich Noise-Floor anpasst
+        if (dto.SilenceAdaptationTimeSec > 0)
+            _vadSettings.SilenceAdaptationTimeSec = dto.SilenceAdaptationTimeSec;
+
         return NoContent();
     }
 
@@ -91,8 +105,10 @@ public class SettingsController : ControllerBase
         }
         double avgRms = Math.Sqrt(sumSquares / sampleCount);
         // Derive thresholds
+        /*
         _vadSettings.StartThreshold = avgRms * 1.5;
         _vadSettings.EndThreshold = avgRms * 1.0;
+        */
         // Leave other settings unchanged
         return Ok(_vadSettings);
     }

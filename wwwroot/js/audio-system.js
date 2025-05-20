@@ -1,5 +1,62 @@
 const FrameDurationMs = 20;
 const TargetSampleRate = 16000;
+const audioQueue = [];
+let isPlaying = false;
+let currentSource = null;
+let nextPlayTime = null;          // AudioContext-Zeit, zu der der nächste Chunk starten soll
+
+// Spielt den nächsten Buffer, sobald keiner läuft
+/*
+function playNext() {
+    if (audioQueue.length === 0) {
+        isPlaying = false;
+        return;
+    }
+
+    const buffer = audioQueue.shift();
+    const src = window.audioContext.createBufferSource();
+    src.buffer = buffer;
+    src.connect(window.audioContext.destination);
+
+    // Tracken fürs Stoppen
+    currentSource = src;
+    window.currentBot = window.currentBot || {};
+    window.currentBot.audioSources = window.currentBot.audioSources || [];
+    window.currentBot.audioSources.push(src);
+    window.allAudioSources = window.allAudioSources || [];
+    window.allAudioSources.push(src);
+
+    isPlaying = true;
+    src.onended = () => {
+        currentSource = null;
+        playNext();          // Chaining: wenn dieser Buffer fertig, kommt der nächste
+    };
+
+    src.start();
+}*/
+function playNext() {
+    console.log('[playNext] called, isPlaying=', isPlaying, 'queueLen=', audioQueue.length);
+    if (audioQueue.length === 0) {
+        console.log('[playNext] queue empty → stopping');
+        isPlaying = false;
+        return;
+    }
+
+    const buffer = audioQueue.shift();
+    console.log('[playNext] playing chunk, remaining queue=', audioQueue.length);
+    const src = window.audioContext.createBufferSource();
+    src.buffer = buffer;
+    src.connect(window.audioContext.destination);
+
+    isPlaying = true;
+    src.onended = () => {
+        console.log('[onended] chunk finished');
+        isPlaying = false;            // mark as stopped *vor* nächstem playNext-Aufruf
+        playNext();                   // next chunk
+    };
+
+    src.start();
+}
 
 // Audio system management
 const audioSystem = {
@@ -618,7 +675,7 @@ const audioSystem = {
       document.getElementById('recommendedThreshold').textContent = recommendedThreshold.toFixed(4);
     }
   },
-  handleServerEvent: function(message) {
+  handleServerEvent: async function(message) {
     let ev;
     try {
       ev = JSON.parse(message);
@@ -672,7 +729,8 @@ const audioSystem = {
         }
         window.currentBot.content.textContent += data.token;
         break;
-      case 'audio-chunk':
+        case 'audio-chunk':
+        console.log('[chunk] arrived');
         // If user stopped this message's audio, skip further chunks
         if (window.currentBot && window.currentBot._audioStopped) {
           break;
@@ -687,27 +745,48 @@ const audioSystem = {
             window.currentBot.audioSpan.textContent = audioLat + ' ms';
           }
         }
-        {
-          const bytes = Uint8Array.from(atob(data.chunk), c => c.charCodeAt(0));
-          window.audioContext.decodeAudioData(bytes.buffer, buffer => {
-            const src = window.audioContext.createBufferSource();
-            src.buffer = buffer;
-            src.connect(window.audioContext.destination);
-            src.start();
-            // Track for stopAllAudio
-            window.allAudioSources = window.allAudioSources || [];
-            window.allAudioSources.push(src);
-            // Attach to current bot for per-message stop
-            if (window.currentBot) {
-              window.currentBot.audioSource = src;
+
+        // 1. Bytes in ArrayBuffer umwandeln
+        const bytes = Uint8Array.from(atob(data.chunk), c => c.charCodeAt(0));
+        const arrayBuffer = bytes.buffer;
+
+        try {
+            // 2. Promise‐Decode
+            const audioBuffer = await new Promise((resolve, reject) =>
+                window.audioContext.decodeAudioData(arrayBuffer, resolve, reject)
+            );
+
+            // 3. In die Queue schieben
+            audioQueue.push(audioBuffer);
+
+            // 4. Falls gerade nichts spielt, sofort loslegen
+            console.log('[chunk] enqueued, queueLen=', audioQueue.length);
+            if (!isPlaying) {
+                console.log('[chunk] not playing → start playNext');
+                playNext();
             }
-          });
+        } catch (err) {
+            console.error('Fehler beim Dekodieren des Audio-Chunks', err);
         }
+
         break;
       case 'audio-done':
         break;
       case 'done':
         window.currentBot = null;
+        // Reset für die nächste Antwort
+        audioQueue.length = 0;
+        if (currentSource) {
+            try { currentSource.stop(); } catch { }
+            currentSource = null;
+        }
+        isPlaying = false;
+        window.currentBot?.audioSources?.forEach(s => { try { s.stop(); } catch { } });
+        if (window.currentBot) {
+            window.currentBot.audioSources = [];
+        }
+        window.allAudioSources?.forEach(s => { try { s.stop(); } catch { } });
+        window.allAudioSources = [];
         break;
       case 'error':
         console.error('Server error', data.error);
