@@ -1,8 +1,11 @@
 const FrameDurationMs = 20;
 const TargetSampleRate = 16000;
-const audioQueue = [];
-let isLoopActive = false;
-let nextPlayTime = null;          // AudioContext-Zeit, zu der der nächste Chunk starten soll
+let isLoopActive = false;   // Flag, ob die Audio-Wiedergabe aktiv ist
+
+// Audio-Chunk-Verwaltung
+const indexedAudioChunks = new Map();  // Map zur Speicherung von Audio-Chunks nach Index
+let nextPlaybackIndex = 0;  // Der nächste zu spielende Chunk-Index
+let isPlaying = false;      // Flag, ob gerade Audio abgespielt wird
 
 // Spielt den nächsten Buffer, sobald keiner läuft
 /*
@@ -33,40 +36,110 @@ function playNext() {
 
     src.start();
 }*/
-// Schedule playback loop if not already active
+// Schedule playback of the next chunk in sequence
 function scheduleNext() {
-    if (audioQueue.length === 0) {
-        isLoopActive = false;
-        console.log('[scheduleNext] queue empty → stopping');
-        return;
+    // Überprüfe, ob der nächste zu spielende Chunk bereits verfügbar ist
+    if (indexedAudioChunks.has(nextPlaybackIndex)) {
+        // Hole den nächsten Chunk aus der Map und entferne ihn
+        const buffer = indexedAudioChunks.get(nextPlaybackIndex);
+        indexedAudioChunks.delete(nextPlaybackIndex);
+        
+        console.log(`%c[AUDIO-DEBUG] Playing chunk #${nextPlaybackIndex}, duration=${buffer.duration.toFixed(2)}s, remaining chunks=${indexedAudioChunks.size}`, 
+            'background: #e74c3c; color: white; padding: 2px 5px; border-radius: 3px;');
+        
+        // Erstelle AudioBufferSourceNode und spiele ab
+        const src = window.audioContext.createBufferSource();
+        src.buffer = buffer;
+        src.connect(window.audioContext.destination);
+        
+        // Referenzen für stopAllAudio speichern
+        window.allAudioSources = window.allAudioSources || [];
+        window.allAudioSources.push(src);
+        
+        // Pro-Nachricht-Tracking
+        if (window.currentBot) window.currentBot.audioSource = src;
+        
+        // Save current index to use in log
+        const currentIndex = nextPlaybackIndex;
+        
+        // Increment index before starting playback to prepare for the next chunk
+        nextPlaybackIndex++;
+        
+        // Wenn der Chunk fertig ist, zum nächsten Chunk gehen
+        src.onended = () => {
+            console.log(`%c[AUDIO-DEBUG] Chunk #${currentIndex} finished playing, next is #${nextPlaybackIndex}`, 
+                'background: #9b59b6; color: white; padding: 2px 5px; border-radius: 3px;');
+            scheduleNext();      // Überprüfe, ob der nächste Chunk bereit ist
+        };
+        
+        src.start();
+        isLoopActive = true;
+    } else {
+        // Der nächste Chunk ist noch nicht verfügbar
+        if (indexedAudioChunks.size === 0) {
+            // Wenn überhaupt keine Chunks mehr in der Map sind, beenden wir den Loop
+            isLoopActive = false;
+            console.log(`[scheduleNext] all chunks processed (nextPlaybackIndex=${nextPlaybackIndex}) → stopping`);
+            
+            // If all chunks are done AND we've received the 'done' event, run final cleanup
+            if (window._allAudioChunksReceived && typeof window._cleanupAfterPlayback === 'function') {
+                console.log('[scheduleNext] Running final cleanup after all chunks played');
+                window._cleanupAfterPlayback();
+            }
+        } else {
+            // Es gibt noch Chunks, aber der nächste ist noch nicht verfügbar
+            // Wir warten kurz und versuchen es dann erneut
+            // Zeige alle wartenden Chunks
+            const waitingIndices = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
+            console.log(`%c[AUDIO-DEBUG] Waiting for chunk #${nextPlaybackIndex}, chunks in queue: [${waitingIndices.join(', ')}]`, 
+                'background: #f39c12; color: white; padding: 2px 5px; border-radius: 3px;');
+                
+            // Check if the waiting chunks have higher indices than what we're waiting for
+            // This would indicate we might have missed a chunk or it failed to process
+            if (waitingIndices.length > 0 && waitingIndices[0] > nextPlaybackIndex) {
+                console.log(`%c[AUDIO-DEBUG] Chunk #${nextPlaybackIndex} appears to be missing, skipping to #${waitingIndices[0]}`, 
+                    'background: #e67e22; color: white; padding: 2px 5px; border-radius: 3px;');
+                nextPlaybackIndex = waitingIndices[0];
+                // Immediately try again with the new index
+                scheduleNext();
+                return;
+            }
+            
+            setTimeout(scheduleNext, 50);
+        }
     }
-    const buffer = audioQueue.shift();
-    console.log('[scheduleNext] playing chunk, remaining queue=', audioQueue.length);
-    const src = window.audioContext.createBufferSource();
-    src.buffer = buffer;
-    src.connect(window.audioContext.destination);
-    // Track for stopAllAudio
-    window.allAudioSources = window.allAudioSources || [];
-    window.allAudioSources.push(src);
-    // Per-message tracking
-    if (window.currentBot) window.currentBot.audioSource = src;
-    src.onended = () => {
-        console.log('[onended] chunk finished');
-        scheduleNext();
-    };
-    src.start();
-    isLoopActive = true;
 }
-// Entry to start playback loop
+
+// Entry to start or resume playback loop
 function playLoop() {
     if (!isLoopActive) {
-        console.log('[playLoop] starting loop, queueLen=', audioQueue.length);
+        const loopIndices = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
+        
+        if (loopIndices.length === 0) {
+            console.log(`%c[AUDIO-DEBUG] No chunks to play, skipping playback loop`, 
+                'background: #7f8c8d; color: white; padding: 2px 5px; border-radius: 3px;');
+            return;
+        }
+        
+        console.log(`%c[AUDIO-DEBUG] Starting playback loop: next=${nextPlaybackIndex}, chunks=[${loopIndices.join(', ')}]`, 
+            'background: #27ae60; color: white; padding: 2px 5px; border-radius: 3px;');
+            
+        // If our nextPlaybackIndex is too high (might have been reset incorrectly),
+        // reset it to the lowest available chunk index
+        if (loopIndices.length > 0 && !loopIndices.includes(nextPlaybackIndex)) {
+            const oldIndex = nextPlaybackIndex;
+            nextPlaybackIndex = loopIndices[0];
+            console.log(`%c[AUDIO-DEBUG] Reset playback index from ${oldIndex} to ${nextPlaybackIndex} to match available chunks`, 
+                'background: #16a085; color: white; padding: 2px 5px; border-radius: 3px;');
+        }
+        
         scheduleNext();
     }
 }
 
 // Audio system management
-const audioSystem = {
+// Create audio system object and expose it to the window
+window.audioSystem = {
   init: function() {
     // Declare global variables for recording state
     window.recordingEnabled = true;     // Controls if recording is enabled
@@ -738,11 +811,27 @@ const audioSystem = {
         window.currentBot.content.textContent += data.token;
         break;
         case 'audio-chunk':
-        console.log('[chunk] arrived');
+        // Wenn vom Backend ein Index mitgeschickt wird, verwenden wir diesen
+        const chunkIndex = data.index !== undefined ? data.index : 0;
+        console.log(`%c[AUDIO-DEBUG] Chunk arrived: index=${chunkIndex}, ${data.chunk.length} bytes, timestamp=${Date.now()}`, 'background: #3498db; color: white; padding: 2px 5px; border-radius: 3px;');
+        
         // If user stopped this message's audio, skip further chunks
         if (window.currentBot && window.currentBot._audioStopped) {
           break;
         }
+        
+        // On the first audio chunk, reset the playback system
+        if (chunkIndex === 0) {
+          // Stop any current playback
+          window.allAudioSources?.forEach(s => { try { s.stop(); } catch { } });
+          // Clear any existing chunks
+          indexedAudioChunks.clear();
+          // Reset playback index
+          nextPlaybackIndex = 0;
+          console.log("%c[AUDIO-DEBUG] First chunk detected, reset audio playback system", 
+            'background: #1abc9c; color: white; padding: 2px 5px; border-radius: 3px;');
+        }
+        
         // Record audio latency on first chunk
         const nowA = Date.now();
         optimizationManager.trackLatency('ttsEnd');
@@ -764,33 +853,52 @@ const audioSystem = {
                 window.audioContext.decodeAudioData(arrayBuffer, resolve, reject)
             );
 
-            // 3. In die Queue schieben
-            audioQueue.push(audioBuffer);
-            console.log('[chunk] enqueued, queueLen=', audioQueue.length);
+            // 3. In die Map mit dem richtigen Index speichern
+            indexedAudioChunks.set(chunkIndex, audioBuffer);
+            console.log(`%c[AUDIO-DEBUG] Chunk stored: index=${chunkIndex}, duration=${audioBuffer.duration.toFixed(2)}s, chunks in map=${indexedAudioChunks.size}`, 
+                'background: #2ecc71; color: white; padding: 2px 5px; border-radius: 3px;');
+                
+            // Debug-Ausgabe aller vorhandenen Chunks
+            const allIndices = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
+            console.log(`%c[AUDIO-DEBUG] Current chunks in map: ${allIndices.join(', ')}`, 
+                'background: #95a5a6; color: white; padding: 2px 5px; border-radius: 3px;');
+            
+                // Now we handle the chunk reset at the arrival stage, just store this buffer
+            
             // Start playback loop if not already active
             playLoop();
         } catch (err) {
-            console.error('Fehler beim Dekodieren des Audio-Chunks', err);
+            console.error(`Fehler beim Dekodieren des Audio-Chunks ${chunkIndex}:`, err);
         }
 
         break;
       case 'audio-done':
         break;
       case 'done':
-        window.currentBot = null;
-        // Reset für die nächste Antwort
-        audioQueue.length = 0;
-        if (currentSource) {
-            try { currentSource.stop(); } catch { }
-            currentSource = null;
+        // DON'T reset the audio yet - let all chunks finish playing naturally
+        // Just mark the bot as completed and show a log
+        console.log("%c[AUDIO-DEBUG] Done event received from server - letting audio continue playing", 
+            'background: #e74c3c; color: white; padding: 2px 5px; border-radius: 3px;');
+            
+        // We'll set a flag indicating no more chunks will arrive, but existing ones should play
+        window._allAudioChunksReceived = true;
+        
+        // Schedule cleanup for the NEXT message, not this one
+        window._cleanupAfterPlayback = () => {
+          // Only clear if we're not already in another message
+          if (window._allAudioChunksReceived) {
+            console.log("[done] Final audio cleanup after playback");
+            window.currentBot = null;
+            isPlaying = false;
+            window._allAudioChunksReceived = false;
+          }
+        };
+        
+        // Check if all chunks have already been processed, and if so, mark playback as complete
+        if (indexedAudioChunks.size === 0 && !isLoopActive) {
+          console.log("[done] All audio chunks already processed - marking playback as completed");
+          window._cleanupAfterPlayback();
         }
-        isPlaying = false;
-        window.currentBot?.audioSources?.forEach(s => { try { s.stop(); } catch { } });
-        if (window.currentBot) {
-            window.currentBot.audioSources = [];
-        }
-        window.allAudioSources?.forEach(s => { try { s.stop(); } catch { } });
-        window.allAudioSources = [];
         break;
       case 'error':
         console.error('Server error', data.error);

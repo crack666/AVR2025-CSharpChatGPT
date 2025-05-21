@@ -163,12 +163,8 @@ const optimizationManager = {
       // Update settings from UI
       window.optimizationSettings.useProgressiveTTS = this.useProgressiveTTSCheckbox.checked;
       window.optimizationSettings.useTokenStreaming = this.useTokenStreamingCheckbox.checked;
-      window.optimizationSettings.useChunkBasedAudio = this.useChunkBasedAudioCheckbox.checked;
       window.optimizationSettings.disableVad = this.disableVadCheckbox.checked;
       window.optimizationSettings.useLegacyHttp = this.useLegacyHttpCheckbox.checked;
-      window.optimizationSettings.useEarlyAudioProcessing = this.useEarlyAudioProcessingCheckbox.checked;
-      window.optimizationSettings.useCachedAudioContext = this.useCachedAudioContextCheckbox.checked;
-      window.optimizationSettings.useSmartChunkSplitting = this.useSmartChunkSplittingCheckbox.checked;
       
       // Apply settings to dropdown
       if (!window.optimizationSettings.useProgressiveTTS && !window.optimizationSettings.useTokenStreaming) {
@@ -200,10 +196,9 @@ const optimizationManager = {
       status.textContent = 'Optimierungseinstellungen angewendet';
       
       // Some settings might require a restart
-      if (window.optimizationSettings.useCachedAudioContext !== oldUseCachedAudioContext) {
-        debugLog("Neustart des Audio-Systems empfohlen wegen Änderung der Audio-Context-Konfiguration");
-        alert("Bitte starten Sie das Audio-System neu, um die Änderungen zu übernehmen.");
-      }
+      // Audio system restart may be required
+      debugLog("Optimierungseinstellungen angewendet - Änderungen können einen Neustart des Audio-Systems erfordern");
+      alert("Bitte starten Sie das Audio-System neu, um sicherzustellen, dass alle Änderungen übernommen werden.");
     });
     
     // Reset optimization settings button
@@ -211,11 +206,8 @@ const optimizationManager = {
       // Reset to defaults
       window.optimizationSettings.useProgressiveTTS = true;
       window.optimizationSettings.useTokenStreaming = true;
-      window.optimizationSettings.useChunkBasedAudio = true;
-      window.optimizationSettings.useEarlyAudioProcessing = false;
-      window.optimizationSettings.useCachedAudioContext = false;
-      window.optimizationSettings.useSmartChunkSplitting = true;
-      window.optimizationSettings.ttsDynamicChunkSize = 100;
+      window.optimizationSettings.disableVad = false;
+      window.optimizationSettings.useLegacyHttp = false;
       
       // Update UI
       this.updateOptimizationUIFromSettings();
@@ -273,12 +265,8 @@ const optimizationManager = {
     
     this.useProgressiveTTSCheckbox.checked = window.optimizationSettings.useProgressiveTTS;
     this.useTokenStreamingCheckbox.checked = window.optimizationSettings.useTokenStreaming;
-    this.useChunkBasedAudioCheckbox.checked = window.optimizationSettings.useChunkBasedAudio;
     this.disableVadCheckbox.checked = window.optimizationSettings.disableVad;
     this.useLegacyHttpCheckbox.checked = window.optimizationSettings.useLegacyHttp;
-    this.useEarlyAudioProcessingCheckbox.checked = window.optimizationSettings.useEarlyAudioProcessing;
-    this.useCachedAudioContextCheckbox.checked = window.optimizationSettings.useCachedAudioContext;
-    this.useSmartChunkSplittingCheckbox.checked = window.optimizationSettings.useSmartChunkSplitting;
     
     // Update latency stats
     this.updateLatencyStatsUI();

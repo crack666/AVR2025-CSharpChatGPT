@@ -232,6 +232,12 @@ namespace VoiceAssistant
             return ms.ToArray();
         }
 
+        /// <summary>
+        /// Verarbeitet ein erkanntes Audiosegment mit echter End-to-End-Streaming-Pipeline.
+        /// Implementiert paralleles Token-Streaming und TTS-Streaming für minimale Latenz.
+        /// </summary>
+        /// <param name="audioBytes">Rohes Audiosegment (PCM-Daten vom VAD)</param>
+        /// <param name="webSocket">WebSocket-Verbindung für Event-Streaming</param>
         private async Task ProcessSegmentAsync(byte[] audioBytes, WebSocket webSocket)
         {
             double durationSec = (double)audioBytes.Length / (SampleRate * Channels * BitsPerSample / 8);
@@ -256,18 +262,242 @@ namespace VoiceAssistant
                 await SendEventAsync(webSocket, "prompt", new { prompt });
 
                 string reply;
+                var voice = _pipelineOptions.TtsVoice;
+
                 if (!_pipelineOptions.DisableTokenStreaming && _chatService is StreamingOpenAIChatService)
                 {
+                    // ---- ECHTES END-TO-END-STREAMING ----
+                    // Diese Implementation parallelisiert das Token-Streaming und TTS-Streaming,
+                    // sodass Audio schon während der Text-Generierung erzeugt und abgespielt werden kann
+
                     var streaming = (StreamingOpenAIChatService)_chatService;
+                    var sb = new StringBuilder();
+
+                    // Hilfsfunktionen zum Verarbeiten von Teiltext für TTS
+
+                    /// <summary>
+                    /// Bestimmt, ob der aktuelle Textpuffer für die TTS-Verarbeitung bereit ist
+                    /// </summary>
+                    /// <returns>True, wenn der Puffer zum Synthesizer geschickt werden sollte</returns>
+                    bool ShouldFlush(StringBuilder buffer, char lastChar)
+                    {
+                        // Satzenden und Punkte sind gute Stellen zum Flushen
+                        bool isEndOfSentence = ".!?:;".Contains(lastChar);
+
+                        // Flush bei Erreichen einer Mindestlänge oder bei Satzenden
+                        return buffer.Length >= 50 || (buffer.Length >= 20 && isEndOfSentence);
+                    }
+
+                    /// <summary>
+                    /// Holt den aktuellen Textpuffer und setzt ihn zurück
+                    /// </summary>
+                    /// <returns>Textinhalt aus dem Puffer</returns>
+                    string FlushSegment(StringBuilder buffer)
+                    {
+                        string segment = buffer.ToString();
+                        buffer.Clear();
+                        return segment;
+                    }
+
+                    // Queue für das Tracking der TTS-Verarbeitungs-Tasks, um die richtige Reihenfolge beim Abspielen sicherzustellen
+                    var ttsTaskQueue = new System.Collections.Concurrent.ConcurrentQueue<(Task<byte[]> Task, string TextChunk)>();
+
+                    // Semaphore für das sequentielle Senden von Audio-Chunks (nicht für die TTS-Verarbeitung!)
+                    SemaphoreSlim audioSendSemaphore = new SemaphoreSlim(1, 1);
+
+                    // Audio-Queue-System für geordnete Verarbeitung
+                    int nextChunkIndex = 0;  // Der nächste zu sendende Chunk-Index
+                    var audioChunks = new Dictionary<int, byte[]>();  // Speichert fertige Audio-Chunks nach Position
+                    var audioChunkReady = new SemaphoreSlim(0);  // Signalisiert, wenn neue Chunks bereit sind
+                    var audioChunkLock = new object();  // Lock für Thread-Sicherheit
+                    bool isResponseComplete = false;  // Flag für "Alle TTS-Aufgaben sind abgeschlossen"
+
+                    // Task zur sequentiellen Verarbeitung der fertigen Audio-Chunks
+                    Task audioProcessingTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            while (true)
+                            {
+                                // Warte auf Signal, dass ein neuer Chunk bereit ist
+                                await audioChunkReady.WaitAsync();
+
+                                // Sende alle verfügbaren Chunks in der richtigen Reihenfolge
+                                bool sentAny = false;
+
+                                do
+                                {
+                                    sentAny = false;
+                                    byte[] chunk = null;
+
+                                    // Prüfe ob der nächste Chunk in der Reihenfolge bereit ist
+                                    lock (audioChunkLock)
+                                    {
+                                        if (audioChunks.TryGetValue(nextChunkIndex, out chunk))
+                                        {
+                                            audioChunks.Remove(nextChunkIndex);
+                                            nextChunkIndex++;
+                                            sentAny = true;
+                                        }
+                                    }
+
+                                    // Wenn ein Chunk bereit ist, sende ihn mit Index
+                                    if (sentAny && chunk != null)
+                                    {
+                                        await SendEventAsync(webSocket, "audio-chunk",
+                                            new
+                                            {
+                                                chunk = Convert.ToBase64String(chunk),
+                                                index = nextChunkIndex - 1  // Sende Chunk-Index mit
+                                            });
+
+                                        int sentIndex = nextChunkIndex - 1;
+                                        _logger.LogInformation("[WEBSOCKET-DEBUG] Sent audio chunk #{Index} ({Size} bytes)",
+                                            sentIndex, chunk.Length);
+                                    }
+                                } while (sentAny);  // Solange Chunks verfügbar sind, weitermachen
+
+                                // Prüfe, ob wir fertig sind
+                                lock (audioChunkLock)
+                                {
+                                    if (isResponseComplete && audioChunks.Count == 0)
+                                    {
+                                        break;  // Alle Chunks wurden gesendet, fertig
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error in audio processing task");
+                        }
+                    });
+
+                    // Hilfsfunktion zum Starten einer TTS-Anfrage und Hinzufügen zur Queue
+                    async Task StartTtsTaskAsync(string textChunk, int chunkIndex)
+                    {
+                        if (string.IsNullOrWhiteSpace(textChunk))
+                            return;
+
+                        var textPreview = textChunk.Length <= 50 ? textChunk : textChunk.Substring(0, 50) + "...";
+                        _logger.LogInformation("[TTS-DEBUG] TTS starting for chunk #{Index}: '{TextChunk}'",
+                            chunkIndex, textPreview);
+
+                        try
+                        {
+                            // TTS-Anfrage starten
+                            var audioBytes = await _synthesizer.SynthesizeTextChunkAsync(textChunk, voice);
+
+                            // Füge den Chunk zur richtigen Position in der Queue hinzu
+                            lock (audioChunkLock)
+                            {
+                                audioChunks[chunkIndex] = audioBytes;
+                            }
+
+                            // Signalisiere, dass ein neuer Chunk bereit ist
+                            audioChunkReady.Release();
+
+                            _logger.LogInformation("[TTS-DEBUG] TTS completed for chunk #{Index}: '{TextChunk}' ({Size} bytes)",
+                                chunkIndex, textPreview, audioBytes.Length);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error processing TTS for chunk #{Index}", chunkIndex);
+                        }
+                    }
+
+                    // Generiere Antwort mit Token-Callback für Parallelisierung
+                    // Der Callback wird für jedes ankommende Token ausgeführt und startet
+                    // bei passenden Stellen (Satzenden, ausreichende Länge) eine TTS-Anfrage
+                    int currentChunkIndex = 0;  // Zählt die Chunks für die richtige Reihenfolge
+                    List<Task> ttsTasks = new List<Task>();  // Liste für alle TTS-Tasks
+
                     reply = await streaming.GenerateStreamingResponseAsync(
                         _chatLogManager.GetMessages(),
-                        async token => await SendEventAsync(webSocket, "token", new { token }));
+                        async token =>
+                        {
+                            try
+                            {
+                                // 1. Token zum Frontend senden für sofortige Text-Anzeige
+                                await SendEventAsync(webSocket, "token", new { token });
+
+                                // 2. Token im Buffer für spätere TTS-Verarbeitung sammeln
+                                sb.Append(token);
+
+                                // 3. Bei ausreichender Größe oder Satzende TTS-Synthese starten
+                                // Nur starten, wenn ein nicht-leeres Token das Entscheidungskriterium auslöst
+                                if (token.Length > 0 && ShouldFlush(sb, token[token.Length - 1]))
+                                {
+                                    string textChunk = FlushSegment(sb);
+                                    int chunkIndex = currentChunkIndex++;
+
+                                    // Chunk-Generierung loggen
+                                    var textPreview = textChunk.Length <= 30 ? textChunk : textChunk.Substring(0, 30) + "...";
+                                    _logger.LogInformation("[CHUNK-DEBUG] Generated chunk #{Index}: '{Text}'",
+                                        chunkIndex, textPreview);
+
+                                    // Starte einen neuen TTS-Task für diesen Chunk
+                                    var task = Task.Run(() => StartTtsTaskAsync(textChunk, chunkIndex));
+                                    ttsTasks.Add(task);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Error processing token in streaming response");
+                            }
+                        });
+
+                    // Restlichen Text verarbeiten, falls vorhanden
+                    if (sb.Length > 0)
+                    {
+                        try
+                        {
+                            // Verarbeite verbleibenden Text
+                            string remainingText = sb.ToString();
+                            sb.Clear();
+
+                            _logger.LogDebug("Processing remaining text: {TextChunk}",
+                                remainingText.Length <= 30 ? remainingText : remainingText.Substring(0, 30) + "...");
+
+                            // Starte einen TTS-Task für den letzten Chunk
+                            int finalChunkIndex = currentChunkIndex;
+                            var task = Task.Run(() => StartTtsTaskAsync(remainingText, finalChunkIndex));
+                            ttsTasks.Add(task);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error processing remaining text");
+                        }
+                    }
+
+                    // Auf Abschluss aller TTS-Verarbeitungen warten
+                    _logger.LogDebug("Waiting for {Count} TTS tasks to complete", ttsTasks.Count);
+                    await Task.WhenAll(ttsTasks);
+
+                    // Warte auf Abschluss des Audio-Verarbeitungs-Tasks
+                    _logger.LogDebug("Waiting for audio processing task to complete");
+
+                    // Setze ein Flag für die Fertigstellung und sende restliche Chunks
+                    lock (audioChunkLock)
+                    {
+                        isResponseComplete = true;
+                        audioChunkReady.Release();  // Signal senden, dass wir fertig sind
+                    }
+
+                    await audioProcessingTask;
                 }
                 else
                 {
+                    // Fallback für nicht-streaming Modus
                     reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
                     await SendEventAsync(webSocket, "token", new { token = reply });
+
+                    // TTS wie bisher
+                    _logger.LogInformation("Using TTS voice: {Voice}", voice);
+                    var audioOut = await _synthesizer.SynthesizeAsync(reply, voice);
+                    await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(audioOut) });
                 }
+
                 // Annotate chat log entry with current pipeline settings
                 var botMsg = _chatLogManager.AddMessage(
                     ChatRole.Bot,
@@ -276,21 +506,6 @@ namespace VoiceAssistant
                     _pipelineOptions.TtsVoice);
                 _logger.LogInformation("Reply: '{Reply}'", reply);
 
-                // TTS
-                var voice = _pipelineOptions.TtsVoice;
-                _logger.LogInformation("Using TTS voice: {Voice}", voice);
-                bool prog = !_pipelineOptions.DisableProgressiveTts && _synthesizer is ProgressiveTTSSynthesizer;
-                if (prog)
-                {
-                    var synth = (ProgressiveTTSSynthesizer)_synthesizer;
-                    await synth.ChunkedSynthesisAsync(reply, voice, chunk =>
-                        SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(chunk) }).GetAwaiter().GetResult());
-                }
-                else
-                {
-                    var audioOut = await _synthesizer.SynthesizeAsync(reply, voice);
-                    await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(audioOut) });
-                }
                 await SendEventAsync(webSocket, "audio-done", null);
                 await SendEventAsync(webSocket, "done", null);
             }

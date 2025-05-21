@@ -18,8 +18,8 @@ builder.Host.UseSerilog((hostingContext, services, loggerConfiguration) =>
 {
     loggerConfiguration
         .ReadFrom.Configuration(hostingContext.Configuration)
-        .Enrich.FromLogContext()
-        .WriteTo.Console();
+        .Enrich.FromLogContext();
+    // Note: Don't add WriteTo.Console() here - already configured in appsettings.json
 });
 // Bind and register pipeline feature flags as mutable singleton
 var pipelineOptions = new PipelineOptions();

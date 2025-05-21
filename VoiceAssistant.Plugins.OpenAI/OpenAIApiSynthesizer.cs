@@ -51,5 +51,15 @@ namespace VoiceAssistant.Plugins.OpenAI
             }
             return bytes;
         }
+
+        /// <summary>
+        /// Implementiert die ISynthesizer.SynthesizeTextChunkAsync Methode für die OpenAI TTS API.
+        /// Synthetisiert einen einzelnen Text-Chunk ohne weitere Segmentierung.
+        /// </summary>
+        /// <param name="textChunk">Text-Chunk zum Synthetisieren.</param>
+        /// <param name="voice">Voice-Identifier.</param>
+        /// <returns>Rohe Audio-Bytes für diesen Text-Chunk.</returns>
+        public Task<byte[]> SynthesizeTextChunkAsync(string textChunk, string voice)
+            => SynthesizeAsync(textChunk, voice);
     }
 }
