@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using VoiceAssistant.Core.Interfaces;
 using VoiceAssistant.Core.Models;
 using VoiceAssistant.Core.Services;
@@ -277,27 +278,178 @@ namespace VoiceAssistant
 
                     /// <summary>
                     /// Bestimmt, ob der aktuelle Textpuffer für die TTS-Verarbeitung bereit ist
+                    /// WICHTIG: Implementiert eine konservative Strategie, die niemals mitten im Wort trennt
                     /// </summary>
                     /// <returns>True, wenn der Puffer zum Synthesizer geschickt werden sollte</returns>
                     bool ShouldFlush(StringBuilder buffer, char lastChar)
                     {
-                        // Satzenden und Punkte sind gute Stellen zum Flushen
-                        bool isEndOfSentence = ".!?:;".Contains(lastChar);
+                        // VERBESSERTE STRATEGIE:
+                        // 1. Satzenden haben höchste Priorität
+                        // 2. Absätze sind ebenfalls gute Trennstellen
+                        // 3. Bei Längenüberschreitung trotzdem auf natürliche Grenzen warten
+                        
+                        // Keine Verarbeitung bei leerem Puffer
+                        if (buffer.Length == 0) return false;
+                        
+                        // Schneller Pfad: Satzenden sind immer gute Stellen zum Flushen
+                        // Aber Vorsicht vor Ellipsen (...) - nicht als Satzende zählen
+                        bool isEndOfSentence = ".!?".Contains(lastChar);
+                        
+                        // Bei Punkten prüfen, ob es sich um eine Ellipse handelt
+                        if (lastChar == '.' && buffer.Length >= 3)
+                        {
+                            // Ist dies Teil einer Ellipse?
+                            if (buffer.Length >= 3 && 
+                                buffer[buffer.Length - 2] == '.' && 
+                                buffer[buffer.Length - 3] == '.')
+                            {
+                                // Teil einer Ellipse, kein echtes Satzende
+                                isEndOfSentence = false;
+                            }
+                        }
+                        
+                        // Absätze sind auch gute Stellen zum Flushen
+                        bool isParagraphEnd = lastChar == '\n' || lastChar == '\r';
+                        
+                        // WICHTIG: Nur flushen, wenn wir ein vollständiges Wort haben
+                        // Vollständiges Wort: endet mit Interpunktion oder Leerzeichen
+                        bool hasCompleteWord = char.IsWhiteSpace(lastChar) || 
+                                              char.IsPunctuation(lastChar) ||
+                                              lastChar == '\'' || lastChar == '"';
+                        
+                        // WICHTIG: Bei Kommata prüfen, ob es sich um ein Komma in einer Zahl handelt (z.B. 1,000)
+                        if (lastChar == ',' && buffer.Length >= 2)
+                        {
+                            // Prüfen, ob Ziffern vor und nach dem Komma stehen
+                            bool isDigitBefore = char.IsDigit(buffer[buffer.Length - 2]);
+                            // Das nächste Zeichen sehen wir noch nicht, also konservativ sein
+                            hasCompleteWord = !isDigitBefore; // Wenn keine Ziffer vorher, ist es wahrscheinlich ein echtes Komma
+                        }
+                        
+                        // Sonderbehandlung für Gedankenstriche und andere Satzzeichen:
+                        // Nur als Trennstelle betrachten, wenn danach ein Leerzeichen folgt oder danach das Ende ist
+                        if (char.IsPunctuation(lastChar) && !".!?,:;".Contains(lastChar))
+                        {
+                            // Eher keine gute Trennstelle, wenn nicht eines der Hauptsatzzeichen
+                            hasCompleteWord = false;
+                        }
+                        
+                        // Größere Länge: Weiche Längengrenze, nur flushen an natürlichen Grenzen
+                        // und nur wenn wir garantiert nicht mitten im Wort sind
+                        bool hasReachedSizeThreshold = buffer.Length >= 250 && hasCompleteWord;
+                        
+                        // Priorisiere natürliche Grenzen für das Flushen
+                        // 1. Satzenden haben höchste Priorität
+                        // 2. Absätze sind ebenfalls gute Trennstellen
+                        // 3. Kommas sind akzeptabel, wenn sie zu einem vollständigen Wort gehören
+                        // 4. Nur bei Überschreitung einer Größenschwelle UND einem vollständigen Wort flushen
+                        return (isEndOfSentence && hasCompleteWord) || 
+                               (isParagraphEnd && hasCompleteWord) || 
+                               (lastChar == ',' && hasCompleteWord) ||
+                               (lastChar == ';' && hasCompleteWord) ||
+                               (lastChar == ':' && hasCompleteWord) ||
+                               (hasReachedSizeThreshold && hasCompleteWord);
+                    }
 
-                        // Flush bei Erreichen einer Mindestlänge oder bei Satzenden
-                        return buffer.Length >= 50 || (buffer.Length >= 20 && isEndOfSentence);
+
+                    bool IsSentenceEndBoundary(string text, int pos)
+                    {
+                        if (pos < 0 || pos >= text.Length) return false;
+                        // Satzzeichen gefolgt von Whitespace oder Textende
+                        return Regex.IsMatch(text.Substring(pos, Math.Min(2, text.Length - pos)), "^[.!?](?=\\s|$)");
                     }
 
                     /// <summary>
                     /// Holt den aktuellen Textpuffer und setzt ihn zurück
+                    /// Implementiert einen Lookahead-Mechanismus, der garantiert, dass keine Wörter getrennt werden
                     /// </summary>
-                    /// <returns>Textinhalt aus dem Puffer</returns>
-                    string FlushSegment(StringBuilder buffer)
+                    /// <returns>Textinhalt aus dem Puffer oder leer, wenn kein geeigneter Trennpunkt gefunden wurde</returns>
+                    string FlushSegmentAtSentenceBoundary(StringBuilder buffer)
                     {
-                        string segment = buffer.ToString();
-                        buffer.Clear();
-                        return segment;
+                        string text = buffer.ToString();
+                        
+                        // IMPLEMENTIERUNG EINES LOOKAHEAD-MECHANISMUS:
+                        // 1. Erst nach Satzgrenzen suchen (höchste Priorität)
+                        // 2. Wenn keine Satzgrenze gefunden, nach Wortgrenzen suchen
+                        // 3. Niemals mitten im Wort trennen - lieber warten!
+                        
+                        // Setze einen Ziel-Limit für die Suche (Soft-Limit, nicht hart)
+                        int targetLimit = 200; // Ungefährer Zielwert, aber nie erzwungen
+                        
+                        // 1. SCHRITT: Suche zunächst nach einer Satzgrenze
+                        int splitPos = -1;
+                        for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
+                        {
+                            if (IsSentenceEndBoundary(text, i))
+                            {
+                                splitPos = i + 1; // inkl. Satzzeichen
+                                break;
+                            }
+                        }
+
+                        // 2. SCHRITT: Falls keine Satzgrenze gefunden, suche nach einer Wortgrenze
+                        if (splitPos <= 0)
+                        {
+                            // Suche nach dem letzten Leerzeichen nahe dem Ziel
+                            for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
+                            {
+                                if (char.IsWhiteSpace(text[i]))
+                                {
+                                    splitPos = i + 1; // inkl. Leerzeichen
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 3. SCHRITT: KRITISCHER LOOKAHEAD-MECHANISMUS
+                        // Wenn wir einen Trennpunkt haben, prüfen, ob dieser tatsächlich eine natürliche Trennstelle ist
+                        if (splitPos > 0)
+                        {
+                            // Lookahead: Warte auf echtes Wort- oder Satzende
+                            // Wenn der gefundene Punkt mitten in einem Wort ist, vorwärts suchen
+                            while (splitPos < text.Length &&
+                                  !char.IsWhiteSpace(text[splitPos - 1]) &&
+                                  !IsSentenceEndBoundary(text, splitPos - 1))
+                            {
+                                // Wenn wir am Ende des Puffers sind, abbrechen und auf mehr Text warten
+                                if (splitPos == text.Length - 1)
+                                {
+                                    // Noch kein natürliches Ende - alles zurück in den Puffer
+                                    return string.Empty;
+                                }
+                                splitPos++;
+                            }
+                        }
+
+                        // Wenn keine natürliche Grenze gefunden, warte auf mehr Input
+                        if (splitPos <= 0 || splitPos >= text.Length)
+                        {
+                            return string.Empty;
+                        }
+
+                        // WICHTIG: Prüfe nochmal, ob wir mit einem vollständigen Wort aufhören
+                        string flush = text.Substring(0, splitPos).TrimEnd();
+                        
+                        // Falls das letzte Zeichen ein Buchstabe ist, sollten wir nicht flushen,
+                        // da wir mitten in einem Wort sein könnten
+                        if (flush.Length > 0 && char.IsLetterOrDigit(flush[flush.Length - 1]))
+                        {
+                            // Wir könnten mitten im Wort sein - warten auf mehr Text
+                            return string.Empty;
+                        }
+                        
+                        // Alles gut - Text bis zum Trennpunkt zurückgeben und Rest im Puffer behalten
+                        string rest = text.Substring(splitPos).TrimStart();
+                        buffer.Clear(); // Puffer leeren
+                        buffer.Append(rest); // Rest wieder anhängen
+                        
+                        _logger.LogInformation("[LOOKAHEAD-DEBUG] Flushing text chunk at boundary: '{Text}' (Rest: '{Rest}')", 
+                            flush.Length <= 50 ? flush : flush.Substring(0, 50) + "...",
+                            rest.Length <= 20 ? rest : rest.Substring(0, 20) + "...");
+                        
+                        return flush;
                     }
+
 
                     // Queue für das Tracking der TTS-Verarbeitungs-Tasks, um die richtige Reihenfolge beim Abspielen sicherzustellen
                     var ttsTaskQueue = new System.Collections.Concurrent.ConcurrentQueue<(Task<byte[]> Task, string TextChunk)>();
@@ -428,7 +580,7 @@ namespace VoiceAssistant
                                 // Nur starten, wenn ein nicht-leeres Token das Entscheidungskriterium auslöst
                                 if (token.Length > 0 && ShouldFlush(sb, token[token.Length - 1]))
                                 {
-                                    string textChunk = FlushSegment(sb);
+                                    string textChunk = FlushSegmentAtSentenceBoundary(sb);
                                     int chunkIndex = currentChunkIndex++;
 
                                     // Chunk-Generierung loggen
