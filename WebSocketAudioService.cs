@@ -283,40 +283,35 @@ namespace VoiceAssistant
                     /// <returns>True, wenn der Puffer zum Synthesizer geschickt werden sollte</returns>
                     bool ShouldFlush(StringBuilder buffer, char lastChar)
                     {
-                        // VERBESSERTE STRATEGIE:
-                        // 1. Satzenden haben höchste Priorität
-                        // 2. Absätze sind ebenfalls gute Trennstellen
-                        // 3. Bei Längenüberschreitung trotzdem auf natürliche Grenzen warten
-                        
-                        // Keine Verarbeitung bei leerem Puffer
-                        if (buffer.Length == 0) return false;
-                        
+                        // Keine Verarbeitung bei leerem Puffer oder sehr kurzem Text (warte auf mehr)
+                        if (buffer.Length < 10) return false;
+
                         // Schneller Pfad: Satzenden sind immer gute Stellen zum Flushen
                         // Aber Vorsicht vor Ellipsen (...) - nicht als Satzende zählen
                         bool isEndOfSentence = ".!?".Contains(lastChar);
-                        
+
                         // Bei Punkten prüfen, ob es sich um eine Ellipse handelt
                         if (lastChar == '.' && buffer.Length >= 3)
                         {
                             // Ist dies Teil einer Ellipse?
-                            if (buffer.Length >= 3 && 
-                                buffer[buffer.Length - 2] == '.' && 
+                            if (buffer.Length >= 3 &&
+                                buffer[buffer.Length - 2] == '.' &&
                                 buffer[buffer.Length - 3] == '.')
                             {
                                 // Teil einer Ellipse, kein echtes Satzende
                                 isEndOfSentence = false;
                             }
                         }
-                        
+
                         // Absätze sind auch gute Stellen zum Flushen
                         bool isParagraphEnd = lastChar == '\n' || lastChar == '\r';
-                        
+
                         // WICHTIG: Nur flushen, wenn wir ein vollständiges Wort haben
                         // Vollständiges Wort: endet mit Interpunktion oder Leerzeichen
-                        bool hasCompleteWord = char.IsWhiteSpace(lastChar) || 
+                        bool hasCompleteWord = char.IsWhiteSpace(lastChar) ||
                                               char.IsPunctuation(lastChar) ||
                                               lastChar == '\'' || lastChar == '"';
-                        
+
                         // WICHTIG: Bei Kommata prüfen, ob es sich um ein Komma in einer Zahl handelt (z.B. 1,000)
                         if (lastChar == ',' && buffer.Length >= 2)
                         {
@@ -325,7 +320,7 @@ namespace VoiceAssistant
                             // Das nächste Zeichen sehen wir noch nicht, also konservativ sein
                             hasCompleteWord = !isDigitBefore; // Wenn keine Ziffer vorher, ist es wahrscheinlich ein echtes Komma
                         }
-                        
+
                         // Sonderbehandlung für Gedankenstriche und andere Satzzeichen:
                         // Nur als Trennstelle betrachten, wenn danach ein Leerzeichen folgt oder danach das Ende ist
                         if (char.IsPunctuation(lastChar) && !".!?,:;".Contains(lastChar))
@@ -333,22 +328,26 @@ namespace VoiceAssistant
                             // Eher keine gute Trennstelle, wenn nicht eines der Hauptsatzzeichen
                             hasCompleteWord = false;
                         }
-                        
+
                         // Größere Länge: Weiche Längengrenze, nur flushen an natürlichen Grenzen
                         // und nur wenn wir garantiert nicht mitten im Wort sind
-                        bool hasReachedSizeThreshold = buffer.Length >= 250 && hasCompleteWord;
-                        
+                        // 
+                        // WICHTIG: Wir erhöhen den Schwellwert auf 10, um sicherzustellen, dass
+                        // wir genug Text für eine sinnvolle TTS-Verarbeitung haben
+                        bool hasReachedSizeThreshold = buffer.Length >= 10 && hasCompleteWord;
+
+                        // Die wichtigste Entscheidung: Vollständiger Satz endet mit . ! ?
+                        bool isCompleteSentence = isEndOfSentence && hasCompleteWord;
+
                         // Priorisiere natürliche Grenzen für das Flushen
                         // 1. Satzenden haben höchste Priorität
                         // 2. Absätze sind ebenfalls gute Trennstellen
                         // 3. Kommas sind akzeptabel, wenn sie zu einem vollständigen Wort gehören
                         // 4. Nur bei Überschreitung einer Größenschwelle UND einem vollständigen Wort flushen
-                        return (isEndOfSentence && hasCompleteWord) || 
-                               (isParagraphEnd && hasCompleteWord) || 
-                               (lastChar == ',' && hasCompleteWord) ||
-                               (lastChar == ';' && hasCompleteWord) ||
-                               (lastChar == ':' && hasCompleteWord) ||
-                               (hasReachedSizeThreshold && hasCompleteWord);
+                        return isCompleteSentence ||
+                               (isParagraphEnd && hasCompleteWord) ||
+                               ((/*lastChar == ',' ||*/ lastChar == ';' || lastChar == ':') && hasCompleteWord && buffer.Length >= 40) ||
+                               (hasReachedSizeThreshold && buffer.Length >= 100); // Wir wollen hier strenger sein
                     }
 
 
@@ -363,19 +362,25 @@ namespace VoiceAssistant
                     /// Holt den aktuellen Textpuffer und setzt ihn zurück
                     /// Implementiert einen Lookahead-Mechanismus, der garantiert, dass keine Wörter getrennt werden
                     /// </summary>
-                    /// <returns>Textinhalt aus dem Puffer oder leer, wenn kein geeigneter Trennpunkt gefunden wurde</returns>
+                    /// <returns>Textinhalt aus dem Puffer, nie leer wenn ShouldFlush true zurückgegeben hat</returns>
                     string FlushSegmentAtSentenceBoundary(StringBuilder buffer)
                     {
                         string text = buffer.ToString();
-                        
+
+                        if (string.IsNullOrWhiteSpace(text))
+                        {
+                            buffer.Clear();
+                            return string.Empty;
+                        }
+
                         // IMPLEMENTIERUNG EINES LOOKAHEAD-MECHANISMUS:
                         // 1. Erst nach Satzgrenzen suchen (höchste Priorität)
                         // 2. Wenn keine Satzgrenze gefunden, nach Wortgrenzen suchen
-                        // 3. Niemals mitten im Wort trennen - lieber warten!
-                        
+                        // 3. Niemals mitten im Wort trennen!
+
                         // Setze einen Ziel-Limit für die Suche (Soft-Limit, nicht hart)
                         int targetLimit = 200; // Ungefährer Zielwert, aber nie erzwungen
-                        
+
                         // 1. SCHRITT: Suche zunächst nach einer Satzgrenze
                         int splitPos = -1;
                         for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
@@ -387,7 +392,26 @@ namespace VoiceAssistant
                             }
                         }
 
-                        // 2. SCHRITT: Falls keine Satzgrenze gefunden, suche nach einer Wortgrenze
+                        // 2. SCHRITT: Falls keine Satzgrenze gefunden, suche nach einer Wortgrenze bei Komma/Semikolon
+                        if (splitPos <= 0)
+                        {
+                            // Suche nach Komma, Semikolon, Doppelpunkt
+                            for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
+                            {
+                                if (i < text.Length && (text[i] == ',' || text[i] == ';' || text[i] == ':'))
+                                {
+                                    // Prüfe, ob es kein Komma in einer Zahl ist (z.B. 1,000)
+                                    if (!(text[i] == ',' && i > 0 && i < text.Length - 1 &&
+                                          char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1])))
+                                    {
+                                        splitPos = i + 1; // inkl. Satzzeichen
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. SCHRITT: Falls immer noch nichts gefunden, suche nach Leerzeichen
                         if (splitPos <= 0)
                         {
                             // Suche nach dem letzten Leerzeichen nahe dem Ziel
@@ -401,52 +425,69 @@ namespace VoiceAssistant
                             }
                         }
 
-                        // 3. SCHRITT: KRITISCHER LOOKAHEAD-MECHANISMUS
-                        // Wenn wir einen Trennpunkt haben, prüfen, ob dieser tatsächlich eine natürliche Trennstelle ist
-                        if (splitPos > 0)
+                        // 4. SCHRITT: WICHTIG! Wenn keine natürliche Trennstelle gefunden wurde,
+                        // aber ShouldFlush hat bereits true zurückgegeben, müssen wir trotzdem einen
+                        // sinnvollen Chunk zurückgeben (nie leeren String!)
+                        if (splitPos <= 0)
                         {
-                            // Lookahead: Warte auf echtes Wort- oder Satzende
-                            // Wenn der gefundene Punkt mitten in einem Wort ist, vorwärts suchen
-                            while (splitPos < text.Length &&
-                                  !char.IsWhiteSpace(text[splitPos - 1]) &&
-                                  !IsSentenceEndBoundary(text, splitPos - 1))
+                            // Keine natürliche Grenze gefunden, aber wir müssen trotzdem trennen
+                            // Wir verwenden hier die gesamte Länge, falls sie nicht zu lang ist
+                            if (text.Length <= 200)
                             {
-                                // Wenn wir am Ende des Puffers sind, abbrechen und auf mehr Text warten
-                                if (splitPos == text.Length - 1)
+                                splitPos = text.Length;
+                            }
+                            else
+                            {
+                                // Bei sehr langem Text suchen wir nach einem geeigneten Wortende
+                                int position = Math.Min(150, text.Length - 1);
+
+                                // Finde das nächste Wortende nach dieser Position
+                                while (position < text.Length && !char.IsWhiteSpace(text[position]))
                                 {
-                                    // Noch kein natürliches Ende - alles zurück in den Puffer
-                                    return string.Empty;
+                                    position++;
+                                    // Notfall-Abbruch, falls wir kein Wortende finden
+                                    if (position >= text.Length - 1)
+                                    {
+                                        position = text.Length;
+                                        break;
+                                    }
                                 }
-                                splitPos++;
+
+                                splitPos = position;
                             }
                         }
 
-                        // Wenn keine natürliche Grenze gefunden, warte auf mehr Input
-                        if (splitPos <= 0 || splitPos >= text.Length)
+                        // Wenn der gefundene Trennpunkt am Anfang eines Wortes ist,
+                        // stellen wir sicher, dass wir nicht mitten im Wort trennen
+                        if (splitPos > 0 && splitPos < text.Length)
                         {
-                            return string.Empty;
+                            // Falls wir in einem Wort sind, springen wir zum Wortende
+                            if (char.IsLetterOrDigit(text[splitPos]) && !char.IsWhiteSpace(text[splitPos - 1]))
+                            {
+                                // Nach dem Wortende suchen
+                                while (splitPos < text.Length && !char.IsWhiteSpace(text[splitPos]) &&
+                                       !char.IsPunctuation(text[splitPos]))
+                                {
+                                    splitPos++;
+                                }
+                            }
                         }
 
-                        // WICHTIG: Prüfe nochmal, ob wir mit einem vollständigen Wort aufhören
+                        // Stelle sicher, dass der splitPos gültig ist
+                        splitPos = Math.Max(1, Math.Min(splitPos, text.Length));
+
+                        // Text bis zum Trennpunkt zurückgeben und Rest im Puffer behalten
                         string flush = text.Substring(0, splitPos).TrimEnd();
-                        
-                        // Falls das letzte Zeichen ein Buchstabe ist, sollten wir nicht flushen,
-                        // da wir mitten in einem Wort sein könnten
-                        if (flush.Length > 0 && char.IsLetterOrDigit(flush[flush.Length - 1]))
-                        {
-                            // Wir könnten mitten im Wort sein - warten auf mehr Text
-                            return string.Empty;
-                        }
-                        
-                        // Alles gut - Text bis zum Trennpunkt zurückgeben und Rest im Puffer behalten
-                        string rest = text.Substring(splitPos).TrimStart();
+                        string rest = splitPos < text.Length ? text.Substring(splitPos).TrimStart() : string.Empty;
+
                         buffer.Clear(); // Puffer leeren
-                        buffer.Append(rest); // Rest wieder anhängen
-                        
-                        _logger.LogInformation("[LOOKAHEAD-DEBUG] Flushing text chunk at boundary: '{Text}' (Rest: '{Rest}')", 
-                            flush.Length <= 50 ? flush : flush.Substring(0, 50) + "...",
-                            rest.Length <= 20 ? rest : rest.Substring(0, 20) + "...");
-                        
+                        if (!string.IsNullOrEmpty(rest))
+                        {
+                            buffer.Append(rest); // Rest wieder anhängen
+                        }
+
+                        _logger.LogInformation("[LOOKAHEAD-DEBUG] Flushing text chunk at boundary: '{Text}' (Rest: '{Rest}')", flush, rest);
+
                         return flush;
                     }
 
@@ -528,17 +569,23 @@ namespace VoiceAssistant
                     // Hilfsfunktion zum Starten einer TTS-Anfrage und Hinzufügen zur Queue
                     async Task StartTtsTaskAsync(string textChunk, int chunkIndex)
                     {
-                        if (string.IsNullOrWhiteSpace(textChunk))
+                        // WICHTIG: Niemals leere Chunks verarbeiten oder Chunks mit weniger als 5 Zeichen
+                        // Das würde nur zu sinnlosen API-Aufrufen führen
+                        if (string.IsNullOrWhiteSpace(textChunk) || textChunk.Trim().Length < 5)
+                        {
+                            _logger.LogWarning("[TTS-DEBUG] Skipping empty or too short chunk #{Index}", chunkIndex);
                             return;
+                        }
 
-                        var textPreview = textChunk.Length <= 50 ? textChunk : textChunk.Substring(0, 50) + "...";
                         _logger.LogInformation("[TTS-DEBUG] TTS starting for chunk #{Index}: '{TextChunk}'",
-                            chunkIndex, textPreview);
+                            chunkIndex, textChunk);
 
                         try
                         {
-                            // TTS-Anfrage starten
-                            var audioBytes = await _synthesizer.SynthesizeTextChunkAsync(textChunk, voice);
+                            // TTS-Anfrage starten - verwende das bereinigte Textchunk
+                            string cleanedChunk = textChunk.Trim();
+                            var audioBytes = await _synthesizer.SynthesizeTextChunkAsync(cleanedChunk, voice);
+                            //var audioBytes = await _synthesizer.ChunkedSynthesisAsync(cleanedChunk, voice);
 
                             // Füge den Chunk zur richtigen Position in der Queue hinzu
                             lock (audioChunkLock)
@@ -550,11 +597,12 @@ namespace VoiceAssistant
                             audioChunkReady.Release();
 
                             _logger.LogInformation("[TTS-DEBUG] TTS completed for chunk #{Index}: '{TextChunk}' ({Size} bytes)",
-                                chunkIndex, textPreview, audioBytes.Length);
+                                chunkIndex, textChunk, audioBytes.Length);
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Error processing TTS for chunk #{Index}", chunkIndex);
+                            _logger.LogError(ex, "Error processing TTS for chunk #{Index}: {Error}",
+                                chunkIndex, ex.Message);
                         }
                     }
 
@@ -580,17 +628,29 @@ namespace VoiceAssistant
                                 // Nur starten, wenn ein nicht-leeres Token das Entscheidungskriterium auslöst
                                 if (token.Length > 0 && ShouldFlush(sb, token[token.Length - 1]))
                                 {
+                                    // Jetzt die Flush-Methode aufrufen, die IMMER einen nicht-leeren String zurückgibt
+                                    // wenn ShouldFlush() true zurückgegeben hat
                                     string textChunk = FlushSegmentAtSentenceBoundary(sb);
-                                    int chunkIndex = currentChunkIndex++;
 
-                                    // Chunk-Generierung loggen
-                                    var textPreview = textChunk.Length <= 30 ? textChunk : textChunk.Substring(0, 30) + "...";
-                                    _logger.LogInformation("[CHUNK-DEBUG] Generated chunk #{Index}: '{Text}'",
-                                        chunkIndex, textPreview);
+                                    // Nur verarbeiten, wenn wir einen nicht-leeren Chunk haben
+                                    if (!string.IsNullOrWhiteSpace(textChunk))
+                                    {
+                                        int chunkIndex = currentChunkIndex++;
 
-                                    // Starte einen neuen TTS-Task für diesen Chunk
-                                    var task = Task.Run(() => StartTtsTaskAsync(textChunk, chunkIndex));
-                                    ttsTasks.Add(task);
+                                        // Chunk-Generierung loggen
+                                        var textPreview = textChunk.Length <= 30 ? textChunk : textChunk.Substring(0, 30) + "...";
+                                        _logger.LogInformation("[CHUNK-DEBUG] Generated chunk #{Index}: '{Text}'",
+                                            chunkIndex, textPreview);
+
+                                        // Starte einen neuen TTS-Task für diesen Chunk
+                                        var task = Task.Run(() => StartTtsTaskAsync(textChunk, chunkIndex));
+                                        ttsTasks.Add(task);
+                                    }
+                                    else
+                                    {
+                                        // Für Debug-Zwecke loggen, dass kein Chunk erzeugt wurde
+                                        _logger.LogWarning("[CHUNK-DEBUG] No chunk generated despite ShouldFlush returning true");
+                                    }
                                 }
                             }
                             catch (Exception ex)
@@ -604,17 +664,25 @@ namespace VoiceAssistant
                     {
                         try
                         {
-                            // Verarbeite verbleibenden Text
-                            string remainingText = sb.ToString();
+                            // Verarbeite verbleibenden Text, aber nur wenn er lang genug ist
+                            string remainingText = sb.ToString().Trim();
                             sb.Clear();
 
-                            _logger.LogDebug("Processing remaining text: {TextChunk}",
-                                remainingText.Length <= 30 ? remainingText : remainingText.Substring(0, 30) + "...");
+                            if (!string.IsNullOrWhiteSpace(remainingText) && remainingText.Length >= 5)
+                            {
+                                _logger.LogInformation("[FINAL-CHUNK-DEBUG] Processing remaining text: {TextChunk}",
+                                    remainingText.Length <= 30 ? remainingText : remainingText.Substring(0, 30) + "...");
 
-                            // Starte einen TTS-Task für den letzten Chunk
-                            int finalChunkIndex = currentChunkIndex;
-                            var task = Task.Run(() => StartTtsTaskAsync(remainingText, finalChunkIndex));
-                            ttsTasks.Add(task);
+                                // Starte einen TTS-Task für den letzten Chunk
+                                int finalChunkIndex = currentChunkIndex++;
+                                var task = Task.Run(() => StartTtsTaskAsync(remainingText, finalChunkIndex));
+                                ttsTasks.Add(task);
+                            }
+                            else
+                            {
+                                _logger.LogInformation("[FINAL-CHUNK-DEBUG] Remaining text too short, skipping: '{Text}'",
+                                    remainingText);
+                            }
                         }
                         catch (Exception ex)
                         {
