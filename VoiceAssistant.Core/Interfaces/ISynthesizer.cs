@@ -22,5 +22,14 @@ namespace VoiceAssistant.Core.Interfaces
         /// <param name="voice">Voice identifier.</param>
         /// <returns>Raw audio bytes for this text chunk.</returns>
         Task<byte[]> SynthesizeTextChunkAsync(string textChunk, string voice);
+
+        /// <summary>
+        /// Synthesizes speech from text in chunks, providing each chunk via callback as it becomes available.
+        /// </summary>
+        /// <param name="text">The text to synthesize.</param>
+        /// <param name="voice">The voice to use.</param>
+        /// <param name="onChunkReady">Callback that will receive audio bytes for each synthesized chunk.</param>
+        /// <returns>A task representing the complete synthesis operation.</returns>
+        Task ChunkedSynthesisAsync(string text, string voice, System.Action<byte[]> onChunkReady);
     }
 }

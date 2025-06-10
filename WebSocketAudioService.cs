@@ -268,484 +268,24 @@ namespace VoiceAssistant
             try
             {
                 _logger.LogInformation("Processing segment: {Bytes} bytes", audioBytes.Length);
-                using var ms = new MemoryStream();
-                var header = CreateWavHeader(audioBytes.Length);
-                ms.Write(header, 0, header.Length);
-                ms.Write(audioBytes, 0, audioBytes.Length);
-                ms.Position = 0;
 
-                string prompt = await _recognizer.RecognizeAsync(ms, "audio/wav", "segment.wav");
-                _logger.LogInformation("Transcription: '{Prompt}'", prompt);
+                MemoryStream audioMemoryStream = PrepareAudioStreamForTranscription(audioBytes);
+                string prompt = await GetTranscriptionAsync(audioMemoryStream);
 
                 _chatLogManager.AddMessage(ChatRole.User, prompt);
                 await SendEventAsync(webSocket, "prompt", new { prompt });
 
                 string reply;
-                var voice = _pipelineOptions.TtsVoice;
-
-                if (!_pipelineOptions.DisableTokenStreaming && _chatService is StreamingOpenAIChatService)
+                if (!_pipelineOptions.DisableTokenStreaming && _chatService is StreamingOpenAIChatService streamingChatService)
                 {
-                    // ---- ECHTES END-TO-END-STREAMING ----
-                    // Diese Implementation parallelisiert das Token-Streaming und TTS-Streaming,
-                    // sodass Audio schon während der Text-Generierung erzeugt und abgespielt werden kann
-
-                    var streaming = (StreamingOpenAIChatService)_chatService;
-                    var sb = new StringBuilder();
-
-                    // Hilfsfunktionen zum Verarbeiten von Teiltext für TTS
-
-                    /// <summary>
-                    /// Bestimmt, ob der aktuelle Textpuffer für die TTS-Verarbeitung bereit ist
-                    /// WICHTIG: Implementiert eine konservative Strategie, die niemals mitten im Wort trennt
-                    /// </summary>
-                    /// <returns>True, wenn der Puffer zum Synthesizer geschickt werden sollte</returns>
-                    bool ShouldFlush(StringBuilder buffer, char lastChar)
-                    {
-                        // Keine Verarbeitung bei leerem Puffer oder sehr kurzem Text (warte auf mehr)
-                        if (buffer.Length < 10) return false;
-
-                        // Schneller Pfad: Satzenden sind immer gute Stellen zum Flushen
-                        // Aber Vorsicht vor Ellipsen (...) - nicht als Satzende zählen
-                        bool isEndOfSentence = ".!?".Contains(lastChar);
-
-                        // Bei Punkten prüfen, ob es sich um eine Ellipse handelt
-                        if (lastChar == '.' && buffer.Length >= 3)
-                        {
-                            // Ist dies Teil einer Ellipse?
-                            if (buffer.Length >= 3 &&
-                                buffer[buffer.Length - 2] == '.' &&
-                                buffer[buffer.Length - 3] == '.')
-                            {
-                                // Teil einer Ellipse, kein echtes Satzende
-                                isEndOfSentence = false;
-                            }
-                        }
-
-                        // Absätze sind auch gute Stellen zum Flushen
-                        bool isParagraphEnd = lastChar == '\n' || lastChar == '\r';
-
-                        // WICHTIG: Nur flushen, wenn wir ein vollständiges Wort haben
-                        // Vollständiges Wort: endet mit Interpunktion oder Leerzeichen
-                        bool hasCompleteWord = char.IsWhiteSpace(lastChar) ||
-                                              char.IsPunctuation(lastChar) ||
-                                              lastChar == '\'' || lastChar == '"';
-
-                        // WICHTIG: Bei Kommata prüfen, ob es sich um ein Komma in einer Zahl handelt (z.B. 1,000)
-                        if (lastChar == ',' && buffer.Length >= 2)
-                        {
-                            // Prüfen, ob Ziffern vor und nach dem Komma stehen
-                            bool isDigitBefore = char.IsDigit(buffer[buffer.Length - 2]);
-                            // Das nächste Zeichen sehen wir noch nicht, also konservativ sein
-                            hasCompleteWord = !isDigitBefore; // Wenn keine Ziffer vorher, ist es wahrscheinlich ein echtes Komma
-                        }
-
-                        // Sonderbehandlung für Gedankenstriche und andere Satzzeichen:
-                        // Nur als Trennstelle betrachten, wenn danach ein Leerzeichen folgt oder danach das Ende ist
-                        if (char.IsPunctuation(lastChar) && !".!?,:;".Contains(lastChar))
-                        {
-                            // Eher keine gute Trennstelle, wenn nicht eines der Hauptsatzzeichen
-                            hasCompleteWord = false;
-                        }
-
-                        // Größere Länge: Weiche Längengrenze, nur flushen an natürlichen Grenzen
-                        // und nur wenn wir garantiert nicht mitten im Wort sind
-                        // 
-                        // WICHTIG: Wir erhöhen den Schwellwert auf 10, um sicherzustellen, dass
-                        // wir genug Text für eine sinnvolle TTS-Verarbeitung haben
-                        bool hasReachedSizeThreshold = buffer.Length >= 10 && hasCompleteWord;
-
-                        // Die wichtigste Entscheidung: Vollständiger Satz endet mit . ! ?
-                        bool isCompleteSentence = isEndOfSentence && hasCompleteWord;
-
-                        // Priorisiere natürliche Grenzen für das Flushen
-                        // 1. Satzenden haben höchste Priorität
-                        // 2. Absätze sind ebenfalls gute Trennstellen
-                        // 3. Kommas sind akzeptabel, wenn sie zu einem vollständigen Wort gehören
-                        // 4. Nur bei Überschreitung einer Größenschwelle UND einem vollständigen Wort flushen
-                        return isCompleteSentence ||
-                               (isParagraphEnd && hasCompleteWord) ||
-                               ((/*lastChar == ',' ||*/ lastChar == ';' || lastChar == ':') && hasCompleteWord && buffer.Length >= 40) ||
-                               (hasReachedSizeThreshold && buffer.Length >= 100); // Wir wollen hier strenger sein
-                    }
-
-
-                    bool IsSentenceEndBoundary(string text, int pos)
-                    {
-                        if (pos < 0 || pos >= text.Length) return false;
-                        // Satzzeichen gefolgt von Whitespace oder Textende
-                        return Regex.IsMatch(text.Substring(pos, Math.Min(2, text.Length - pos)), "^[.!?](?=\\s|$)");
-                    }
-
-                    /// <summary>
-                    /// Holt den aktuellen Textpuffer und setzt ihn zurück
-                    /// Implementiert einen Lookahead-Mechanismus, der garantiert, dass keine Wörter getrennt werden
-                    /// </summary>
-                    /// <returns>Textinhalt aus dem Puffer, nie leer wenn ShouldFlush true zurückgegeben hat</returns>
-                    string FlushSegmentAtSentenceBoundary(StringBuilder buffer)
-                    {
-                        string text = buffer.ToString();
-
-                        if (string.IsNullOrWhiteSpace(text))
-                        {
-                            buffer.Clear();
-                            return string.Empty;
-                        }
-
-                        // IMPLEMENTIERUNG EINES LOOKAHEAD-MECHANISMUS:
-                        // 1. Erst nach Satzgrenzen suchen (höchste Priorität)
-                        // 2. Wenn keine Satzgrenze gefunden, nach Wortgrenzen suchen
-                        // 3. Niemals mitten im Wort trennen!
-
-                        // Setze einen Ziel-Limit für die Suche (Soft-Limit, nicht hart)
-                        int targetLimit = 200; // Ungefährer Zielwert, aber nie erzwungen
-
-                        // 1. SCHRITT: Suche zunächst nach einer Satzgrenze
-                        int splitPos = -1;
-                        for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
-                        {
-                            if (IsSentenceEndBoundary(text, i))
-                            {
-                                splitPos = i + 1; // inkl. Satzzeichen
-                                break;
-                            }
-                        }
-
-                        // 2. SCHRITT: Falls keine Satzgrenze gefunden, suche nach einer Wortgrenze bei Komma/Semikolon
-                        if (splitPos <= 0)
-                        {
-                            // Suche nach Komma, Semikolon, Doppelpunkt
-                            for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
-                            {
-                                if (i < text.Length && (text[i] == ',' || text[i] == ';' || text[i] == ':'))
-                                {
-                                    // Prüfe, ob es kein Komma in einer Zahl ist (z.B. 1,000)
-                                    if (!(text[i] == ',' && i > 0 && i < text.Length - 1 &&
-                                          char.IsDigit(text[i - 1]) && char.IsDigit(text[i + 1])))
-                                    {
-                                        splitPos = i + 1; // inkl. Satzzeichen
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        // 3. SCHRITT: Falls immer noch nichts gefunden, suche nach Leerzeichen
-                        if (splitPos <= 0)
-                        {
-                            // Suche nach dem letzten Leerzeichen nahe dem Ziel
-                            for (int i = Math.Min(text.Length - 1, targetLimit * 2); i >= 0; i--)
-                            {
-                                if (char.IsWhiteSpace(text[i]))
-                                {
-                                    splitPos = i + 1; // inkl. Leerzeichen
-                                    break;
-                                }
-                            }
-                        }
-
-                        // 4. SCHRITT: WICHTIG! Wenn keine natürliche Trennstelle gefunden wurde,
-                        // aber ShouldFlush hat bereits true zurückgegeben, müssen wir trotzdem einen
-                        // sinnvollen Chunk zurückgeben (nie leeren String!)
-                        if (splitPos <= 0)
-                        {
-                            // Keine natürliche Grenze gefunden, aber wir müssen trotzdem trennen
-                            // Wir verwenden hier die gesamte Länge, falls sie nicht zu lang ist
-                            if (text.Length <= 200)
-                            {
-                                splitPos = text.Length;
-                            }
-                            else
-                            {
-                                // Bei sehr langem Text suchen wir nach einem geeigneten Wortende
-                                int position = Math.Min(150, text.Length - 1);
-
-                                // Finde das nächste Wortende nach dieser Position
-                                while (position < text.Length && !char.IsWhiteSpace(text[position]))
-                                {
-                                    position++;
-                                    // Notfall-Abbruch, falls wir kein Wortende finden
-                                    if (position >= text.Length - 1)
-                                    {
-                                        position = text.Length;
-                                        break;
-                                    }
-                                }
-
-                                splitPos = position;
-                            }
-                        }
-
-                        // Wenn der gefundene Trennpunkt am Anfang eines Wortes ist,
-                        // stellen wir sicher, dass wir nicht mitten im Wort trennen
-                        if (splitPos > 0 && splitPos < text.Length)
-                        {
-                            // Falls wir in einem Wort sind, springen wir zum Wortende
-                            if (char.IsLetterOrDigit(text[splitPos]) && !char.IsWhiteSpace(text[splitPos - 1]))
-                            {
-                                // Nach dem Wortende suchen
-                                while (splitPos < text.Length && !char.IsWhiteSpace(text[splitPos]) &&
-                                       !char.IsPunctuation(text[splitPos]))
-                                {
-                                    splitPos++;
-                                }
-                            }
-                        }
-
-                        // Stelle sicher, dass der splitPos gültig ist
-                        splitPos = Math.Max(1, Math.Min(splitPos, text.Length));
-
-                        // Text bis zum Trennpunkt zurückgeben und Rest im Puffer behalten
-                        string flush = text.Substring(0, splitPos).TrimEnd();
-                        string rest = splitPos < text.Length ? text.Substring(splitPos).TrimStart() : string.Empty;
-
-                        buffer.Clear(); // Puffer leeren
-                        if (!string.IsNullOrEmpty(rest))
-                        {
-                            buffer.Append(rest); // Rest wieder anhängen
-                        }
-
-                        _logger.LogInformation("[LOOKAHEAD-DEBUG] Flushing text chunk at boundary: '{Text}' (Rest: '{Rest}')", flush, rest);
-
-                        return flush;
-                    }
-
-
-                    // Queue für das Tracking der TTS-Verarbeitungs-Tasks, um die richtige Reihenfolge beim Abspielen sicherzustellen
-                    var ttsTaskQueue = new System.Collections.Concurrent.ConcurrentQueue<(Task<byte[]> Task, string TextChunk)>();
-
-                    // Semaphore für das sequentielle Senden von Audio-Chunks (nicht für die TTS-Verarbeitung!)
-                    SemaphoreSlim audioSendSemaphore = new SemaphoreSlim(1, 1);
-
-                    // Audio-Queue-System für geordnete Verarbeitung
-                    int nextChunkIndex = 0;  // Der nächste zu sendende Chunk-Index
-                    var audioChunks = new Dictionary<int, byte[]>();  // Speichert fertige Audio-Chunks nach Position
-                    var audioChunkReady = new SemaphoreSlim(0);  // Signalisiert, wenn neue Chunks bereit sind
-                    var audioChunkLock = new object();  // Lock für Thread-Sicherheit
-                    bool isResponseComplete = false;  // Flag für "Alle TTS-Aufgaben sind abgeschlossen"
-
-                    // Task zur sequentiellen Verarbeitung der fertigen Audio-Chunks
-                    Task audioProcessingTask = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            while (true)
-                            {
-                                // Warte auf Signal, dass ein neuer Chunk bereit ist
-                                await audioChunkReady.WaitAsync();
-
-                                // Sende alle verfügbaren Chunks in der richtigen Reihenfolge
-                                bool sentAny = false;
-
-                                do
-                                {
-                                    sentAny = false;
-                                    byte[] chunk = null;
-
-                                    // Prüfe ob der nächste Chunk in der Reihenfolge bereit ist
-                                    lock (audioChunkLock)
-                                    {
-                                        if (audioChunks.TryGetValue(nextChunkIndex, out chunk))
-                                        {
-                                            audioChunks.Remove(nextChunkIndex);
-                                            nextChunkIndex++;
-                                            sentAny = true;
-                                        }
-                                    }
-
-                                    // Wenn ein Chunk bereit ist, sende ihn mit Index
-                                    if (sentAny && chunk != null)
-                                    {
-                                        await SendEventAsync(webSocket, "audio-chunk",
-                                            new
-                                            {
-                                                chunk = Convert.ToBase64String(chunk),
-                                                index = nextChunkIndex - 1  // Sende Chunk-Index mit
-                                            });
-
-                                        int sentIndex = nextChunkIndex - 1;
-                                        _logger.LogInformation("[WEBSOCKET-DEBUG] Sent audio chunk #{Index} ({Size} bytes)",
-                                            sentIndex, chunk.Length);
-                                    }
-                                } while (sentAny);  // Solange Chunks verfügbar sind, weitermachen
-
-                                // Prüfe, ob wir fertig sind
-                                lock (audioChunkLock)
-                                {
-                                    if (isResponseComplete && audioChunks.Count == 0)
-                                    {
-                                        break;  // Alle Chunks wurden gesendet, fertig
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Error in audio processing task");
-                        }
-                    });
-
-                    // Hilfsfunktion zum Starten einer TTS-Anfrage und Hinzufügen zur Queue
-                    async Task StartTtsTaskAsync(string textChunk, int chunkIndex)
-                    {
-                        // WICHTIG: Niemals leere Chunks verarbeiten oder Chunks mit weniger als 5 Zeichen
-                        // Das würde nur zu sinnlosen API-Aufrufen führen
-                        if (string.IsNullOrWhiteSpace(textChunk) || textChunk.Trim().Length < 5)
-                        {
-                            _logger.LogWarning("[TTS-DEBUG] Skipping empty or too short chunk #{Index}", chunkIndex);
-                            return;
-                        }
-
-                        _logger.LogInformation("[TTS-DEBUG] TTS starting for chunk #{Index}: '{TextChunk}'",
-                            chunkIndex, textChunk);
-
-                        try
-                        {
-                            // TTS-Anfrage starten - verwende das bereinigte Textchunk
-                            string cleanedChunk = textChunk.Trim();
-                            var audioBytes = await _synthesizer.SynthesizeTextChunkAsync(cleanedChunk, voice);
-                            //var audioBytes = await _synthesizer.ChunkedSynthesisAsync(cleanedChunk, voice);
-
-                            // Füge den Chunk zur richtigen Position in der Queue hinzu
-                            lock (audioChunkLock)
-                            {
-                                audioChunks[chunkIndex] = audioBytes;
-                            }
-
-                            // Signalisiere, dass ein neuer Chunk bereit ist
-                            audioChunkReady.Release();
-
-                            _logger.LogInformation("[TTS-DEBUG] TTS completed for chunk #{Index}: '{TextChunk}' ({Size} bytes)",
-                                chunkIndex, textChunk, audioBytes.Length);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Error processing TTS for chunk #{Index}: {Error}",
-                                chunkIndex, ex.Message);
-                        }
-                    }
-
-                    // Generiere Antwort mit Token-Callback für Parallelisierung
-                    // Der Callback wird für jedes ankommende Token ausgeführt und startet
-                    // bei passenden Stellen (Satzenden, ausreichende Länge) eine TTS-Anfrage
-                    int currentChunkIndex = 0;  // Zählt die Chunks für die richtige Reihenfolge
-                    List<Task> ttsTasks = new List<Task>();  // Liste für alle TTS-Tasks
-
-                    reply = await streaming.GenerateStreamingResponseAsync(
-                        _chatLogManager.GetMessages(),
-                        async token =>
-                        {
-                            try
-                            {
-                                // 1. Token zum Frontend senden für sofortige Text-Anzeige
-                                await SendEventAsync(webSocket, "token", new { token });
-
-                                // 2. Token im Buffer für spätere TTS-Verarbeitung sammeln
-                                sb.Append(token);
-
-                                // 3. Bei ausreichender Größe oder Satzende TTS-Synthese starten
-                                // Nur starten, wenn ein nicht-leeres Token das Entscheidungskriterium auslöst
-                                if (token.Length > 0 && ShouldFlush(sb, token[token.Length - 1]))
-                                {
-                                    // Jetzt die Flush-Methode aufrufen, die IMMER einen nicht-leeren String zurückgibt
-                                    // wenn ShouldFlush() true zurückgegeben hat
-                                    string textChunk = FlushSegmentAtSentenceBoundary(sb);
-
-                                    // Nur verarbeiten, wenn wir einen nicht-leeren Chunk haben
-                                    if (!string.IsNullOrWhiteSpace(textChunk))
-                                    {
-                                        int chunkIndex = currentChunkIndex++;
-
-                                        // Chunk-Generierung loggen
-                                        var textPreview = textChunk.Length <= 30 ? textChunk : textChunk.Substring(0, 30) + "...";
-                                        _logger.LogInformation("[CHUNK-DEBUG] Generated chunk #{Index}: '{Text}'",
-                                            chunkIndex, textPreview);
-
-                                        // Starte einen neuen TTS-Task für diesen Chunk
-                                        var task = Task.Run(() => StartTtsTaskAsync(textChunk, chunkIndex));
-                                        ttsTasks.Add(task);
-                                    }
-                                    else
-                                    {
-                                        // Für Debug-Zwecke loggen, dass kein Chunk erzeugt wurde
-                                        _logger.LogWarning("[CHUNK-DEBUG] No chunk generated despite ShouldFlush returning true");
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, "Error processing token in streaming response");
-                            }
-                        });
-
-                    // Restlichen Text verarbeiten, falls vorhanden
-                    if (sb.Length > 0)
-                    {
-                        try
-                        {
-                            // Verarbeite verbleibenden Text, aber nur wenn er lang genug ist
-                            string remainingText = sb.ToString().Trim();
-                            sb.Clear();
-
-                            if (!string.IsNullOrWhiteSpace(remainingText) && remainingText.Length >= 5)
-                            {
-                                _logger.LogInformation("[FINAL-CHUNK-DEBUG] Processing remaining text: {TextChunk}",
-                                    remainingText.Length <= 30 ? remainingText : remainingText.Substring(0, 30) + "...");
-
-                                // Starte einen TTS-Task für den letzten Chunk
-                                int finalChunkIndex = currentChunkIndex++;
-                                var task = Task.Run(() => StartTtsTaskAsync(remainingText, finalChunkIndex));
-                                ttsTasks.Add(task);
-                            }
-                            else
-                            {
-                                _logger.LogInformation("[FINAL-CHUNK-DEBUG] Remaining text too short, skipping: '{Text}'",
-                                    remainingText);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Error processing remaining text");
-                        }
-                    }
-
-                    // Auf Abschluss aller TTS-Verarbeitungen warten
-                    _logger.LogDebug("Waiting for {Count} TTS tasks to complete", ttsTasks.Count);
-                    await Task.WhenAll(ttsTasks);
-
-                    // Warte auf Abschluss des Audio-Verarbeitungs-Tasks
-                    _logger.LogDebug("Waiting for audio processing task to complete");
-
-                    // Setze ein Flag für die Fertigstellung und sende restliche Chunks
-                    lock (audioChunkLock)
-                    {
-                        isResponseComplete = true;
-                        audioChunkReady.Release();  // Signal senden, dass wir fertig sind
-                    }
-
-                    await audioProcessingTask;
+                    reply = await HandleStreamingChatResponseAsync(webSocket, streamingChatService, prompt);
                 }
                 else
                 {
-                    // Fallback für nicht-streaming Modus
-                    reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
-                    await SendEventAsync(webSocket, "token", new { token = reply });
-
-                    // TTS wie bisher
-                    _logger.LogInformation("Using TTS voice: {Voice}", voice);
-                    var audioOut = await _synthesizer.SynthesizeAsync(reply, voice);
-                    await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(audioOut) });
+                    reply = await HandleNonStreamingChatResponseAsync(webSocket, prompt);
                 }
 
-                // Annotate chat log entry with current pipeline settings
-                var botMsg = _chatLogManager.AddMessage(
-                    ChatRole.Bot,
-                    reply,
-                    _pipelineOptions.ChatModel,
-                    _pipelineOptions.TtsVoice);
-                _logger.LogInformation("Reply: '{Reply}'", reply);
-
-                await SendEventAsync(webSocket, "audio-done", null);
-                await SendEventAsync(webSocket, "done", null);
+                LogAndSendFinalEvents(webSocket, reply);
             }
             catch (Exception ex)
             {
@@ -754,7 +294,408 @@ namespace VoiceAssistant
             }
         }
 
-        private static async Task SendEventAsync(WebSocket webSocket, string eventName, object data)
+        private MemoryStream PrepareAudioStreamForTranscription(byte[] audioBytes)
+        {
+            var ms = new MemoryStream();
+            var header = CreateWavHeader(audioBytes.Length);
+            ms.Write(header, 0, header.Length);
+            ms.Write(audioBytes, 0, audioBytes.Length);
+            ms.Position = 0;
+            return ms;
+        }
+
+        private async Task<string> GetTranscriptionAsync(MemoryStream audioMemoryStream)
+        {
+            string prompt = await _recognizer.RecognizeAsync(audioMemoryStream, "audio/wav", "segment.wav");
+            _logger.LogInformation("Transcription: '{Prompt}'", prompt);
+            return prompt;
+        }
+
+        private async Task<string> HandleStreamingChatResponseAsync(WebSocket webSocket, StreamingOpenAIChatService streamingChatService, string prompt)
+        {
+            var voice = _pipelineOptions.TtsVoice;
+            var sb = new StringBuilder();
+            string fullReply = string.Empty; // To accumulate the full reply for logging
+
+            // Local functions ShouldFlush, FlushSegmentAtSentenceBoundary, IsSentenceEndBoundary, StartTtsTaskAsync remain here
+            // ... (definitions of ShouldFlush, FlushSegmentAtSentenceBoundary, IsSentenceEndBoundary as they were)
+            bool ShouldFlush(StringBuilder buffer, char lastChar, bool isFirstChunkSent)
+            {
+                // MODIFIED: Different logic for first chunk
+                if (!isFirstChunkSent)
+                {
+                    // For the first chunk, flush more aggressively: at sentence end or if a certain length is reached.
+                    bool currentIsPotentialEndOfFirstChunk = buffer.Length >= _pipelineOptions.TtsMinFirstChunkLength; 
+                    bool currentIsEndOfSentence = ".!?".Contains(lastChar);
+                    if (lastChar == '.' && buffer.Length >= 3 && buffer[buffer.Length - 2] == '.' && buffer[buffer.Length - 3] == '.') currentIsEndOfSentence = false;
+                    bool currentHasCompleteWord = char.IsWhiteSpace(lastChar) || char.IsPunctuation(lastChar) || lastChar == '\'' || lastChar == '"';
+                    
+                    return (currentIsEndOfSentence && currentHasCompleteWord && buffer.Length > 0) || (currentIsPotentialEndOfFirstChunk && currentHasCompleteWord);
+                }
+
+                // Logic for subsequent chunks (can be refined further based on _pipelineOptions.TtsSubsequentChunkLength)
+                if (buffer.Length < _pipelineOptions.TtsSubsequentChunkLength / 4 && buffer.Length < 10) return false; // Avoid very short chunks for subsequent parts
+
+                bool isEndOfSentence = ".!?".Contains(lastChar);
+                if (lastChar == '.' && buffer.Length >= 3 && buffer[buffer.Length - 2] == '.' && buffer[buffer.Length - 3] == '.')
+                {
+                    isEndOfSentence = false;
+                }
+
+                bool isParagraphEnd = lastChar == '\n' || lastChar == '\r';
+
+                bool hasCompleteWord = char.IsWhiteSpace(lastChar) || char.IsPunctuation(lastChar) || lastChar == '\'' || lastChar == '"';
+
+                if (lastChar == ',' && buffer.Length >= 2)
+                {
+                    bool isDigitBefore = char.IsDigit(buffer[buffer.Length - 2]);
+                    hasCompleteWord = !isDigitBefore; 
+                }
+
+                if (char.IsPunctuation(lastChar) && !".!?,:;".Contains(lastChar))
+                {
+                    hasCompleteWord = false;
+                }
+                
+                bool hasReachedSubsequentChunkLength = buffer.Length >= _pipelineOptions.TtsSubsequentChunkLength && hasCompleteWord;
+
+                bool isCompleteSentence = isEndOfSentence && hasCompleteWord;
+
+                return isCompleteSentence ||
+                       (isParagraphEnd && hasCompleteWord) ||
+                       ((lastChar == ';' || lastChar == ':') && hasCompleteWord && buffer.Length >= _pipelineOptions.TtsSubsequentChunkLength / 2) || 
+                       hasReachedSubsequentChunkLength;
+            }
+
+            bool IsSentenceEndBoundary(string text, int pos)
+            {
+                if (pos < 0 || pos >= text.Length) return false;
+                return Regex.IsMatch(text.Substring(pos, Math.Min(2, text.Length - pos)), "^[.!?](?=\\s|$)");
+            }
+
+            string FlushSegmentAtSentenceBoundary(StringBuilder buffer, bool isFirstChunkSent)
+            {
+                string currentText = buffer.ToString(); 
+
+                if (string.IsNullOrWhiteSpace(currentText))
+                {
+                    buffer.Clear();
+                    return string.Empty;
+                }
+
+                if (!isFirstChunkSent)
+                {
+                    int firstChunkTargetLimit = _pipelineOptions.TtsMaxFirstChunkLength; 
+                    int currentSplitPos = -1; 
+                    if (currentText.Length <= firstChunkTargetLimit) {
+                        currentSplitPos = currentText.Length;
+                    } else {
+                        for (int i = Math.Min(currentText.Length - 1, firstChunkTargetLimit); i >= 0; i--)
+                        {
+                            if (IsSentenceEndBoundary(currentText, i))
+                            {
+                                currentSplitPos = i + 1; 
+                                break;
+                            }
+                        }
+                        if (currentSplitPos <= 0) { 
+                            for (int i = Math.Min(currentText.Length - 1, firstChunkTargetLimit); i >=0; i--) {
+                                if (char.IsWhiteSpace(currentText[i]) || char.IsPunctuation(currentText[i])) {
+                                    currentSplitPos = i + 1;
+                                    break;
+                                }
+                            }
+                        }
+                        if (currentSplitPos <= 0) currentSplitPos = Math.Min(currentText.Length, firstChunkTargetLimit); 
+                    }
+                    string flushSegment = currentText.Substring(0, currentSplitPos).TrimEnd(); 
+                    string remainingText = currentSplitPos < currentText.Length ? currentText.Substring(currentSplitPos).TrimStart() : string.Empty; 
+                    buffer.Clear();
+                    if (!string.IsNullOrEmpty(remainingText)) buffer.Append(remainingText);
+                    _logger.LogInformation("[LOOKAHEAD-DEBUG] Flushing FIRST text chunk: '{Text}' (Rest: '{Rest}')", flushSegment, remainingText);
+                    return flushSegment;
+                }
+
+                string originalText = buffer.ToString();
+                int originalSplitPos = -1;
+                int targetLimit = _pipelineOptions.TtsSubsequentChunkLength; 
+
+                for (int i = Math.Min(originalText.Length - 1, targetLimit * 2); i >= 0; i--)
+                {
+                    if (IsSentenceEndBoundary(originalText, i))
+                    {
+                        originalSplitPos = i + 1;
+                        break;
+                    }
+                }
+
+                if (originalSplitPos <= 0)
+                {
+                    for (int i = Math.Min(originalText.Length - 1, targetLimit * 2); i >= 0; i--)
+                    {
+                        if (i < originalText.Length && (originalText[i] == ',' || originalText[i] == ';' || originalText[i] == ':'))
+                        {
+                            if (!(originalText[i] == ',' && i > 0 && i < originalText.Length - 1 &&
+                                  char.IsDigit(originalText[i - 1]) && char.IsDigit(originalText[i + 1])))
+                            {
+                                originalSplitPos = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (originalSplitPos <= 0)
+                {
+                    for (int i = Math.Min(originalText.Length - 1, targetLimit * 2); i >= 0; i--)
+                    {
+                        if (char.IsWhiteSpace(originalText[i]))
+                        {
+                            originalSplitPos = i + 1;
+                            break;
+                        }
+                    }
+                }
+
+                if (originalSplitPos <= 0)
+                {
+                    if (originalText.Length <= targetLimit) 
+                    {
+                        originalSplitPos = originalText.Length;
+                    }
+                    else
+                    {
+                        int position = Math.Min(Math.Max(20, (int)(targetLimit * 0.75)), originalText.Length - 1);
+                        while (position < originalText.Length && !char.IsWhiteSpace(originalText[position]))
+                        {
+                            position++;
+                            if (position >= originalText.Length - 1)
+                            {
+                                position = originalText.Length;
+                                break;
+                            }
+                        }
+                        originalSplitPos = position;
+                    }
+                }
+
+                if (originalSplitPos > 0 && originalSplitPos < originalText.Length)
+                {
+                    if (char.IsLetterOrDigit(originalText[originalSplitPos]) && !char.IsWhiteSpace(originalText[originalSplitPos - 1]))
+                    {
+                        while (originalSplitPos < originalText.Length && !char.IsWhiteSpace(originalText[originalSplitPos]) &&
+                               !char.IsPunctuation(originalText[originalSplitPos]))
+                        {
+                            originalSplitPos++;
+                        }
+                    }
+                }
+                originalSplitPos = Math.Max(1, Math.Min(originalSplitPos, originalText.Length));
+                string finalFlushSegment = originalText.Substring(0, originalSplitPos).TrimEnd();
+                string finalRemainingText = originalSplitPos < originalText.Length ? originalText.Substring(originalSplitPos).TrimStart() : string.Empty;
+                buffer.Clear();
+                if (!string.IsNullOrEmpty(finalRemainingText)) buffer.Append(finalRemainingText);
+                _logger.LogInformation("[LOOKAHEAD-DEBUG] Flushing text chunk at boundary: '{Text}' (Rest: '{Rest}')", finalFlushSegment, finalRemainingText);
+                return finalFlushSegment;
+            }
+
+            var ttsTaskQueue = new System.Collections.Concurrent.ConcurrentQueue<(Task<byte[]> Task, string TextChunk)>();
+            SemaphoreSlim audioSendSemaphore = new SemaphoreSlim(1, 1);
+            int nextChunkIndex = 0;
+            var audioChunks = new Dictionary<int, byte[]>();
+            var audioChunkReady = new SemaphoreSlim(0);
+            var audioChunkLock = new object();
+            bool isResponseComplete = false;
+
+            async Task StartTtsTaskAsync(string textChunk, int chunkIndex, bool isFirstChunk)
+            {
+                if (string.IsNullOrWhiteSpace(textChunk) || textChunk.Trim().Length < 5)
+                {
+                    _logger.LogWarning("[TTS-DEBUG] Skipping empty or too short chunk #{Index}", chunkIndex);
+                    return;
+                }
+                _logger.LogInformation("[TTS-DEBUG] TTS starting for chunk #{Index}: '{TextChunk}'", chunkIndex, textChunk);
+                try
+                {
+                    string cleanedChunk = textChunk.Trim();
+                    byte[] audioData;
+                    if (isFirstChunk)
+                    {
+                        _logger.LogInformation("[TTS-DEBUG] Synthesizing FIRST chunk #{Index} using SynthesizeTextChunkAsync: '{TextChunk}'", chunkIndex, cleanedChunk);
+                        audioData = await _synthesizer.SynthesizeTextChunkAsync(cleanedChunk, voice);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[TTS-DEBUG] Synthesizing SUBSEQUENT chunk #{Index} using ChunkedSynthesisAsync: '{TextChunk}'", chunkIndex, cleanedChunk);
+                        if (_synthesizer is ProgressiveTTSSynthesizer progressiveSynthesizer)
+                        {
+                            var chunkParts = new List<byte[]>();
+                            await progressiveSynthesizer.ChunkedSynthesisAsync(cleanedChunk, voice, chunkPart =>
+                            {
+                                chunkParts.Add(chunkPart);
+                            });
+                            using var ms = new MemoryStream();
+                            foreach (var part in chunkParts)
+                            {
+                                ms.Write(part, 0, part.Length);
+                            }
+                            audioData = ms.ToArray();
+                        }
+                        else
+                        {
+                            _logger.LogWarning("[TTS-DEBUG] Synthesizer is not ProgressiveTTSSynthesizer. Falling back to SynthesizeTextChunkAsync for subsequent chunk #{Index}", chunkIndex);
+                            audioData = await _synthesizer.SynthesizeTextChunkAsync(cleanedChunk, voice); 
+                        }
+                    }
+                    lock (audioChunkLock)
+                    {
+                        audioChunks[chunkIndex] = audioData;
+                    }
+                    audioChunkReady.Release();
+                    _logger.LogInformation("[TTS-DEBUG] TTS completed for chunk #{Index}: '{TextChunk}' ({Size} bytes)", chunkIndex, textChunk, audioData.Length);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing TTS for chunk #{Index}: {Error}", chunkIndex, ex.Message);
+                }
+            }
+
+            Task audioProcessingTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        await audioChunkReady.WaitAsync();
+                        bool sentAny;
+                        do
+                        {
+                            sentAny = false;
+                            byte[]? chunk = null;
+                            lock (audioChunkLock)
+                            {
+                                if (audioChunks.TryGetValue(nextChunkIndex, out chunk))
+                                {
+                                    audioChunks.Remove(nextChunkIndex);
+                                    nextChunkIndex++;
+                                    sentAny = true;
+                                }
+                            }
+                            if (sentAny && chunk != null)
+                            {
+                                await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(chunk), index = nextChunkIndex - 1 });
+                                _logger.LogInformation("[WEBSOCKET-DEBUG] Sent audio chunk #{Index} ({Size} bytes)", nextChunkIndex - 1, chunk.Length);
+                            }
+                        } while (sentAny);
+                        lock (audioChunkLock)
+                        {
+                            if (isResponseComplete && audioChunks.Count == 0) break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in audio processing task");
+                }
+            });
+
+            int currentChunkIndex = 0;
+            List<Task> ttsTasks = new List<Task>();
+            bool firstChunkSent = false;
+
+            fullReply = await streamingChatService.GenerateStreamingResponseAsync(
+                _chatLogManager.GetMessages(),
+                async token =>
+                {
+                    try
+                    {
+                        await SendEventAsync(webSocket, "token", new { token });
+                        sb.Append(token);
+                        if (token.Length > 0 && ShouldFlush(sb, token[token.Length - 1], firstChunkSent))
+                        {
+                            string textChunk = FlushSegmentAtSentenceBoundary(sb, firstChunkSent);
+                            if (!string.IsNullOrWhiteSpace(textChunk))
+                            {
+                                int chunkIndex = currentChunkIndex++;
+                                var textPreview = textChunk.Length <= 30 ? textChunk : textChunk.Substring(0, 30) + "...";
+                                _logger.LogInformation("[CHUNK-DEBUG] Generated chunk #{Index}: '{Text}' (FirstChunk: {IsFirst})", chunkIndex, textPreview, !firstChunkSent);
+                                var task = Task.Run(() => StartTtsTaskAsync(textChunk, chunkIndex, !firstChunkSent));
+                                ttsTasks.Add(task);
+                                if (!firstChunkSent) firstChunkSent = true;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("[CHUNK-DEBUG] No chunk generated despite ShouldFlush returning true");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing token in streaming response");
+                    }
+                });
+
+            if (sb.Length > 0)
+            {
+                try
+                {
+                    string remainingText = sb.ToString().Trim();
+                    sb.Clear();
+                    if (!string.IsNullOrWhiteSpace(remainingText) && remainingText.Length >= 5)
+                    {
+                        _logger.LogInformation("[FINAL-CHUNK-DEBUG] Processing remaining text: {TextChunk} (FirstChunk: {IsFirst})", remainingText.Length <= 30 ? remainingText : remainingText.Substring(0, 30) + "...", !firstChunkSent);
+                        int finalChunkIndex = currentChunkIndex++;
+                        var task = Task.Run(() => StartTtsTaskAsync(remainingText, finalChunkIndex, !firstChunkSent));
+                        ttsTasks.Add(task);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[FINAL-CHUNK-DEBUG] Remaining text too short, skipping: '{Text}'", remainingText);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing remaining text");
+                }
+            }
+
+            _logger.LogDebug("Waiting for {Count} TTS tasks to complete", ttsTasks.Count);
+            await Task.WhenAll(ttsTasks);
+            _logger.LogDebug("Waiting for audio processing task to complete");
+            lock (audioChunkLock)
+            {
+                isResponseComplete = true;
+                audioChunkReady.Release();
+            }
+            await audioProcessingTask;
+            return fullReply;
+        }
+
+        private async Task<string> HandleNonStreamingChatResponseAsync(WebSocket webSocket, string prompt)
+        {
+            var voice = _pipelineOptions.TtsVoice;
+            string reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
+            await SendEventAsync(webSocket, "token", new { token = reply });
+            _logger.LogInformation("Using TTS voice: {Voice}", voice);
+            var audioOut = await _synthesizer.SynthesizeAsync(reply, voice);
+            await SendEventAsync(webSocket, "audio-chunk", new { chunk = Convert.ToBase64String(audioOut) });
+            return reply;
+        }
+
+        private async void LogAndSendFinalEvents(WebSocket webSocket, string reply) // Changed to async void for now, will await SendEventAsync calls
+        {
+            var botMsg = _chatLogManager.AddMessage(
+                ChatRole.Bot,
+                reply,
+                _pipelineOptions.ChatModel,
+                _pipelineOptions.TtsVoice);
+            _logger.LogInformation("Reply: '{Reply}'", reply);
+
+            await SendEventAsync(webSocket, "audio-done", null);
+            await SendEventAsync(webSocket, "done", null);
+        }
+
+        private static async Task SendEventAsync(WebSocket webSocket, string eventName, object? data) 
         {
             var payload = JsonSerializer.Serialize(new { @event = eventName, data });
             var bytes = Encoding.UTF8.GetBytes(payload);

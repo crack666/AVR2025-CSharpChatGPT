@@ -45,9 +45,9 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 ### Teil B: Progressive TTS-Optimierung (Fokus: `WebSocketAudioService.cs` & `ProgressiveTTSSynthesizer.cs`)
 
-#### Schritt 4.B.1: Klärung der Chunking-Verantwortlichkeiten und Implementierung einer Hybrid-Strategie
+#### Schritt 4.B.1: Klärung der Chunking-Verantwortlichkeiten und Implementierung einer Hybrid-Strategie - *(Erledigt)*
 *   **Ziel:** Schnelle erste Audioausgabe, danach längere, natürlichere Segmente.
-*   **Anpassung `ProgressiveTTSSynthesizer.SynthesizeTextChunkAsync`:** Diese Methode soll so geändert werden, dass sie den übergebenen `textChunk` *direkt* und ohne weitere interne Aufteilung synthetisiert (d.h., sie sollte intern die Logik von `SynthesizeAsync` für diesen spezifischen Chunk verwenden).
+*   **Anpassung `ProgressiveTTSSynthesizer.SynthesizeTextChunkAsync`:** Diese Methode soll so geändert werden, dass sie den übergebenen `textChunk` *direkt* und ohne weitere interne Aufteilung synthetisiert (d.h., sie sollte intern die Logik von `SynthesizeAsync` für diesen spezifischen Chunk verwenden). - *(Erledigt)*
 *   **Anpassung `WebSocketAudioService.ProcessSegmentAsync` (Streaming-Pfad):**
     1.  **Erster Chunk (für minimale Latenz):**
         *   `WSA` sammelt die ersten Tokens vom LLM (z.B. bis zu einer bestimmten kurzen Länge, ca. 50-100 Zeichen, oder bis zum ersten natürlichen Satzende, falls sehr kurz).
@@ -55,7 +55,7 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
     2.  **Folgende Chunks (für natürliche Sprache):**
         *   `WSA` sammelt danach größere Textmengen vom LLM (z.B. mehrere Sätze oder bis zu einer Obergrenze von z.B. 200-300 Zeichen).
         *   Diese größeren Textblöcke werden dann an `_synthesizer.ChunkedSynthesisAsync` übergeben. `ProgressiveTTSSynthesizer` übernimmt dann mit seiner `SplitTextIntoSentenceChunks`-Logik die Aufteilung in natürlich klingende Segmente für die TTS-API.
-    *   Die Logik in `ShouldFlush` und `FlushSegmentAtSentenceBoundary` in `WSA` muss entsprechend angepasst werden, um dieses zweistufige Verhalten (kleiner erster Chunk, größere Folgechunks) zu unterstützen.
+    *   Die Logik in `ShouldFlush` und `FlushSegmentAtSentenceBoundary` in `WSA` muss entsprechend angepasst werden, um dieses zweistufige Verhalten (kleiner erster Chunk, größere Folgechunks) zu unterstützen. - *(Erledigt)*
 
 #### Schritt 4.B.2: Vereinfachung der Codepfade und Überprüfung der Feature-Flags
 *   **Hauptpfad stärken:** Der Code-Pfad für `!_pipelineOptions.DisableTokenStreaming` (also das echte End-to-End-Streaming) ist der primäre Fokus und soll maximal robust und effizient gestaltet werden.
@@ -65,6 +65,21 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 #### Schritt 4.B.3: Sicherstellung der geordneten Audioausgabe
 *   Die bestehende Logik in `WebSocketAudioService.ProcessSegmentAsync` zur Verwaltung von TTS-Tasks und der geordneten Audioausgabe ( `ttsTaskQueue`, `audioSendSemaphore`, `audioProcessingTask` etc.) ist komplex, aber wahrscheinlich notwendig für das parallele Verarbeiten und sequentielle Ausspielen von Audio-Chunks. Diese soll beibehalten und an die neue Chunking-Strategie angepasst werden.
+
+#### Schritt 4.B.4: Refactoring von `ProcessSegmentAsync`
+*   **Ziel:** Aufteilung der `ProcessSegmentAsync`-Methode in kleinere, logisch getrennte und besser wartbare private Helper-Methoden.
+*   **Vorgehen:**
+    *   Identifizierung von eigenständigen Codeblöcken innerhalb von `ProcessSegmentAsync`, wie z.B.:
+        *   Vorbereitung des Audio-Streams für die Transkription.
+        *   Abruf der Transkription.
+        *   Initialisierung des Streaming-Chat-Antwort-Prozesses (inkl. Setup der Hilfsfunktionen `ShouldFlush`, `FlushSegmentAtSentenceBoundary`, `StartTtsTaskAsync` und der Audio-Verarbeitungs-Tasks).
+        *   Die Token-Verarbeitungsschleife selbst (Callback-Logik von `GenerateStreamingResponseAsync`).
+        *   Verarbeitung des restlichen Textes nach der Token-Schleife.
+        *   Warten auf den Abschluss aller Tasks und Senden der finalen Events.
+        *   Fallback-Logik für nicht-streaming Modus.
+    *   Extraktion dieser Blöcke in separate, gut benannte private Methoden innerhalb der `WebSocketAudioService`-Klasse.
+    *   Sicherstellung, dass die Aufrufe dieser neuen Methoden in `ProcessSegmentAsync` den ursprünglichen Kontrollfluss korrekt abbilden und die Funktionalität erhalten bleibt.
+    *   Dies soll die Lesbarkeit und Testbarkeit der einzelnen Komponenten verbessern.
 
 ### Teil C: Allgemeine Maßnahmen
 
@@ -98,7 +113,7 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 ## 7. Nächste Schritte (Implementierung)
 
-1.  **VAD:** Implementierung der Spike-Detection in `WebSocketAudioService.cs` - *(Teilweise erledigt: Grundlegende Spike-Logik und Parameter hinzugefügt. Nullability-Fehler in `WebSocketAudioService.cs` müssen noch behoben werden)*
+1.  **VAD:** Implementierung der Spike-Detection in `WebSocketAudioService.cs` - *(Erledigt: Grundlegende Spike-Logik und Parameter hinzugefügt. Nullability-Fehler in `WebSocketAudioService.cs` behoben)*
 2.  **TTS:** Modifikation von `ProgressiveTTSSynthesizer.SynthesizeTextChunkAsync`.
 3.  **TTS:** Anpassung der Chunking-Logik (`ShouldFlush`, `FlushSegmentAtSentenceBoundary` und Aufruflogik für Synthesizer-Methoden) in `WebSocketAudioService.ProcessSegmentAsync` gemäß der Hybrid-Strategie.
 4.  Anpassung und Erweiterung der Konfigurationsparameter.

@@ -42,27 +42,8 @@ namespace VoiceAssistant.Plugins.OpenAI
         /// <param name="textChunk">Text chunk to synthesize.</param>
         /// <param name="voice">Voice identifier.</param>
         /// <returns>Raw audio bytes for this text chunk.</returns>
-        /*public Task<byte[]> SynthesizeTextChunkAsync(string textChunk, string voice)
-            => SynthesizeAsync(textChunk, voice);*/
-
-        public async Task<byte[]> SynthesizeTextChunkAsync(string textChunk, string voice)
-        {
-            if (string.IsNullOrWhiteSpace(textChunk))
-                throw new ArgumentException("Text chunk cannot be empty.", nameof(textChunk));
-
-            byte[] lastReceived = null;
-
-            // ChunkedSynthesisAsync erwartet üblicherweise (text, voice, onChunkReceived)
-            await ChunkedSynthesisAsync(textChunk, voice, chunkBytes =>
-            {
-                // Wir überschreiben lastReceived bei jeder Teilantwort
-                lastReceived = chunkBytes;
-            });
-
-            // Am Ende enthält lastReceived das komplette, zuletzt zurückgegebene Audio
-            return lastReceived
-                   ?? throw new InvalidOperationException("No audio data was returned from ChunkedSynthesisAsync.");
-        }
+        public Task<byte[]> SynthesizeTextChunkAsync(string textChunk, string voice)
+            => SynthesizeAsync(textChunk, voice); // MODIFIED: Directly call SynthesizeAsync
 
         /// <summary>
         /// Regular implementation of ISynthesizer interface for backward compatibility.

@@ -17,5 +17,14 @@ namespace VoiceAssistant.Core.Models
         public string ChatModel { get; set; } = "gpt-3.5-turbo";
         /// <summary>TTS voice identifier (e.g., "nova").</summary>
         public string TtsVoice { get; set; } = "nova";
+
+        /// <summary>Minimum length for the first TTS chunk to trigger synthesis.</summary>
+        public int TtsMinFirstChunkLength { get; set; } = 50; // Default value, can be tuned
+
+        /// <summary>Maximum length for the first TTS chunk.</summary>
+        public int TtsMaxFirstChunkLength { get; set; } = 100; // Default value, can be tuned
+
+        /// <summary>Target length for subsequent TTS chunks.</summary>
+        public int TtsSubsequentChunkLength { get; set; } = 250; // Default value, can be tuned
     }
 }
