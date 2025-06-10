@@ -59,5 +59,11 @@ namespace VoiceAssistant.Core.Models
         /// Prevents rapid decay during short pauses.
         /// </summary>
         public double SilenceAdaptationTimeSec { get; set; } = 1.0;
+
+        /// <summary>
+        /// RMS threshold for a frame to be considered a potential 'spike' or start of speech.
+        /// This is a more aggressive check than the regular dynamic threshold for faster initial detection.
+        /// </summary>
+        public double VadSpikeThreshold { get; set; } = 0.05; // Example value, needs tuning
     }
 }
