@@ -28,20 +28,20 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 ### Teil A: VAD-Verbesserungen (Fokus: `WebSocketAudioService.cs`)
 
-#### Schritt 4.A.1: Implementierung einer vorgelagerten "Spike-Detection"
+#### Schritt 4.A.1: Implementierung einer vorgelagerten "Spike-Detection" - *(Erledigt)*
 *   **Berechnung der Energie/RMS pro Chunk:** Für jeden eintreffenden Audio-Chunk (z.B. 20ms) ist dessen Energie oder RMS-Wert in Echtzeit zu berechnen (bereits teilweise in `CalculateRms` vorhanden).
 *   **Definition eines "Spike"-Schwellenwerts:**
     *   Einführung eines neuen Parameters, z.B. `VadSpikeThreshold` oder `VadEnergyRiseFactor`.
     *   Untersuchung, ob dieser Schwellenwert adaptiv gestaltet werden kann (basierend auf dem kurzfristigen Rauschpegel oder einem gleitenden Perzentil der Energie der letzten N Chunks, ähnlich der bestehenden `_noiseFloor`-Logik, aber aggressiver für den Start).
 *   **Logik:** Wenn die Energie/RMS eines Chunks (oder eine schnelle Änderung über wenige Chunks) den `VadSpikeThreshold` überschreitet, wird dies als starker Indikator für einen potenziellen Sprachbeginn gewertet. Dieser Mechanismus soll *vor* oder parallel zur bestehenden `_vad.HasSpeech()` und `dynamicThreshold`-Prüfung agieren, um eine schnellere initiale Reaktion zu ermöglichen.
 
-#### Schritt 4.A.2: Integration der Spike-Detection mit der bestehenden VAD-Logik
+#### Schritt 4.A.2: Integration der Spike-Detection mit der bestehenden VAD-Logik - *(Erledigt)*
 *   **Primärer Trigger:** Die "Spike-Detection" dient als primärer, schneller Auslöser für den Zustand "Sprache beginnt".
 *   **Bestätigung und Stabilisierung:** Die bestehenden Mechanismen (`_vad.HasSpeech()`, EMA-Glättung falls vorhanden, Hysterese-Schwellenwerte) können nachgelagert verwendet werden, um den Sprachzustand zu bestätigen, zu stabilisieren und das Ende der Sprache präziser zu erkennen.
 *   **Pre-Speech-Puffer:** Der `preBuffer` ist entscheidend. Sobald ein "Spike" erkannt wird, wird der Inhalt des `preBuffer` zusammen mit den nachfolgenden Chunks als Teil des beginnenden Sprachsegments betrachtet.
 
-#### Schritt 4.A.3: Optimierung der Latenz bei VAD
-*   Minimierung der Verzögerung zwischen tatsächlichem Sprechbeginn und dem Füllen des `segmentBuffer` für `ProcessSegmentAsync`.
+#### Schritt 4.A.3: Optimierung der Latenz bei VAD - *(Erledigt)*
+*   Minimierung der Verzögerung zwischen tatsächlichem Sprechbeginn und dem Füllen des `segmentBuffer` für `ProcessSegmentAsync`. (Substanziell adressiert durch die verbesserte Spike-Detection und Initiierungslogik in 4.A.2. Weitere Optimierungen wären primär Parameter-Tuning unter 4.C.1).
 
 ### Teil B: Progressive TTS-Optimierung (Fokus: `WebSocketAudioService.cs` & `ProgressiveTTSSynthesizer.cs`)
 

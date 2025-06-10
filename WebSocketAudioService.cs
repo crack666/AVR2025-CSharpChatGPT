@@ -96,6 +96,7 @@ namespace VoiceAssistant
             int consecSpeech = 0;
             int consecSilence = 0;
             bool potentialSpikeDetected = false; // Flag for spike detection
+            bool speechPrimedBySpike = false; // Indicates if speech was initiated by a spike
 
             while (webSocket.State == WebSocketState.Open)
             {
@@ -124,10 +125,12 @@ namespace VoiceAssistant
                 double frameRms = CalculateRms(frame);
 
                 // --- BEGIN Spike Detection Logic ---
-                if (!inSpeech && frameRms > _settings.VadSpikeThreshold)
+                // A spike is a strong, sudden increase in energy.
+                // It can prime the VAD to start speech even if WebRTC VAD is momentarily negative.
+                if (!inSpeech && frameRms > _settings.VadSpikeThreshold && frameRms > _noiseFloor * _settings.NoiseThresholdFactor * 1.5) // Spike must also be significantly above noise floor
                 {
                     potentialSpikeDetected = true;
-                    _logger.LogInformation("VAD: Potential spike detected. RMS: {FrameRms:F4}", frameRms);
+                    _logger.LogInformation("VAD: Potential spike detected. RMS: {FrameRms:F4}, NoiseFloor: {NoiseFloor:F4}", frameRms, _noiseFloor);
                 }
                 // --- END Spike Detection Logic ---
 
@@ -154,8 +157,12 @@ namespace VoiceAssistant
                 // Combined decision - incorporating spike detection
                 // A spike can trigger 'isSpeech' even if WebRTC VAD is momentarily negative,
                 // but still require RMS to be above the dynamic threshold to avoid noise spikes.
-                bool isSpeechOrSpike = hasSpeech || (potentialSpikeDetected && frameRms >= dynamicThreshold);
-                bool isSpeech = isSpeechOrSpike && frameRms >= dynamicThreshold;
+                bool isWebRtcSpeech = hasSpeech; // Store original WebRTC VAD result
+                bool isRmsAboveThreshold = frameRms >= dynamicThreshold;
+                
+                // Core speech detection: either WebRTC VAD says speech AND RMS is above threshold,
+                // OR a spike was detected AND RMS is above threshold.
+                bool activeSpeechSignal = (isWebRtcSpeech && isRmsAboveThreshold) || (potentialSpikeDetected && isRmsAboveThreshold);
 
 
                 // Pre-roll
@@ -166,37 +173,56 @@ namespace VoiceAssistant
                 if (!inSpeech)
                 {
                     // Incorporate potentialSpikeDetected into the start condition
-                    if ((isSpeech && ++consecSpeech >= startFrames) || (potentialSpikeDetected && isSpeech))
+                    if (activeSpeechSignal)
                     {
-                        inSpeech = true;
-                        consecSpeech = startFrames; // Ensure we meet the minimum duration if started by spike
-                        consecSilence = 0;
-                        segmentBuffer.Clear();
-                        foreach (var buf in preBuffer) segmentBuffer.AddRange(buf);
-                        _logger.LogInformation("VAD: Speech started (Spike: {PotentialSpikeDetected}, Consec: {ConsecSpeech})", potentialSpikeDetected, consecSpeech);
-                        potentialSpikeDetected = false; // Reset spike flag
+                        consecSpeech++;
+                        if (potentialSpikeDetected) speechPrimedBySpike = true; // Mark that a spike contributed
+
+                        if (consecSpeech >= startFrames || speechPrimedBySpike) // If primed by spike, start sooner
+                        {
+                            inSpeech = true;
+                            // If started by spike, ensure min speech duration is met by effectively setting consecSpeech high.
+                            // Otherwise, use the actual consecutive speech frames.
+                            consecSpeech = speechPrimedBySpike ? startFrames : consecSpeech; 
+                            consecSilence = 0;
+                            segmentBuffer.Clear();
+                            foreach (var buf in preBuffer) segmentBuffer.AddRange(buf);
+                            // Add current frame that triggered speech, as preBuffer might not have it if preFrames is 0
+                            if (!preBuffer.Contains(frame)) segmentBuffer.AddRange(frame);
+
+                            _logger.LogInformation("VAD: Speech started (Spike: {IsSpikeTriggered}, ConsecFrames: {ConsecSpeech}, RMS: {FrameRms:F4}, DynThr: {DynThr:F4})",
+                                                 speechPrimedBySpike, consecSpeech, frameRms, dynamicThreshold);
+                            potentialSpikeDetected = false; 
+                            speechPrimedBySpike = false; // Reset spike priming flag
+                        }
                     }
-                    else if (!isSpeech)
+                    else
                     {
                         consecSpeech = 0;
-                        potentialSpikeDetected = false; // Reset if no speech follows spike immediately
+                        potentialSpikeDetected = false; // Reset if no qualifying speech signal follows spike
+                        speechPrimedBySpike = false;
                     }
                 }
-                else
+                else // inSpeech == true
                 {
                     segmentBuffer.AddRange(frame);
-                    if (!isSpeech && ++consecSilence >= endFrames)
+                    // Use activeSpeechSignal for hangover logic as well
+                    if (!activeSpeechSignal && ++consecSilence >= endFrames)
                     {
                         inSpeech = false;
-                        _logger.LogInformation("VAD: Speech ended ({Bytes} bytes)", segmentBuffer.Count);
+                        _logger.LogInformation("VAD: Speech ended ({Bytes} bytes, ConsecSilence: {ConsecSilence})", segmentBuffer.Count, consecSilence);
                         await ProcessSegmentAsync(segmentBuffer.ToArray(), webSocket);
                         segmentBuffer.Clear();
                         consecSpeech = consecSilence = 0;
-                        potentialSpikeDetected = false; // Reset spike flag
+                        potentialSpikeDetected = false; 
+                        speechPrimedBySpike = false;
                     }
-                    else if (isSpeech)
+                    else if (activeSpeechSignal)
                     {
                         consecSilence = 0;
+                        // Reset potentialSpikeDetected if speech continues, as it's no longer a "potential" start spike.
+                        potentialSpikeDetected = false; 
+                        speechPrimedBySpike = false;
                     }
                 }
             }
