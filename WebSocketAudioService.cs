@@ -125,17 +125,25 @@ namespace VoiceAssistant
                 double frameRms = CalculateRms(frame);
 
                 // --- BEGIN Spike Detection Logic ---
-                // A spike is a strong, sudden increase in energy.
-                // It can prime the VAD to start speech even if WebRTC VAD is momentarily negative.
-                if (!inSpeech && frameRms > _settings.VadSpikeThreshold && frameRms > _noiseFloor * _settings.NoiseThresholdFactor * 1.5) // Spike must also be significantly above noise floor
+                potentialSpikeDetected = false; // Reset at the beginning of each frame processing
+                if (_settings.EnableSpikeDetection) 
                 {
-                    potentialSpikeDetected = true;
-                    _logger.LogInformation("VAD: Potential spike detected. RMS: {FrameRms:F4}, NoiseFloor: {NoiseFloor:F4}", frameRms, _noiseFloor);
+                    // A spike is a strong, sudden increase in energy.
+                    // It can prime the VAD to start speech even if WebRTC VAD is momentarily negative.
+                    if (!inSpeech && frameRms > _settings.VadSpikeThreshold && frameRms > _noiseFloor * _settings.NoiseThresholdFactor * 1.5) // Spike must also be significantly above noise floor
+                    {
+                        potentialSpikeDetected = true;
+                        _logger.LogInformation("VAD: Potential spike detected. RMS: {FrameRms:F4}, NoiseFloor: {NoiseFloor:F4}", frameRms, _noiseFloor);
+                    }
                 }
                 // --- END Spike Detection Logic ---
 
                 // Run VAD
-                bool hasSpeech = _vad.HasSpeech(frame);
+                bool hasSpeech = false;
+                if (_settings.EnableThirdPartyVad)
+                {
+                    hasSpeech = _vad.HasSpeech(frame);
+                }
 
                 // Track silence duration
                 if (!hasSpeech)
@@ -157,13 +165,24 @@ namespace VoiceAssistant
                 // Combined decision - incorporating spike detection
                 // A spike can trigger 'isSpeech' even if WebRTC VAD is momentarily negative,
                 // but still require RMS to be above the dynamic threshold to avoid noise spikes.
-                bool isWebRtcSpeech = hasSpeech; // Store original WebRTC VAD result
+                bool isWebRtcSpeech = hasSpeech; // Store original WebRTC VAD result (or result from EnableThirdPartyVad flag)
                 bool isRmsAboveThreshold = frameRms >= dynamicThreshold;
                 
-                // Core speech detection: either WebRTC VAD says speech AND RMS is above threshold,
-                // OR a spike was detected AND RMS is above threshold.
-                bool activeSpeechSignal = (isWebRtcSpeech && isRmsAboveThreshold) || (potentialSpikeDetected && isRmsAboveThreshold);
-
+                // Core speech detection: 
+                // Considers enabled VAD components. If both disabled, activeSpeechSignal will be false.
+                bool activeSpeechSignal = false;
+                if (_settings.EnableThirdPartyVad && _settings.EnableSpikeDetection)
+                {
+                    activeSpeechSignal = (isWebRtcSpeech && isRmsAboveThreshold) || (potentialSpikeDetected && isRmsAboveThreshold);
+                }
+                else if (_settings.EnableThirdPartyVad)
+                {
+                    activeSpeechSignal = isWebRtcSpeech && isRmsAboveThreshold;
+                }
+                else if (_settings.EnableSpikeDetection)
+                {
+                    activeSpeechSignal = potentialSpikeDetected && isRmsAboveThreshold;
+                }
 
                 // Pre-roll
                 preBuffer.Enqueue(frame);

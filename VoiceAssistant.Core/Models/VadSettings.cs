@@ -65,5 +65,15 @@ namespace VoiceAssistant.Core.Models
         /// This is a more aggressive check than the regular dynamic threshold for faster initial detection.
         /// </summary>
         public double VadSpikeThreshold { get; set; } = 0.05; // Example value, needs tuning
+
+        /// <summary>
+        /// Enables or disables the spike detection mechanism.
+        /// </summary>
+        public bool EnableSpikeDetection { get; set; } = true;
+
+        /// <summary>
+        /// Enables or disables the third-party VAD (e.g., WebRTC VAD).
+        /// </summary>
+        public bool EnableThirdPartyVad { get; set; } = true;
     }
 }

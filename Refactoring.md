@@ -60,7 +60,8 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 #### Schritt 4.B.2: Vereinfachung der Codepfade und Überprüfung der Feature-Flags
 *   **Hauptpfad stärken:** Der Code-Pfad für `!_pipelineOptions.DisableTokenStreaming` (also das echte End-to-End-Streaming) ist der primäre Fokus und soll maximal robust und effizient gestaltet werden.
 *   **`_pipelineOptions.DisableTokenStreaming`:** Beibehalten als Fallback oder für Debugging-Zwecke. Der `else`-Block sollte eine einfache, aber funktionierende Standard-TTS-Implementierung darstellen (vermutlich Aufruf von `_synthesizer.SynthesizeAsync` mit dem gesamten Text).
-*   **`_pipelineOptions.DisableVad`:** Beibehalten für Tests.
+*   **`_pipelineOptions.DisableVad`:** Beibehalten für Tests. Ermöglicht das komplette Deaktivieren der VAD.
+*   **VAD-Komponenten-Flags (NEU):** Überprüfung und Nutzung der neuen Flags `EnableSpikeDetection` und `EnableThirdPartyVad` aus `VadSettings`, um die einzelnen Detektionsmechanismen der VAD steuern zu können.
 *   **Andere Optionen:** Überprüfen, ob weitere `_pipelineOptions` die Komplexität unnötig erhöhen oder für den Hauptanwendungsfall relevant sind. Ziel ist es, Konfigurationsmöglichkeiten zu bieten, ohne den Code unübersichtlich zu machen.
 
 #### Schritt 4.B.3: Sicherstellung der geordneten Audioausgabe
@@ -85,6 +86,7 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 #### Schritt 4.C.1: Parameter-Tuning und UI-Anpassung
 *   Neue Parameter für VAD (z.B. `VadSpikeThreshold`) und ggf. für die TTS-Chunking-Strategie (z.B. Länge des ersten Chunks, Größe der Folgechunks) identifizieren und über `VadSettings` oder `PipelineOptions` konfigurierbar machen.
+*   **NEU: Feature-Flags für VAD-Komponenten:** Einführung von `EnableSpikeDetection` (boolean, default `true`) und `EnableThirdPartyVad` (boolean, default `true`) in `VadSettings.cs`, um die Spike-Detection und das Third-Party VAD unabhängig voneinander aktivieren/deaktivieren zu können.
 *   Anpassung der Debug-UI, falls vorhanden.
 
 #### Schritt 4.C.2: Erweiterung des Loggings und Debuggings
