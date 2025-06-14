@@ -64,10 +64,10 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 *   **VAD-Komponenten-Flags (NEU):** Überprüfung und Nutzung der neuen Flags `EnableSpikeDetection` und `EnableThirdPartyVad` aus `VadSettings`, um die einzelnen Detektionsmechanismen der VAD steuern zu können.
 *   **Andere Optionen:** Überprüfen, ob weitere `_pipelineOptions` die Komplexität unnötig erhöhen oder für den Hauptanwendungsfall relevant sind. Ziel ist es, Konfigurationsmöglichkeiten zu bieten, ohne den Code unübersichtlich zu machen.
 
-#### Schritt 4.B.3: Sicherstellung der geordneten Audioausgabe
-*   Die bestehende Logik in `WebSocketAudioService.ProcessSegmentAsync` zur Verwaltung von TTS-Tasks und der geordneten Audioausgabe ( `ttsTaskQueue`, `audioSendSemaphore`, `audioProcessingTask` etc.) ist komplex, aber wahrscheinlich notwendig für das parallele Verarbeiten und sequentielle Ausspielen von Audio-Chunks. Diese soll beibehalten und an die neue Chunking-Strategie angepasst werden.
+#### Schritt 4.B.3: Sicherstellung der geordneten Audioausgabe - *(Überprüft und angepasst)*
+*   Die bestehende Logik in `WebSocketAudioService.HandleStreamingChatResponseAsync` (umbenannt von `ProcessSegmentAsync` für den Streaming-Teil) zur Verwaltung von TTS-Tasks und der geordneten Audioausgabe (`audioChunks`, `audioChunkReady`, `audioProcessingTask` etc.) wurde überprüft. Die Variablen `ttsTaskQueue` und `audioSendSemaphore` waren nicht mehr in Gebrauch und wurden entfernt. Die Logik zur Behandlung von leeren/kurzen Chunks in `StartTtsTaskAsync` (Platzieren von `Array.Empty<byte>()` und Freigeben von `audioChunkReady`) stellt sicher, dass der `audioProcessingTask` nicht blockiert. Die Verwendung von `localChunkCounter` als Index für `audioChunks` und `nextChunkIndex` im `audioProcessingTask` gewährleistet die korrekte Reihenfolge. Die Anpassungen für `DisableProgressiveTts` und `DisableTts` sind integriert. Die Fehlerbehandlung in `StartTtsTaskAsync` (ebenfalls Freigabe von `audioChunkReady`) trägt zur Robustheit bei.
 
-#### Schritt 4.B.4: Refactoring von `ProcessSegmentAsync`
+#### Schritt 4.B.4: Refactoring von `ProcessSegmentAsync` - *(Erledigt)*
 *   **Ziel:** Aufteilung der `ProcessSegmentAsync`-Methode in kleinere, logisch getrennte und besser wartbare private Helper-Methoden.
 *   **Vorgehen:**
     *   Identifizierung von eigenständigen Codeblöcken innerhalb von `ProcessSegmentAsync`, wie z.B.:
@@ -84,13 +84,34 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 ### Teil C: Allgemeine Maßnahmen
 
-#### Schritt 4.C.1: Parameter-Tuning und UI-Anpassung
-*   Neue Parameter für VAD (z.B. `VadSpikeThreshold`) und ggf. für die TTS-Chunking-Strategie (z.B. Länge des ersten Chunks, Größe der Folgechunks) identifizieren und über `VadSettings` oder `PipelineOptions` konfigurierbar machen.
-*   **NEU: Feature-Flags für VAD-Komponenten:** Einführung von `EnableSpikeDetection` (boolean, default `true`) und `EnableThirdPartyVad` (boolean, default `true`) in `VadSettings.cs`, um die Spike-Detection und das Third-Party VAD unabhängig voneinander aktivieren/deaktivieren zu können.
-*   Anpassung der Debug-UI, falls vorhanden.
+#### Schritt 4.C.1: Parameter-Tuning und UI-Anpassung - *(Erledigt)*
+*   Neue Parameter für VAD (`VadSpikeThreshold`) und TTS-Chunking (`TtsMinFirstChunkLength`, `TtsMaxFirstChunkLength`, `TtsSubsequentChunkLength`) wurden in `VadSettings.cs` bzw. `PipelineOptions.cs` implementiert und Standardwerte festgelegt.
+*   Feature-Flags für VAD-Komponenten (`EnableSpikeDetection`, `EnableThirdPartyVad`) wurden in `VadSettings.cs` implementiert.
+*   Feature-Flags für TTS-Verhalten (`DisableProgressiveTts`, `DisableTts`) wurden in `PipelineOptions.cs` implementiert.
+*   Die Debug-UI (`index.html`) wurde angepasst und um neue Steuerelemente für die oben genannten VAD- und TTS/Pipeline-Parameter erweitert.
+*   Die JavaScript-Logik (`optimization-manager.js`, `audio-system.js`) wurde aktualisiert, um diese neuen Einstellungen zu verwalten, an das Backend zu senden (via WebSocket-URL-Parameter bei Verbindungsaufbau und via `updateVadSettings`/`updatePipelineOptions` Nachrichten) und auf Einstellungsänderungen vom Server zu reagieren.
+*   Die Einstellungen werden nun im `localStorage` persistiert.
 
-#### Schritt 4.C.2: Erweiterung des Loggings und Debuggings
-*   Detailliertes Logging für VAD (Energie/RMS-Werte, Spike-Erkennung, Zustandswechsel) und TTS (Chunk-Größen, welche Methode aufgerufen wird, Latenzen).
+#### Schritt 4.C.2: Erweiterung des Loggings und Debuggings - *(Erledigt)*
+*   Detailliertes Logging für VAD (Energie/RMS-Werte, Spike-Erkennung, Zustandswechsel, Noise Floor Updates) und TTS (Chunk-Größen, welche Methode aufgerufen wird, Latenzen, Synthesizer-Aufrufe) wurde in `WebSocketAudioService.cs` implementiert.
+
+#### Schritt 4.C.3: Backend WebSocket Message Handling - *(Erledigt)*
+*   **Ziel:** Implementierung der Logik in `WebSocketAudioService.cs` zur korrekten Verarbeitung von Pipeline-Optionen, die über den WebSocket-URL-Query-String bei neuen Verbindungen empfangen werden.
+*   **Ziel:** Implementierung von Nachrichten-Handlern in `WebSocketAudioService.cs` für `updateVadSettings` und `updatePipelineOptions`-Events, die vom Client gesendet werden, um `VadSettings` und `PipelineOptions` für die aktuelle Sitzung dynamisch zu aktualisieren.
+    *   Die Felder `_settings` und `_pipelineOptions` in `WebSocketAudioService.cs` wurden nicht-readonly gemacht.
+    *   Der Konstruktor wurde angepasst, um initiale Einstellungen zu übernehmen (wobei davon ausgegangen wird, dass `PipelineOptions` bereits mit Query-Parameter-Werten durch den Aufrufer vorbefüllt sind).
+    *   Neue Methoden `ConfigureVad()` und `LogCurrentSettings()` wurden hinzugefügt.
+    *   Die `HandleAsync`-Schleife wurde umstrukturiert, um Text- (JSON-Befehle) und Binärnachrichten (Audio) zu unterscheiden.
+    *   `HandleUpdateVadSettingsAsync` und `HandleUpdatePipelineOptionsAsync` wurden implementiert, um eingehende JSON-Nachrichten zu parsen, Einstellungen zu aktualisieren, ggf. VAD neu zu konfigurieren, Änderungen zu protokollieren und Bestätigungsereignisse (`vad_settings_updated`, `pipeline_options_updated`) an den Client zu senden.
+    *   Sicherstellung, dass VAD-Parameter wie `preFrames`, `startFrames`, `endFrames` in der Schleife neu bewertet werden, falls sich die Einstellungen ändern.
+    *   Die Methode `SendEventAsync` wurde standardisiert, um eine Payload-Struktur `{ type, payload }` zu verwenden und das Logging verbessert.
+    *   Kompilierungsfehler im Zusammenhang mit Logging-Vorlagen, Methodensignaturen (`ChatLogManager.GetMessages`, `StreamingOpenAIChatService.GenerateStreamingResponseAsync`, `IChatService.GenerateResponseAsync`, `ChatRole.Bot`, `ISynthesizer`-Methodenrückgabetypen und Stream-Konvertierung) und Syntaxfehlern wurden adressiert.
+    *   Die `FlushSegmentAtSentenceBoundary`-Logik wurde überprüft und für Klarheit und Korrektheit basierend auf den neuen TTS-Chunking-Parametern angepasst.
+    *   `SendAudioChunkAsync` sendet nun binäres Audio und ein separates `audio-chunk-info`-Text-Event.
+    *   Die korrekte Verarbeitung von Pipeline-Optionen aus dem WebSocket-URL-Query-String wurde durch die Annahme sichergestellt, dass der Service-Konsument (z.B. der `ChatController`) die `PipelineOptions` vor der Übergabe an den `WebSocketAudioService`-Konstruktor entsprechend vorbefüllt. Die dynamische Aktualisierung über WebSocket-Nachrichten wurde implementiert und verifiziert.
+
+#### Schritt 4.C.4: Frontend `ui-manager.js` Integration - *(Erledigt)*
+*   Modifizierung des "Clear Chat"-Button-Event-Listeners in `ui-manager.js`, um `audioSystem.resetAudioPlayback()` aufzurufen.
 
 ## 5. Teststrategie
 
@@ -115,9 +136,11 @@ Das Python-Projekt nutzt Ansätze wie "Precision Waveform Detection" und "Defens
 
 ## 7. Nächste Schritte (Implementierung)
 
-1.  **VAD:** Implementierung der Spike-Detection in `WebSocketAudioService.cs` - *(Erledigt: Grundlegende Spike-Logik und Parameter hinzugefügt. Nullability-Fehler in `WebSocketAudioService.cs` behoben)*
-2.  **TTS:** Modifikation von `ProgressiveTTSSynthesizer.SynthesizeTextChunkAsync`.
-3.  **TTS:** Anpassung der Chunking-Logik (`ShouldFlush`, `FlushSegmentAtSentenceBoundary` und Aufruflogik für Synthesizer-Methoden) in `WebSocketAudioService.ProcessSegmentAsync` gemäß der Hybrid-Strategie.
-4.  Anpassung und Erweiterung der Konfigurationsparameter.
-5.  Durchführung umfassender Tests und Iterationen zur Parameteroptimierung.
-6.  Code-Review und Refinement zur Vereinfachung und Klärung der Logik.
+1.  **VAD:** Implementierung der Spike-Detection in `WebSocketAudioService.cs` - *(Erledigt)*
+2.  **TTS:** Modifikation von `ProgressiveTTSSynthesizer.SynthesizeTextChunkAsync`. - *(Erledigt)*
+3.  **TTS:** Anpassung der Chunking-Logik (`ShouldFlush`, `FlushSegmentAtSentenceBoundary` und Aufruflogik für Synthesizer-Methoden) in `WebSocketAudioService.ProcessSegmentAsync` gemäß der Hybrid-Strategie. - *(Erledigt)*
+4.  Anpassung und Erweiterung der Konfigurationsparameter und UI. - *(Erledigt)*
+5.  Implementierung der Backend-WebSocket-Nachrichtenverarbeitung für dynamische Einstellungsupdates und Query-Parameter. - *(Erledigt)*
+6.  Frontend-Integration: "Clear Chat" Button in `ui-manager.js` anpassen. - *(Erledigt)*
+7.  Durchführung umfassender Tests und Iterationen zur Parameteroptimierung.
+8.  Code-Review und Refinement zur Vereinfachung und Klärung der Logik.

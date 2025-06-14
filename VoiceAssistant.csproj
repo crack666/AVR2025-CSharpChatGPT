@@ -21,6 +21,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Core and plugin libraries -->
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.5" />
     <ProjectReference Include="VoiceAssistant.Core/VoiceAssistant.Core.csproj" />
     <ProjectReference Include="VoiceAssistant.Plugins.OpenAI/VoiceAssistant.Plugins.OpenAI.csproj" />
     <!-- VAD: WebRTC Voice Activity Detection for backend streaming service -->

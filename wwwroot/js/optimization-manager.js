@@ -4,9 +4,17 @@ const optimizationManager = {
   useProgressiveTTSCheckbox: null,
   useTokenStreamingCheckbox: null,
   disableVadCheckbox: null,
+  disableTtsCheckbox: null, // Added
   useLegacyHttpCheckbox: null,
-  vadSampleInput: null,
-  calibrateVadBtn: null,
+  ttsMinFirstChunkLengthInput: null, // Added
+  ttsMaxFirstChunkLengthInput: null, // Added
+  ttsSubsequentChunkLengthInput: null, // Added
+  vadSpikeThresholdInput: null, // Added
+  enableSpikeDetectionCheckbox: null, // Added
+  enableThirdPartyVadCheckbox: null, // Added
+  applyVadSettingsBtn: null, // Added
+  // vadSampleInput: null, // Kept for now, might be removed if not used
+  // calibrateVadBtn: null, // Kept for now
   applyOptimizationSettingsBtn: null,
   resetOptimizationSettingsBtn: null,
   resetLatencyStatsBtn: null,
@@ -15,30 +23,44 @@ const optimizationManager = {
     // Initialize UI references
     this.useProgressiveTTSCheckbox = document.getElementById('useProgressiveTTS');
     this.useTokenStreamingCheckbox = document.getElementById('useTokenStreaming');
-    // Removed: useChunkBasedAudioCheckbox not used
-    // Removed: useEarlyAudioProcessingCheckbox not used
-    // Removed: useCachedAudioContextCheckbox not used
-    // Removed: useSmartChunkSplittingCheckbox not used
     this.disableVadCheckbox = document.getElementById('disableVad');
+    this.disableTtsCheckbox = document.getElementById('disableTts'); // Added
     this.useLegacyHttpCheckbox = document.getElementById('useLegacyHttp');
-    // Removed: ttsDynamicChunkSizeSlider not used
-    // Removed: ttsDynamicChunkSizeValue not used
+    this.ttsMinFirstChunkLengthInput = document.getElementById('ttsMinFirstChunkLength'); // Added
+    this.ttsMaxFirstChunkLengthInput = document.getElementById('ttsMaxFirstChunkLength'); // Added
+    this.ttsSubsequentChunkLengthInput = document.getElementById('ttsSubsequentChunkLength'); // Added
+
     this.applyOptimizationSettingsBtn = document.getElementById('applyOptimizationSettings');
     this.resetOptimizationSettingsBtn = document.getElementById('resetOptimizationSettings');
     this.resetLatencyStatsBtn = document.getElementById('resetLatencyStats');
-    // VAD calibration input and button
+    
+    // VAD specific UI elements from debugPanel
+    this.vadSpikeThresholdInput = document.getElementById('vadSpikeThreshold');
+    this.enableSpikeDetectionCheckbox = document.getElementById('enableSpikeDetection');
+    this.enableThirdPartyVadCheckbox = document.getElementById('enableThirdPartyVad');
+    this.applyVadSettingsBtn = document.getElementById('applyVadSettings');
+
+    // VAD calibration input and button (still here, review if needed)
     this.vadSampleInput = document.getElementById('vadSampleInput');
     this.calibrateVadBtn = document.getElementById('calibrateVadBtn');
     
     // Create optimization settings object
     window.optimizationSettings = {
+      // Pipeline Options (controlled by optimizationPanel)
       useProgressiveTTS: true,
       useTokenStreaming: true,
-      // Core pipeline flags
       disableVad: false,
+      disableTts: false, // Added
       useLegacyHttp: false,
+      ttsMinFirstChunkLength: 50, // Added
+      ttsMaxFirstChunkLength: 100, // Added
+      ttsSubsequentChunkLength: 150, // Added
       
-      // Latency tracking
+      // VAD Settings (controlled by debugPanel, but stored here for consistency)
+      vadSpikeThreshold: 0.15, // Added
+      enableSpikeDetection: true, // Added
+      enableThirdPartyVad: true, // Added
+
       latencyStats: {
         recordingStart: 0,
         transcriptionReceived: 0,
@@ -57,48 +79,31 @@ const optimizationManager = {
     
     // Load optimization settings from server or localStorage
     try {
-      // Try fetch pipeline options from server
-      fetch('/api/settings/pipeline')
-        .then(res => res.json())
-        .then(dto => {
-          // Map server flags to UI settings
-          window.optimizationSettings.useProgressiveTTS = !dto.DisableProgressiveTts;
-          window.optimizationSettings.useTokenStreaming = !dto.DisableTokenStreaming;
-          window.optimizationSettings.disableVad = dto.DisableVad;
-          window.optimizationSettings.useLegacyHttp = dto.UseLegacyHttp;
-          // Model and voice
-          modelSel.value = dto.ChatModel;
-          voiceSel.value = dto.TtsVoice;
-          // Update local storage and UI
-          localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
-          this.updateOptimizationUIFromSettings();
-        })
-        .catch(_ => {
-          // Fallback to localStorage
-          const savedSettings = localStorage.getItem('optimizationSettings');
-          if (savedSettings) {
-            const parsed = JSON.parse(savedSettings);
-            window.optimizationSettings = {...window.optimizationSettings, ...parsed};
-            this.updateOptimizationUIFromSettings();
+      const storedSettings = localStorage.getItem('optimizationSettings');
+      if (storedSettings) {
+        const parsed = JSON.parse(storedSettings);
+        // Merge carefully to avoid breaking with new/old properties
+        for (const key in window.optimizationSettings) {
+          if (parsed.hasOwnProperty(key) && key !== 'latencyStats') { // Don't overwrite latencyStats structure directly
+            if (typeof window.optimizationSettings[key] === 'object' && window.optimizationSettings[key] !== null) {
+              // For nested objects like latencyStats, merge their properties
+              for (const subKey in window.optimizationSettings[key]) {
+                if (parsed[key].hasOwnProperty(subKey)) {
+                  window.optimizationSettings[key][subKey] = parsed[key][subKey];
+                }
+              }
+            } else {
+              window.optimizationSettings[key] = parsed[key];
+            }
           }
-        });
-        
-        // Ensure new arrays exist (backwards compatibility)
-        if (!window.optimizationSettings.latencyStats.textLatency) {
-          window.optimizationSettings.latencyStats.textLatency = [];
         }
-        if (!window.optimizationSettings.latencyStats.audioLatency) {
-          window.optimizationSettings.latencyStats.audioLatency = [];
-        }
-        if (!window.optimizationSettings.latencyStats.totalLatency) {
-          window.optimizationSettings.latencyStats.totalLatency = [];
-        }
-        
-        this.updateOptimizationUIFromSettings();
+      }
     } catch (e) {
-      console.error("Error loading saved optimization settings:", e);
+      console.error('Error loading optimization settings from localStorage:', e);
     }
-    
+    this.updateOptimizationUIFromSettings(); // Ensure UI reflects loaded or default settings
+    this.updateVadSettingsUIFromState(); // Ensure VAD UI reflects loaded or default settings
+
     this.setupEventListeners();
   },
   
@@ -124,226 +129,159 @@ const optimizationManager = {
   
   setupEventListeners: function() {
     // VAD calibration button handler
-    this.calibrateVadBtn.addEventListener('click', async () => {
-      if (!this.vadSampleInput.files.length) {
-        alert('Bitte eine Audiodatei zum Kalibrieren auswählen.');
-        return;
-      }
-      const file = this.vadSampleInput.files[0];
-      const form = new FormData();
-      form.append('file', file, file.name);
-      status.textContent = 'VAD kalibrieren...';
-      try {
-        const resp = await fetch('/api/settings/vad/calibrate', { method: 'POST', body: form });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const settings = await resp.json();
-        // Update sliders
-        document.getElementById('thresholdSlider').value = settings.StartThreshold;
-        document.getElementById('startThresholdSlider').value = settings.StartThreshold;
-        document.getElementById('endThresholdSlider').value = settings.EndThreshold;
-        document.getElementById('smoothingWindowSlider').value = settings.RmsSmoothingWindowSec;
-        document.getElementById('hangoverSlider').value = settings.HangoverDurationSec;
-        // Reflect values
-        document.getElementById('thresholdValue').textContent = settings.StartThreshold;
-        document.getElementById('startThresholdValue').textContent = settings.StartThreshold;
-        document.getElementById('endThresholdValue').textContent = settings.EndThreshold;
-        document.getElementById('smoothingWindowValue').textContent = settings.RmsSmoothingWindowSec;
-        document.getElementById('hangoverValue').textContent = settings.HangoverDurationSec;
-        status.textContent = 'VAD-Kalibrierung abgeschlossen';
-      } catch (err) {
-        console.error('VAD calibration error', err);
-        status.textContent = 'Fehler bei VAD-Kalibrierung';
-      }
-    });
-    
-    // Apply optimization settings button
-    this.applyOptimizationSettingsBtn.addEventListener('click', () => {
-      // Capture old settings to detect changes requiring restart
-      const oldUseCachedAudioContext = window.optimizationSettings.useCachedAudioContext;
-      // Update settings from UI
-      window.optimizationSettings.useProgressiveTTS = this.useProgressiveTTSCheckbox.checked;
-      window.optimizationSettings.useTokenStreaming = this.useTokenStreamingCheckbox.checked;
-      window.optimizationSettings.disableVad = this.disableVadCheckbox.checked;
-      window.optimizationSettings.useLegacyHttp = this.useLegacyHttpCheckbox.checked;
-      
-      // Apply settings to dropdown
-      if (!window.optimizationSettings.useProgressiveTTS && !window.optimizationSettings.useTokenStreaming) {
-        optimizationMode.value = 'none';
-      } else if (window.optimizationSettings.useProgressiveTTS && window.optimizationSettings.useTokenStreaming) {
-        optimizationMode.value = 'advanced';
-      } else {
-        optimizationMode.value = 'progressive';
-      }
-      
-      // Save settings to localStorage for persistence
-      localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
-      // Push pipeline options to server SettingsController
-      const pipelineDto = {
-        UseLegacyHttp: window.optimizationSettings.useLegacyHttp,
-        DisableVad: window.optimizationSettings.disableVad,
-        DisableTokenStreaming: !window.optimizationSettings.useTokenStreaming,
-        DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS,
-        ChatModel: modelSel.value,
-        TtsVoice: voiceSel.value
-      };
-      fetch('/api/settings/pipeline', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pipelineDto)
-      }).catch(err => console.error('Error updating pipeline settings:', err));
-      
-      debugLog("Optimierungseinstellungen angewendet");
-      status.textContent = 'Optimierungseinstellungen angewendet';
-      
-      // Some settings might require a restart
-      // Audio system restart may be required
-      debugLog("Optimierungseinstellungen angewendet - Änderungen können einen Neustart des Audio-Systems erfordern");
-      alert("Bitte starten Sie das Audio-System neu, um sicherzustellen, dass alle Änderungen übernommen werden.");
-    });
-    
-    // Reset optimization settings button
-    this.resetOptimizationSettingsBtn.addEventListener('click', () => {
-      // Reset to defaults
-      window.optimizationSettings.useProgressiveTTS = true;
-      window.optimizationSettings.useTokenStreaming = true;
-      window.optimizationSettings.disableVad = false;
-      window.optimizationSettings.useLegacyHttp = false;
-      
-      // Update UI
-      this.updateOptimizationUIFromSettings();
-      
-      // Save to localStorage
-      localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
-      
-      debugLog("Optimierungseinstellungen zurückgesetzt");
-      status.textContent = 'Optimierungseinstellungen zurückgesetzt';
-    });
-    
-    // Reset latency stats button
-    this.resetLatencyStatsBtn.addEventListener('click', () => {
-      this.resetLatencyStats();
-      
-      // Update UI
-      this.updateLatencyStatsUI();
-      
-      debugLog("Latenz-Statistiken zurückgesetzt");
-    });
-    
-    // Optimization dropdown change handler
-    optimizationMode.addEventListener('change', () => {
-      switch (optimizationMode.value) {
-        case 'none':
-          window.optimizationSettings.useProgressiveTTS = false;
-          window.optimizationSettings.useTokenStreaming = false;
-          break;
-        case 'progressive':
-          window.optimizationSettings.useProgressiveTTS = true;
-          window.optimizationSettings.useTokenStreaming = false;
-          break;
-        case 'advanced':
-          window.optimizationSettings.useProgressiveTTS = true;
-          window.optimizationSettings.useTokenStreaming = true;
-          break;
-      }
-      
-      // Update UI if panel is visible
-      if (optimizationPanel.style.display !== 'none') {
-        this.updateOptimizationUIFromSettings();
-      }
-      
-      // Save settings
-      localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
-      
-      debugLog(`Optimierungsmodus geändert zu: ${optimizationMode.value}`);
-      status.textContent = `Optimierungsmodus: ${optimizationMode.value}`;
-    });
+    if (this.calibrateVadBtn) { // Check if element exists
+        this.calibrateVadBtn.addEventListener('click', async () => { console.warn('VAD Calibration button clicked - no backend endpoint defined yet.'); });
+    }
+
+    // Apply VAD Settings Button
+    if (this.applyVadSettingsBtn) { // Check if element exists
+        this.applyVadSettingsBtn.addEventListener('click', () => {
+            this.updateVadStateFromUI();
+            this.saveSettings(); // Save to localStorage
+            if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
+                const vadSettingsPayload = {
+                    VadSpikeThreshold: window.optimizationSettings.vadSpikeThreshold,
+                    EnableSpikeDetection: window.optimizationSettings.enableSpikeDetection,
+                    EnableThirdPartyVad: window.optimizationSettings.enableThirdPartyVad
+                    // Include other VAD settings from the UI if they are meant to be sent here
+                };
+                // Corrected: Changed 'data' to 'payload' to match backend expectation
+                window.wsAudioSocket.send(JSON.stringify({ type: 'updateVadSettings', payload: vadSettingsPayload }));
+                debugLog('Sent VAD settings update to backend.');
+            } else {
+                debugLog('WebSocket not connected. VAD settings saved locally, will be applied on next connection/segment.');
+            }
+        });
+    }
+
+    // Apply Pipeline/Optimization Settings Button
+    if (this.applyOptimizationSettingsBtn) { // Check if element exists
+        this.applyOptimizationSettingsBtn.addEventListener('click', () => {
+            this.updatePipelineStateFromUI();
+            this.saveSettings(); // Save to localStorage
+            if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
+                const pipelineOptionsPayload = {
+                    DisableVad: window.optimizationSettings.disableVad,
+                    DisableTts: window.optimizationSettings.disableTts,
+                    DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS, 
+                    TtsMinFirstChunkLength: window.optimizationSettings.ttsMinFirstChunkLength,
+                    TtsMaxFirstChunkLength: window.optimizationSettings.ttsMaxFirstChunkLength,
+                    TtsSubsequentChunkLength: window.optimizationSettings.ttsSubsequentChunkLength,
+                    ChatModel: document.getElementById('model') ? document.getElementById('model').value : "gpt-3.5-turbo",
+                    TtsVoice: document.getElementById('voice') ? document.getElementById('voice').value : "nova"
+                };
+                // Corrected: Changed 'data' to 'payload' to match backend expectation
+                window.wsAudioSocket.send(JSON.stringify({ type: 'updatePipelineOptions', payload: pipelineOptionsPayload }));
+                debugLog('Sent Pipeline options update to backend.');
+            } else {
+                debugLog('WebSocket not connected. Pipeline settings saved locally.');
+            }
+        });
+    }
+
+    // Reset Optimization/Pipeline Settings Button
+    if (this.resetOptimizationSettingsBtn) { // Check if element exists
+        this.resetOptimizationSettingsBtn.addEventListener('click', () => {
+            // Reset to default values (hardcoded or from a default config object)
+            window.optimizationSettings.useProgressiveTTS = true;
+            window.optimizationSettings.useTokenStreaming = true;
+            window.optimizationSettings.disableVad = false;
+            window.optimizationSettings.disableTts = false;
+            window.optimizationSettings.useLegacyHttp = false;
+            window.optimizationSettings.ttsMinFirstChunkLength = 50;
+            window.optimizationSettings.ttsMaxFirstChunkLength = 100;
+            window.optimizationSettings.ttsSubsequentChunkLength = 150;
+            this.updateOptimizationUIFromSettings();
+            this.saveSettings();
+            debugLog('Pipeline settings reset to defaults.');
+        });
+    }
+
+    // Reset Latency Stats Button
+    if (this.resetLatencyStatsBtn) { // Check if element exists
+        this.resetLatencyStatsBtn.addEventListener('click', () => {
+            this.resetLatencyStats();
+            this.updateLatencyStatsUI();
+            this.saveSettings(); // Save reset stats state
+            debugLog('Latency stats reset.');
+        });
+    }
+
+    // Add listeners for individual controls to update window.optimizationSettings dynamically (optional, good for real-time reflection)
+    // Example for one checkbox:
+    if (this.useProgressiveTTSCheckbox) {
+        this.useProgressiveTTSCheckbox.addEventListener('change', (e) => {
+            window.optimizationSettings.useProgressiveTTS = e.target.checked;
+            // this.saveSettings(); // Optionally save on every individual change
+        });
+    }
+    // Repeat for other checkboxes and inputs in optimizationPanel
+    if (this.useTokenStreamingCheckbox) this.useTokenStreamingCheckbox.addEventListener('change', (e) => window.optimizationSettings.useTokenStreaming = e.target.checked);
+    if (this.disableVadCheckbox) this.disableVadCheckbox.addEventListener('change', (e) => window.optimizationSettings.disableVad = e.target.checked);
+    if (this.disableTtsCheckbox) this.disableTtsCheckbox.addEventListener('change', (e) => window.optimizationSettings.disableTts = e.target.checked);
+    if (this.useLegacyHttpCheckbox) this.useLegacyHttpCheckbox.addEventListener('change', (e) => window.optimizationSettings.useLegacyHttp = e.target.checked);
+    if (this.ttsMinFirstChunkLengthInput) this.ttsMinFirstChunkLengthInput.addEventListener('input', (e) => window.optimizationSettings.ttsMinFirstChunkLength = parseInt(e.target.value, 10) || 0);
+    if (this.ttsMaxFirstChunkLengthInput) this.ttsMaxFirstChunkLengthInput.addEventListener('input', (e) => window.optimizationSettings.ttsMaxFirstChunkLength = parseInt(e.target.value, 10) || 0);
+    if (this.ttsSubsequentChunkLengthInput) this.ttsSubsequentChunkLengthInput.addEventListener('input', (e) => window.optimizationSettings.ttsSubsequentChunkLength = parseInt(e.target.value, 10) || 0);
+
+    // Listeners for VAD settings in debugPanel
+    if (this.vadSpikeThresholdInput) {
+        this.vadSpikeThresholdInput.addEventListener('input', (e) => {
+            window.optimizationSettings.vadSpikeThreshold = parseFloat(e.target.value) || 0;
+            const span = document.getElementById('vadSpikeThresholdValue');
+            if(span) span.textContent = e.target.value;
+        });
+    }
+    if (this.enableSpikeDetectionCheckbox) this.enableSpikeDetectionCheckbox.addEventListener('change', (e) => window.optimizationSettings.enableSpikeDetection = e.target.checked);
+    if (this.enableThirdPartyVadCheckbox) this.enableThirdPartyVadCheckbox.addEventListener('change', (e) => window.optimizationSettings.enableThirdPartyVad = e.target.checked);
+
   },
-  
-  // Function to update optimization UI from settings
   updateOptimizationUIFromSettings: function() {
-    if (!this.useProgressiveTTSCheckbox) return; // Not initialized yet
-    
-    this.useProgressiveTTSCheckbox.checked = window.optimizationSettings.useProgressiveTTS;
-    this.useTokenStreamingCheckbox.checked = window.optimizationSettings.useTokenStreaming;
-    this.disableVadCheckbox.checked = window.optimizationSettings.disableVad;
-    this.useLegacyHttpCheckbox.checked = window.optimizationSettings.useLegacyHttp;
-    
-    // Update latency stats
-    this.updateLatencyStatsUI();
+    if (this.useProgressiveTTSCheckbox) this.useProgressiveTTSCheckbox.checked = window.optimizationSettings.useProgressiveTTS;
+    if (this.useTokenStreamingCheckbox) this.useTokenStreamingCheckbox.checked = window.optimizationSettings.useTokenStreaming;
+    if (this.disableVadCheckbox) this.disableVadCheckbox.checked = window.optimizationSettings.disableVad;
+    if (this.disableTtsCheckbox) this.disableTtsCheckbox.checked = window.optimizationSettings.disableTts;
+    if (this.useLegacyHttpCheckbox) this.useLegacyHttpCheckbox.checked = window.optimizationSettings.useLegacyHttp;
+    if (this.ttsMinFirstChunkLengthInput) this.ttsMinFirstChunkLengthInput.value = window.optimizationSettings.ttsMinFirstChunkLength;
+    if (this.ttsMaxFirstChunkLengthInput) this.ttsMaxFirstChunkLengthInput.value = window.optimizationSettings.ttsMaxFirstChunkLength;
+    if (this.ttsSubsequentChunkLengthInput) this.ttsSubsequentChunkLengthInput.value = window.optimizationSettings.ttsSubsequentChunkLength;
   },
-  
-  // Function to update latency stats UI
-  updateLatencyStatsUI: function() {
-    const stats = window.optimizationSettings.latencyStats;
-    
-    const getAverage = (arr) => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : '-';
-    
-    document.getElementById('recordingToTranscriptLatency').textContent = getAverage(stats.recordingToTranscriptLatency);
-    document.getElementById('transcriptToLLMLatency').textContent = getAverage(stats.transcriptToLLMLatency);
-    document.getElementById('llmToTTSLatency').textContent = getAverage(stats.llmToTTSLatency);
-    document.getElementById('textLatency').textContent = getAverage(stats.textLatency);
-    document.getElementById('audioLatency').textContent = getAverage(stats.audioLatency);
+
+  updateVadSettingsUIFromState: function() { // New function for VAD panel
+    if (this.vadSpikeThresholdInput) {
+        this.vadSpikeThresholdInput.value = window.optimizationSettings.vadSpikeThreshold;
+        const span = document.getElementById('vadSpikeThresholdValue');
+        if(span) span.textContent = window.optimizationSettings.vadSpikeThreshold;
+    }
+    if (this.enableSpikeDetectionCheckbox) this.enableSpikeDetectionCheckbox.checked = window.optimizationSettings.enableSpikeDetection;
+    if (this.enableThirdPartyVadCheckbox) this.enableThirdPartyVadCheckbox.checked = window.optimizationSettings.enableThirdPartyVad;
   },
-  
-  // Function to track latency at different stages
-  trackLatency: function(stage, latencyElement = null) {
-    if (window.optimizationSettings === undefined)
-    {
-      console.log('track latency skipped.')
-      return;
+
+  updatePipelineStateFromUI: function() { // Reads from Optimization Panel
+    if (this.useProgressiveTTSCheckbox) window.optimizationSettings.useProgressiveTTS = this.useProgressiveTTSCheckbox.checked;
+    if (this.useTokenStreamingCheckbox) window.optimizationSettings.useTokenStreaming = this.useTokenStreamingCheckbox.checked;
+    if (this.disableVadCheckbox) window.optimizationSettings.disableVad = this.disableVadCheckbox.checked;
+    if (this.disableTtsCheckbox) window.optimizationSettings.disableTts = this.disableTtsCheckbox.checked;
+    if (this.useLegacyHttpCheckbox) window.optimizationSettings.useLegacyHttp = this.useLegacyHttpCheckbox.checked;
+    if (this.ttsMinFirstChunkLengthInput) window.optimizationSettings.ttsMinFirstChunkLength = parseInt(this.ttsMinFirstChunkLengthInput.value, 10) || 0;
+    if (this.ttsMaxFirstChunkLengthInput) window.optimizationSettings.ttsMaxFirstChunkLength = parseInt(this.ttsMaxFirstChunkLengthInput.value, 10) || 0;
+    if (this.ttsSubsequentChunkLengthInput) window.optimizationSettings.ttsSubsequentChunkLength = parseInt(this.ttsSubsequentChunkLengthInput.value, 10) || 0;
+  },
+
+  updateVadStateFromUI: function() { // Reads from VAD Debug Panel
+    if (this.vadSpikeThresholdInput) window.optimizationSettings.vadSpikeThreshold = parseFloat(this.vadSpikeThresholdInput.value) || 0;
+    if (this.enableSpikeDetectionCheckbox) window.optimizationSettings.enableSpikeDetection = this.enableSpikeDetectionCheckbox.checked;
+    if (this.enableThirdPartyVadCheckbox) window.optimizationSettings.enableThirdPartyVad = this.enableThirdPartyVadCheckbox.checked;
+  },
+
+  saveSettings: function() {
+    try {
+      localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
+    } catch (e) {
+      console.error('Error saving optimization settings to localStorage:', e);
     }
-    const now = Date.now();
-    const stats = window.optimizationSettings.latencyStats;
-    let totalLatencyValue = 0;
-    
-    switch(stage) {
-      case 'recordingStart':
-        stats.recordingStart = now;
-        break;
-      case 'transcriptionReceived':
-        stats.transcriptionReceived = now;
-        if (stats.recordingStart > 0) {
-          if (!stats.recordingToTranscriptLatency) stats.recordingToTranscriptLatency = [];
-          stats.recordingToTranscriptLatency.push(now - stats.recordingStart);
-          if (stats.recordingToTranscriptLatency.length > 10) stats.recordingToTranscriptLatency.shift();
-        }
-        break;
-      case 'llmResponseStart':
-        stats.llmResponseStart = now;
-        if (stats.transcriptionReceived > 0) {
-          // Time until first token (chat text start)
-          const delta = now - stats.transcriptionReceived;
-          if (!stats.transcriptToLLMLatency) stats.transcriptToLLMLatency = [];
-          stats.transcriptToLLMLatency.push(delta);
-          if (stats.transcriptToLLMLatency.length > 10) stats.transcriptToLLMLatency.shift();
-          // Register as text latency (time until first text displayed)
-          if (!stats.textLatency) stats.textLatency = [];
-          stats.textLatency.push(delta);
-          if (stats.textLatency.length > 10) stats.textLatency.shift();
-        }
-        break;
-      case 'ttsStart':
-        stats.ttsStart = now;
-        if (stats.llmResponseStart > 0) {
-          if (!stats.llmToTTSLatency) stats.llmToTTSLatency = [];
-          stats.llmToTTSLatency.push(now - stats.llmResponseStart);
-          if (stats.llmToTTSLatency.length > 10) stats.llmToTTSLatency.shift();
-        }
-        break;
-      case 'ttsEnd':
-        stats.ttsEnd = now;
-        if (stats.recordingStart > 0) {
-          totalLatencyValue = now - stats.recordingStart;
-          if (!stats.totalLatency) stats.totalLatency = [];
-          stats.totalLatency.push(totalLatencyValue);
-          if (stats.totalLatency.length > 10) stats.totalLatency.shift();
-          
-          // We no longer update the UI here because we now update it earlier when audio begins playing
-        }
-        break;
-    }
-    
-    // Always update latency stats UI
-    this.updateLatencyStatsUI();
   }
 };
+
+// Ensure optimizationManager is globally accessible
+window.optimizationManager = optimizationManager;

@@ -36,7 +36,8 @@ builder.Services.AddSingleton(sp =>
     var client = new HttpClient(handler)
     {
         DefaultRequestVersion = HttpVersion.Version20,
-        DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
+        DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher,
+        Timeout = TimeSpan.FromSeconds(180) // Increased timeout to 3 minutes
     };
     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     return client;

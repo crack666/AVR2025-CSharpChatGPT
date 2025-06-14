@@ -19,6 +19,11 @@ namespace VoiceAssistant.Plugins.OpenAI
             _httpClient = httpClient;
         }
 
+        public Task ChunkedSynthesisAsync(string text, string voice, Action<byte[]> onChunkReady)
+        {
+            throw new NotImplementedException();
+        }
+
         public async Task<byte[]> SynthesizeAsync(string text, string voice)
         {
             // Check for empty input to prevent API error

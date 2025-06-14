@@ -12,90 +12,69 @@
   <div class="control-panel">
       <div class="settings-group">
           <div>
-              <label for="model">LLM Modell:</label>
-              <select id="model"></select>
+            <label for="model">Chat Modell:</label>
+            <select id="model" name="model"></select>
           </div>
 
           <div>
-              <label for="voice">Stimme:</label>
-              <select id="voice"></select>
+            <label for="language">Sprache:</label>
+            <select id="language" name="language">
+              <option value="en">Englisch</option>
+              <option value="de">Deutsch</option>
+            </select>
           </div>
 
           <div>
-              <label for="language">Sprache:</label>
-              <select id="language"></select>
+            <label for="voice">TTS Stimme:</label>
+            <select id="voice" name="voice"></select>
           </div>
 
           <div>
-              <label for="asrMode">Transkription:</label>
-              <select id="asrMode">
-                  <option value="whisper">Whisper (Server)</option>
-                  <option value="browser">Browser ASR</option>
-              </select>
+            <label for="asrMode">ASR Modus:</label>
+            <select id="asrMode" name="asrMode">
+                <option value="server">Server-basiert</option>
+                <option value="browser">Browser-basiert (experimentell)</option>
+            </select>
           </div>
 
           <div>
-              <label for="optimizationMode">Performance-Optimierungen:</label>
-              <select id="optimizationMode">
-                  <option value="none">Keine Optimierungen</option>
-                  <option value="progressive">Progressive TTS</option>
-                  <option value="advanced" selected>Erweiterte Optimierungen</option>
-              </select>
+            <!-- Placeholder for future controls if needed -->
           </div>
 
   </div>
 
     <div id="optimizationPanel" class="debug-panel" style="">
-        <h3>Performance-Optimierungen</h3>
+        <h3>Performance-Optimierungen & Pipeline-Steuerung</h3>
         <div style="margin-bottom: 15px;">
-            <p>Aktivieren oder deaktivieren Sie verschiedene Optimierungstechniken, um die beste Latenz zu finden.</p>
+            <label><input type="checkbox" id="useProgressiveTTS"> Progressive TTS verwenden</label><br>
+            <label><input type="checkbox" id="useTokenStreaming"> Token Streaming verwenden</label><br>
+            <label><input type="checkbox" id="disableVad"> VAD deaktivieren (Audio direkt verarbeiten)</label><br>
+            <label><input type="checkbox" id="disableTts"> TTS komplett deaktivieren</label><br>
+            <label><input type="checkbox" id="useLegacyHttp"> Legacy HTTP Pipeline verwenden</label>
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
             <div>
-                <label><input type="checkbox" id="useProgressiveTTS" checked> Progressive TTS verwenden</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    Text wird in Chunks verarbeitet und schrittweise ausgegeben.
-                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-                </div>
-            </div>
-
-            <div>
-                <label><input type="checkbox" id="useTokenStreaming" checked> Token-Streaming verwenden</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    LLM-Antworten werden Token für Token empfangen.
-                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-                </div>
-            </div>
-
-            <div>
-                <label><input type="checkbox" id="disableVad"> VAD deaktivieren</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    Spracherkennung verwendet keine Sprachaktivitäts-detektion (gesamte Aufnahme wird verarbeitet).
-                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-                </div>
+                <label for="ttsMinFirstChunkLength">TTS Min First Chunk (chars):</label>
+                <input type="number" id="ttsMinFirstChunkLength" value="50" style="width: 60px;">
             </div>
             <div>
-                <label><input type="checkbox" id="useLegacyHttp"> Legacy HTTP-Modus nutzen</label>
-                <div class="setting-description" style="font-size: 0.9em; color: #666;">
-                    Schaltet auf das POST-basierte Legacy-Verfahren um.
-                    <br><span style="font-style: italic; color: #007bff;">✓ Funktioniert auch in Unity</span>
-                </div>
+                <label for="ttsMaxFirstChunkLength">TTS Max First Chunk (chars):</label>
+                <input type="number" id="ttsMaxFirstChunkLength" value="100" style="width: 60px;">
             </div>
-
-
-
+            <div>
+                <label for="ttsSubsequentChunkLength">TTS Subsequent Chunk (chars):</label>
+                <input type="number" id="ttsSubsequentChunkLength" value="150" style="width: 60px;">
+            </div>
         </div>
 
-        <!-- Removed TTS Chunk-Größe Slider (not implemented) -->
-
         <div>
-            <button id="applyOptimizationSettings" class="secondary">Einstellungen anwenden</button>
-            <button id="resetOptimizationSettings" class="secondary">Zurücksetzen</button>
+            <button id="applyOptimizationSettings">Pipeline-Einstellungen anwenden</button>
+            <button id="resetOptimizationSettings" class="secondary">Pipeline-Einstellungen zurücksetzen</button>
         </div>
 
         <div style="margin-top: 15px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
-            <strong>Hinweis:</strong> Einige Einstellungen erfordern möglicherweise einen Audio-System-Neustart, um wirksam zu werden.
+            Aktuelles Chat Modell: <span id="currentModel"></span>
         </div>
 
         <div id="latencyStats" style="margin-top: 15px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
@@ -133,43 +112,70 @@
   <div id="debugPanel" class="debug-panel" style="display: none;">
     <h3>Debug-Informationen</h3>
     <fieldset style="margin: 10px 0; padding: 10px; border: 1px solid #ccc;">
-      <legend>VAD-Einstellungen</legend>
-      <p>Die Voice Activity Detection (VAD) läuft nun zentral im Backend über WebSocketAudioService. Änderungen der Schwellwerte werden automatisch an den Server übertragen.</p>
+      <legend>VAD-Einstellungen (Backend gesteuert)</legend>
+      <p>Diese Einstellungen werden an den Server gesendet. Änderungen erfordern ggf. einen Neustart der Verbindung oder werden bei der nächsten Segmentverarbeitung aktiv.</p>
       <div class="threshold-slider">
-        <label for="thresholdSlider">Schwelle (RMS):</label>
-        <input type="range" id="thresholdSlider" min="0" max="0.1" step="0.001">
-        <span class="threshold-value" id="thresholdValue"></span>
+        <label for="vadSpikeThreshold">Spike Threshold (RMS, 0-1):</label>
+        <input type="number" id="vadSpikeThreshold" step="0.01" min="0" max="1" value="0.15">
+        <span id="vadSpikeThresholdValue">0.15</span>
+      </div>
+      <div class="setting-checkbox">
+        <label><input type="checkbox" id="enableSpikeDetection" checked> Spike Detection aktivieren</label>
+      </div>
+      <div class="setting-checkbox">
+        <label><input type="checkbox" id="enableThirdPartyVad" checked> Third-Party VAD (WebRTC) aktivieren</label>
+      </div>
+
+      <!-- Added VAD Sliders Start -->
+      <div class="threshold-slider">
+        <label for="thresholdSlider">VAD Threshold:</label>
+        <input type="range" id="thresholdSlider" min="0" max="1" step="0.01" value="0.5">
+        <span id="thresholdValue">0.5</span>
       </div>
       <div class="threshold-slider">
-        <label for="silenceTimeoutSlider">Stillezeit (s):</label>
-        <input type="range" id="silenceTimeoutSlider" min="0" max="3" step="0.1">
-        <span class="threshold-value" id="silenceTimeoutValue"></span>
+        <label for="silenceTimeoutSlider">Silence Timeout (ms):</label>
+        <input type="range" id="silenceTimeoutSlider" min="100" max="5000" step="100" value="1000">
+        <span id="silenceTimeoutValue">1000</span>
       </div>
       <div class="threshold-slider">
-        <label for="minSpeechDurationSlider">Min. Sprechdauer (s):</label>
-        <input type="range" id="minSpeechDurationSlider" min="0" max="3" step="0.1">
-        <span class="threshold-value" id="minSpeechDurationValue"></span>
+        <label for="minSpeechDurationSlider">Min Speech Duration (ms):</label>
+        <input type="range" id="minSpeechDurationSlider" min="50" max="1000" step="50" value="200">
+        <span id="minSpeechDurationValue">200</span>
       </div>
       <div class="threshold-slider">
-        <label for="startThresholdSlider">Start-Schwellwert (RMS):</label>
-        <input type="range" id="startThresholdSlider" min="0" max="0.1" step="0.001">
-        <span class="threshold-value" id="startThresholdValue"></span>
+        <label for="startThresholdSlider">Speech Start Threshold:</label>
+        <input type="range" id="startThresholdSlider" min="0" max="1" step="0.01" value="0.6">
+        <span id="startThresholdValue">0.6</span>
       </div>
       <div class="threshold-slider">
-        <label for="endThresholdSlider">End-Schwellwert (RMS):</label>
-        <input type="range" id="endThresholdSlider" min="0" max="0.1" step="0.001">
-        <span class="threshold-value" id="endThresholdValue"></span>
+        <label for="endThresholdSlider">Speech End Threshold:</label>
+        <input type="range" id="endThresholdSlider" min="0" max="1" step="0.01" value="0.4">
+        <span id="endThresholdValue">0.4</span>
       </div>
       <div class="threshold-slider">
-        <label for="smoothingWindowSlider">Glättungszeit (s):</label>
-        <input type="range" id="smoothingWindowSlider" min="0" max="1" step="0.05">
-        <span class="threshold-value" id="smoothingWindowValue"></span>
+        <label for="smoothingWindowSlider">Smoothing Window (frames):</label>
+        <input type="range" id="smoothingWindowSlider" min="1" max="10" step="1" value="3">
+        <span id="smoothingWindowValue">3</span>
       </div>
       <div class="threshold-slider">
-        <label for="hangoverSlider">Hang-over (s):</label>
-        <input type="range" id="hangoverSlider" min="0" max="1" step="0.05">
-        <span class="threshold-value" id="hangoverValue"></span>
+        <label for="hangoverSlider">VAD Hangover (ms):</label>
+        <input type="range" id="hangoverSlider" min="50" max="2000" step="50" value="300">
+        <span id="hangoverValue">300</span>
       </div>
+      <!-- Added VAD Sliders End -->
+
+      <div class="threshold-slider">
+        <label for="noiseFloorDebug">Noise Floor (debug):</label>
+        <input type="range" id="noiseFloorDebug" min="0" max="0.1" step="0.001" value="0.01" disabled>
+        <span id="noiseFloorDebugValue">0.01</span>
+      </div>
+      <div class="threshold-slider">
+        <label for="dynamicThresholdDebug">Dynamic Threshold (debug):</label>
+        <input type="range" id="dynamicThresholdDebug" min="0" max="0.2" step="0.001" value="0.02" disabled>
+        <span id="dynamicThresholdDebugValue">0.02</span>
+      </div>
+      <button id="applyVadSettings">VAD-Einstellungen anwenden</button>
+      <p style="font-size: 0.8em; margin-top: 5px;">Hinweis: Die klassischen VAD-Parameter (PreSpeech, MinSpeech, Hangover etc.) werden serverseitig in `appsettings.json` konfiguriert.</p>
     </fieldset>
     <div id="audioLevelContainer">
       <div id="currentAudioLevel" style="height: 20px; background-color: #4CAF50; width: 0%; transition: width 0.1s ease;"></div>

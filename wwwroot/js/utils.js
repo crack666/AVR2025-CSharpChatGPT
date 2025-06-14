@@ -220,38 +220,254 @@ function createBotMessage(text, model = (window.modelSel ? window.modelSel.value
   const header = document.createElement('div');
   header.className = 'message-header';
   let title = `Assistant (${model}`;
-  if (voice) title += `, ${voice}`;
-  title += ')';
+  if (model.startsWith('gpt-4')) title += ' - GPT-4';
+  else if (model.startsWith('gpt-3.5')) title += ' - GPT-3.5';
+  else if (model.startsWith('gpt-3')) title += ' - GPT-3';
   header.textContent = title;
   
   const content = document.createElement('div');
   content.className = 'message-content';
-  content.textContent = text || '...';
+  // If text is initially undefined or null, use an empty string to avoid "undefined" or "null" literal text
+  content.textContent = text || ''; // Ensure empty string if text is falsy
+
+  const audioControls = document.createElement('div');
+  audioControls.className = 'audio-controls';
+  
+  const stopButton = document.createElement('button');
+  stopButton.className = 'stop-btn';
+  stopButton.textContent = '⏹️';
+  stopButton.title = 'Audio stoppen';
+  stopButton.style.display = 'none'; // Initially hidden
+  stopButton.onclick = () => {
+    // Stop audio playback for this message only
+    if (messageDiv.audio) {
+      stopAudio(messageDiv.audio);
+      messageDiv.audio = null;
+      stopButton.style.display = 'none';
+    }
+  };
   
   const latencyInfo = document.createElement('div');
-  latencyInfo.className = 'message-latency';
-  latencyInfo.innerHTML =
-    '<span class="latency-label">Latenz:</span> ' +
-    '<span class="latency-text-label">Text:</span> <span class="latency-text-value">berechne...</span> | ' +
-    '<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">berechne...</span>';
+  latencyInfo.className = 'latency-info';
+  latencyInfo.textContent = '⏳'; // Hourglass icon as placeholder
+  latencyInfo.style.display = 'none'; // Initially hidden
   
-  const controls = document.createElement('div');
-  controls.className = 'message-controls';
-
-  const stopButton = document.createElement('button');
-  stopButton.className = 'stop-button';
-  stopButton.textContent = 'Audio stoppen';
-  stopButton.style.display = 'none';
-  
+  audioControls.appendChild(stopButton);
+  audioControls.appendChild(latencyInfo);
   messageDiv.appendChild(header);
   messageDiv.appendChild(content);
-  messageDiv.appendChild(latencyInfo);
-  messageDiv.appendChild(controls);
-  controls.appendChild(stopButton);
+  messageDiv.appendChild(audioControls);
   chatLogElement.appendChild(messageDiv);
   chatLogElement.scrollTop = chatLogElement.scrollHeight;
-  // Capture references for latency updates
-  const textSpan = latencyInfo.querySelector('.latency-text-value');
-  const audioSpan = latencyInfo.querySelector('.latency-audio-value');
-  return { messageDiv, content, stopButton, latencyInfo, textSpan, audioSpan };
+  
+  // Streaming audio setup
+  messageDiv.audio = null;
+  messageDiv.stopButton = stopButton;
+  messageDiv.latencyInfo = latencyInfo;
+  
+  // Token streaming handler
+  let isFirstToken = true;
+  function handleToken(token) {
+    // Show message content gradually
+    if (isFirstToken) {
+      content.textContent = ''; // Clear initial placeholder text
+      isFirstToken = false;
+    }
+    content.textContent += token;
+    
+    // Auto-scroll chat log
+    chatLogElement.scrollTop = chatLogElement.scrollHeight;
+  }
+  
+  // Audio playback handler
+  function handleAudio(audioUrl) {
+    // Stop any ongoing audio for this message
+    if (messageDiv.audio) {
+      stopAudio(messageDiv.audio);
+      messageDiv.audio = null;
+      stopButton.style.display = 'none';
+    }
+    
+    // Create new audio element for the received audio URL
+    const audio = new Audio(audioUrl);
+    audio.crossOrigin = 'anonymous'; // Keep this for legitimate audio
+    audio.play().catch(err => {
+      console.error('Error beim Abspielen der Audio:', err);
+      debugLog('Audio play error: ' + err.message);
+    });
+    
+    // Update message div with new audio reference
+    messageDiv.audio = audio;
+    stopButton.style.display = 'inline-block';
+    
+    // Cleanup on audio end
+    audio.onended = () => {
+      messageDiv.audio = null;
+      stopButton.style.display = 'none';
+    };
+  }
+  
+  return { messageDiv, content, stopButton, latencyInfo };
 }
+
+// Send a chat message to the server
+async function sendMessage(content, model, voice, isRetry = false) {
+  // Trim content to avoid unnecessary spaces
+  content = content.trim();
+  if (!content) return;
+  
+  // Disable UI elements to prevent further input
+  window.isProcessingOrPlayingAudio = true;
+  status.textContent = 'Warte auf Antwort...';
+  stopBtn.disabled = true;
+  clearBtn.disabled = true;
+  debugBtn.disabled = true;
+  optimizationBtn.disabled = true;
+  modelSel.disabled = true;
+  langSel.disabled = true;
+  voiceSel.disabled = true;
+  asrMode.disabled = true;
+  optimizationMode.disabled = true;
+  
+  // Create user message bubble
+  const userMessageDiv = createUserMessage(content);
+  
+  // Prepare request payload
+  const payload = {
+    model: model || 'gpt-3.5-turbo',
+    messages: [{ role: 'user', content }],
+    // Include voice selection for OpenAI TTS
+    voice: voice || 'nova', // Default to 'nova' if not specified
+    temperature: 0.7,
+    max_tokens: 150,
+    n: 1,
+    stop: null,
+    stream: true // Enable streaming
+  };
+  
+  try {
+    // Send message to server
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    
+    // Handle response streaming
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let isFirstChunk = true;
+    let fullResponse = '';
+    
+    // Reset debug output for new response
+    debugOutput.innerHTML = '';
+    
+    // Read and process each chunk of the response
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      // Decode and trim the chunk
+      const chunk = decoder.decode(value, { stream: true }).trim();
+      if (!chunk) continue;
+      
+      // Log the raw chunk data to debug output
+      debugLog('Raw chunk: ' + chunk);
+      
+      // Handle initial data (e.g., latency info)
+      if (isFirstChunk) {
+        isFirstChunk = false;
+        // Extract and display latency information if available
+        const latencyMatch = chunk.match(/latency:\s*(\d+ms)/);
+        if (latencyMatch) {
+          const latency = latencyMatch[1];
+          userMessageDiv.querySelector('.latency-info').textContent = `🕒 ${latency}`;
+        }
+      }
+      
+      // Append chunk to full response
+      fullResponse += chunk;
+      
+      // Check for audio URL in the chunk
+      const audioUrlMatch = chunk.match(/https?:\/\/[^\s]+/);
+      if (audioUrlMatch) {
+        const audioUrl = audioUrlMatch[0];
+        // Play the audio using the browser's native Audio API
+        const audio = new Audio(audioUrl);
+        audio.crossOrigin = 'anonymous';
+        audio.play().catch(err => {
+          console.error('Error beim Abspielen der Audio:', err);
+          debugLog('Audio play error: ' + err.message);
+        });
+      }
+      
+      // Update the message content with the received chunk
+      userMessageDiv.querySelector('.message-content').textContent = fullResponse;
+      
+      // Auto-scroll chat log
+      window.chatLog.scrollTop = window.chatLog.scrollHeight;
+    }
+    
+    // Close the reader when done
+    reader.releaseLock();
+    
+    // Re-enable UI elements
+    status.textContent = 'Fertig!';
+    stopBtn.disabled = false;
+    clearBtn.disabled = false;
+    debugBtn.disabled = false;
+    optimizationBtn.disabled = false;
+    modelSel.disabled = false;
+    langSel.disabled = false;
+    voiceSel.disabled = false;
+    asrMode.disabled = false;
+    optimizationMode.disabled = false;
+  } catch (err) {
+    console.error('Fehler beim Senden der Nachricht:', err);
+    status.textContent = 'Fehler! Bitte erneut versuchen.';
+    
+    // Retry logic for network or server errors
+    if (!isRetry) {
+      setTimeout(() => {
+        sendMessage(content, model, voice, true);
+      }, 2000);
+    }
+  }
+}
+
+// Stop all ongoing processes (audio, video, etc.)
+function stopAll() {
+  // Stop audio playback
+  stopAllAudio();
+  
+  // Stop video playback (if any)
+  if (window.currentVideo) {
+    window.currentVideo.pause();
+    window.currentVideo = null;
+  }
+  
+  // Reset UI elements
+  status.textContent = 'Bereit';
+  stopBtn.disabled = true;
+  clearBtn.disabled = false;
+  debugBtn.disabled = false;
+  optimizationBtn.disabled = false;
+  modelSel.disabled = false;
+  langSel.disabled = false;
+  voiceSel.disabled = false;
+  asrMode.disabled = false;
+  optimizationMode.disabled = false;
+}
+
+// Initialize model and voice selections on page load
+loadModels();
+populateVoices();
+
+// Global error handler
+window.onerror = function(message, source, lineno, colno, error) {
+  console.error('Global error handler:', message, source, lineno, colno, error);
+  alert('Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es erneut.');
+  // Optionally, send error details to server for logging
+  // fetch('/api/logError', { method: 'POST', body: JSON.stringify({ message, source, lineno, colno, error }) });
+};

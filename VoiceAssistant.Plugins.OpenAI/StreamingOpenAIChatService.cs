@@ -21,15 +21,16 @@ namespace VoiceAssistant.Plugins.OpenAI
     public class StreamingOpenAIChatService : IChatService
     {
         private readonly HttpClient _httpClient;
-        private readonly Action<string> _onTokenReceived;
+        private readonly Action<string> _onTokenReceived; // Retained for GenerateStreamingResponseAsync if used directly
         private readonly ILogger<StreamingOpenAIChatService> _logger;
-        private readonly bool _enableVerboseLogging = false;
+        private readonly bool _enableVerboseLogging = false; // Consider making this configurable
+        private const string DefaultChatModel = "gpt-4"; // Default model if not specified
 
         /// <summary>
         /// Initializes a new instance of the <see cref="StreamingOpenAIChatService"/> class.
         /// </summary>
         /// <param name="httpClient">The HTTP client to use for API requests.</param>
-        /// <param name="onTokenReceived">Optional callback for real-time token updates.</param>
+        /// <param name="onTokenReceived">Optional callback for real-time token updates (used by GenerateStreamingResponseAsync).</param>
         /// <param name="logger">Optional logger for debugging.</param>
         public StreamingOpenAIChatService(HttpClient httpClient, Action<string> onTokenReceived = null, ILogger<StreamingOpenAIChatService> logger = null)
         {
@@ -49,115 +50,147 @@ namespace VoiceAssistant.Plugins.OpenAI
             if (chatHistory == null)
                 throw new ArgumentNullException(nameof(chatHistory));
 
-            // If no token callback is registered, use non-streaming implementation for backward compatibility
+            // Use the _onTokenReceived callback to decide the path, but pass DefaultChatModel
             if (_onTokenReceived == null)
             {
-                return await GenerateNonStreamingResponseAsync(chatHistory);
+                // Non-streaming path
+                return await GenerateNonStreamingResponseAsync(chatHistory, DefaultChatModel);
             }
 
-            // Otherwise use streaming implementation
-            return await GenerateStreamingResponseAsync(chatHistory);
+            // Streaming path with callback
+            return await GenerateStreamingResponseAsync(chatHistory, DefaultChatModel, _onTokenReceived);
         }
 
         /// <summary>
-        /// Generates a response using streaming mode with the callback.
-        /// This is a public method that can be called directly when token callbacks are needed.
+        /// Generates a response using streaming mode with a callback.
+        /// This method is kept for compatibility or direct use if a callback pattern is preferred.
         /// </summary>
         /// <param name="chatHistory">Ordered list of chat messages (user + bot).</param>
+        /// <param name="modelName">The model to use for generation.</param>
         /// <param name="onTokenReceived">Callback for token-by-token updates.</param>
         /// <returns>Complete generated response text.</returns>
         public async Task<string> GenerateStreamingResponseAsync(
             IEnumerable<ChatMessage> chatHistory,
-            Action<string> onTokenReceived = null)
+            string modelName,
+            Action<string> onTokenReceived)
         {
-            if (chatHistory == null)
-                throw new ArgumentNullException(nameof(chatHistory));
+            if (chatHistory == null) throw new ArgumentNullException(nameof(chatHistory));
+            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName));
 
-            LogDebug("Starting streaming response generation");
+            var fullResponse = new StringBuilder();
+            await foreach (var (token, _) in StreamTokensAsync(chatHistory, modelName))
+            {
+                if (!string.IsNullOrEmpty(token))
+                {
+                    fullResponse.Append(token);
+                    onTokenReceived?.Invoke(token);
+                }
+            }
+            return fullResponse.ToString();
+        }
 
-            // Check if we have any messages to process
+
+        /// <summary>
+        /// Streams chat response tokens asynchronously.
+        /// This is the primary method for token-by-token streaming.
+        /// </summary>
+        /// <param name="chatHistory">Ordered list of chat messages.</param>
+        /// <param name="modelName">The OpenAI model to use (e.g., "gpt-4", "gpt-3.5-turbo").</param>
+        /// <returns>An asynchronous enumerable of (string token, bool isFinalToken) tuples.</returns>
+        public async IAsyncEnumerable<(string Token, bool IsFinalToken)> StreamTokensAsync(
+            IEnumerable<ChatMessage> chatHistory,
+            string modelName)
+        {
+            if (chatHistory == null) throw new ArgumentNullException(nameof(chatHistory));
+            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName));
+
+            LogDebug($"Starting StreamTokensAsync with model: {modelName}");
+
             var messageArray = chatHistory.ToArray();
             if (messageArray.Length == 0)
             {
-                LogWarning("Chat history is empty, returning empty response");
-                return string.Empty;
+                LogWarning("Chat history is empty, yielding no tokens.");
+                yield break;
             }
 
-            // Debug log the chat history
-            for (int i = 0; i < messageArray.Length; i++)
-            {
-                LogDebug($"Chat message {i}: Role={messageArray[i].Role}, Content={messageArray[i].Content?.Substring(0, Math.Min(messageArray[i].Content?.Length ?? 0, 30))}...");
-            }
-
-            // Use the provided callback or fall back to the constructor-provided one
-            var callback = onTokenReceived ?? _onTokenReceived;
-
-            // Map internal ChatMessage to OpenAI message format
             var messages = messageArray.Select(msg => new
             {
                 role = msg.Role == ChatRole.User ? "user" : "assistant",
                 content = msg.Content
             }).ToArray();
 
-            LogDebug($"Sending {messages.Length} messages to OpenAI");
-
             var payload = new
             {
-                //model = "gpt-3.5-turbo",
-                model = "gpt-4",
+                model = modelName,
                 messages = messages,
-                stream = true // Enable streaming mode
+                stream = true
             };
 
             var jsonPayload = JsonSerializer.Serialize(payload);
-            LogDebug($"JSON payload: {jsonPayload}");
+            LogDebug($"JSON payload for StreamTokensAsync: {jsonPayload}");
 
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
             request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-            // Use a stopwatch to measure response time
             var stopwatch = Stopwatch.StartNew();
+            LogDebug("Sending request to OpenAI for StreamTokensAsync...");
 
-            // Use ResponseHeadersRead for early processing
-            LogDebug("Sending request to OpenAI...");
-            var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-
-            LogDebug($"Received headers in {stopwatch.ElapsedMilliseconds}ms, Status: {response.StatusCode}");
-
+            HttpResponseMessage response = null; // Initialize to null
             try
             {
-                response.EnsureSuccessStatusCode();
+                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                LogDebug($"Received headers in {stopwatch.ElapsedMilliseconds}ms, Status: {response.StatusCode}");
+                response.EnsureSuccessStatusCode(); // Throws on bad status
             }
             catch (HttpRequestException ex)
             {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                LogError($"HTTP error: {ex.Message}, Response content: {errorContent}");
-                throw;
+                string errorContent = "Error response could not be read.";
+                if (response != null) // Check if response object exists
+                {
+                    try 
+                    { 
+                        errorContent = await response.Content.ReadAsStringAsync(); 
+                        ex.Data["ResponseContent"] = errorContent; // Optionally store it in exception data
+                    }
+                    catch (Exception readEx)
+                    {
+                        errorContent = $"Failed to read error response content: {readEx.Message}";
+                    }
+                }
+                else
+                {
+                    errorContent = "HttpResponseMessage object was null.";
+                }
+                LogError($"HTTP error in StreamTokensAsync: {ex.Message}, Response content: {errorContent}");
+                yield break; // Exit if HTTP request itself failed
             }
 
+            // If EnsureSuccessStatusCode passed, proceed to process the stream
             using var stream = await response.Content.ReadAsStreamAsync();
             using var reader = new StreamReader(stream);
 
-            var fullResponse = new StringBuilder();
             string line;
             int tokenCount = 0;
+            LogDebug("Starting to process streaming response in StreamTokensAsync...");
+            bool streamEnded = false;
 
-            LogDebug("Starting to process streaming response...");
-
-            // Process the SSE stream line by line
-            while ((line = await reader.ReadLineAsync()) != null)
+            while (!streamEnded && (line = await reader.ReadLineAsync()) != null)
             {
-                // SSE format: "data: {...}" or "data: [DONE]"
                 if (line.StartsWith("data: "))
                 {
                     var data = line.Substring(6);
                     if (data == "[DONE]")
                     {
-                        LogDebug("Received [DONE] marker, ending stream processing");
-                        break;
+                        LogDebug("Received [DONE] marker in StreamTokensAsync.");
+                        streamEnded = true; // Mark stream as ended
+                        yield return (null, true); // Signal completion
+                        continue; // Exit loop after processing DONE
                     }
 
+                    // Each line (token) parsing is in its own try-catch
+                    string currentToken = null;
+                    bool parseError = false;
                     try
                     {
                         using var doc = JsonDocument.Parse(data);
@@ -166,38 +199,38 @@ namespace VoiceAssistant.Plugins.OpenAI
                             choices[0].TryGetProperty("delta", out var delta) &&
                             delta.TryGetProperty("content", out var content))
                         {
-                            var token = content.GetString();
-                            if (!string.IsNullOrEmpty(token))
-                            {
-                                tokenCount++;
-                                fullResponse.Append(token);
-
-                                // Invoke the callback if provided
-                                callback?.Invoke(token);
-
-                                if (tokenCount % 10 == 0 || _enableVerboseLogging)
-                                {
-                                    LogDebug($"Received token {tokenCount}: '{token}'");
-                                }
-                            }
+                            currentToken = content.GetString();
                         }
                     }
-                    catch (JsonException ex)
+                    catch (JsonException jsonEx)
                     {
-                        // Log but continue on JSON parsing errors
-                        LogWarning($"JSON parsing error: {ex.Message}, Data: {data}");
-                        continue;
+                        LogWarning($"JSON parsing error in StreamTokensAsync: {jsonEx.Message}, Data: {data}");
+                        parseError = true;
+                        // Optionally yield an error token or specific error object here if needed
+                        // yield return ($"ERROR: JSON Parse - {jsonEx.Message}", false); 
+                    }
+
+                    if (!parseError && currentToken != null)
+                    {
+                        tokenCount++;
+                        if (tokenCount % 10 == 0 || _enableVerboseLogging)
+                        {
+                            LogDebug($"Yielding token {tokenCount} in StreamTokensAsync: '{currentToken}'");
+                        }
+                        yield return (currentToken, false);
                     }
                 }
             }
 
+            // If loop finished without [DONE] (e.g. stream cut off), ensure final signal if not already sent
+            if (!streamEnded)
+            {
+                LogWarning("StreamTokensAsync: Loop finished but [DONE] marker was not received. Signaling end.");
+                yield return (null, true);
+            }
+
             stopwatch.Stop();
-            var result = fullResponse.ToString();
-
-            LogDebug($"Completed streaming response in {stopwatch.ElapsedMilliseconds}ms, received {tokenCount} tokens");
-            LogDebug($"Full response: {result}");
-
-            return result;
+            LogDebug($"Completed StreamTokensAsync in {stopwatch.ElapsedMilliseconds}ms, yielded {tokenCount} tokens.");
         }
 
         // Helper methods for logging
@@ -226,9 +259,13 @@ namespace VoiceAssistant.Plugins.OpenAI
         /// Generates a response in non-streaming mode (backward compatibility).
         /// </summary>
         /// <param name="chatHistory">The chat history.</param>
+        /// <param name="modelName">The OpenAI model to use.</param>
         /// <returns>Complete generated response.</returns>
-        private async Task<string> GenerateNonStreamingResponseAsync(IEnumerable<ChatMessage> chatHistory)
+        private async Task<string> GenerateNonStreamingResponseAsync(IEnumerable<ChatMessage> chatHistory, string modelName)
         {
+            if (chatHistory == null) throw new ArgumentNullException(nameof(chatHistory));
+            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName));
+
             // Map internal ChatMessage to OpenAI message format
             var messages = chatHistory.Select(msg => new
             {
@@ -238,7 +275,7 @@ namespace VoiceAssistant.Plugins.OpenAI
 
             var payload = new
             {
-                model = "gpt-3.5-turbo",
+                model = modelName, // Use parameterized model
                 messages = messages.ToArray(),
                 stream = false
             };

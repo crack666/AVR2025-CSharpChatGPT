@@ -14,6 +14,12 @@ public class SettingsController : ControllerBase
         _pipelineOptions = pipelineOptions;
     }
 
+    [HttpGet] // Add this attribute to handle GET requests
+    public ActionResult<VadSettings> GetVadSettings() // New method to get VAD settings
+    {
+        return Ok(_vadSettings);
+    }
+
     [HttpPut]
     public IActionResult Update([FromBody] VadSettings dto)
     {
@@ -114,4 +120,4 @@ public class SettingsController : ControllerBase
         // Leave other settings unchanged
         return Ok(_vadSettings);
     }
-}
+}

@@ -1,11 +1,13 @@
 const FrameDurationMs = 20;
 const TargetSampleRate = 16000;
+const SamplesPerChunk = TargetSampleRate * (FrameDurationMs / 1000); // 320 samples
 let isLoopActive = false;   // Flag, ob die Audio-Wiedergabe aktiv ist
 
 // Audio-Chunk-Verwaltung
 const indexedAudioChunks = new Map();  // Map zur Speicherung von Audio-Chunks nach Index
 let nextPlaybackIndex = 0;  // Der nächste zu spielende Chunk-Index
 let isPlaying = false;      // Flag, ob gerade Audio abgespielt wird
+let allAudioChunksReceived = false; // Flag to indicate if 'audio-done' has been received
 
 // Spielt den nächsten Buffer, sobald keiner läuft
 /*
@@ -57,85 +59,82 @@ function scheduleNext() {
         window.allAudioSources.push(src);
         
         // Pro-Nachricht-Tracking
-        if (window.currentBot) window.currentBot.audioSource = src;
-        
-        // Save current index to use in log
-        const currentIndex = nextPlaybackIndex;
-        
-        // Increment index before starting playback to prepare for the next chunk
-        nextPlaybackIndex++;
-        
-        // Wenn der Chunk fertig ist, zum nächsten Chunk gehen
-        src.onended = () => {
-            console.log(`%c[AUDIO-DEBUG] Chunk #${currentIndex} finished playing, next is #${nextPlaybackIndex}`, 
-                'background: #9b59b6; color: white; padding: 2px 5px; border-radius: 3px;');
-            scheduleNext();      // Überprüfe, ob der nächste Chunk bereit ist
-        };
-        
-        src.start();
-        isLoopActive = true;
-    } else {
-        // Der nächste Chunk ist noch nicht verfügbar
-        if (indexedAudioChunks.size === 0) {
-            // Wenn überhaupt keine Chunks mehr in der Map sind, beenden wir den Loop
-            isLoopActive = false;
-            console.log(`[scheduleNext] all chunks processed (nextPlaybackIndex=${nextPlaybackIndex}) → stopping`);
-            
-            // If all chunks are done AND we've received the 'done' event, run final cleanup
-            if (window._allAudioChunksReceived && typeof window._cleanupAfterPlayback === 'function') {
-                console.log('[scheduleNext] Running final cleanup after all chunks played');
-                window._cleanupAfterPlayback();
-            }
-        } else {
-            // Es gibt noch Chunks, aber der nächste ist noch nicht verfügbar
-            // Wir warten kurz und versuchen es dann erneut
-            // Zeige alle wartenden Chunks
-            const waitingIndices = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
-            console.log(`%c[AUDIO-DEBUG] Waiting for chunk #${nextPlaybackIndex}, chunks in queue: [${waitingIndices.join(', ')}]`, 
-                'background: #f39c12; color: white; padding: 2px 5px; border-radius: 3px;');
-                
-            // Check if the waiting chunks have higher indices than what we're waiting for
-            // This would indicate we might have missed a chunk or it failed to process
-            if (waitingIndices.length > 0 && waitingIndices[0] > nextPlaybackIndex) {
-                console.log(`%c[AUDIO-DEBUG] Chunk #${nextPlaybackIndex} appears to be missing, skipping to #${waitingIndices[0]}`, 
-                    'background: #e67e22; color: white; padding: 2px 5px; border-radius: 3px;');
-                nextPlaybackIndex = waitingIndices[0];
-                // Immediately try again with the new index
-                scheduleNext();
-                return;
-            }
-            
-            setTimeout(scheduleNext, 50);
+        if (window.currentBot) {
+            window.currentBot.audioSources = window.currentBot.audioSources || [];
+            window.currentBot.audioSources.push(src);
         }
+        
+        isPlaying = true;
+        nextPlaybackIndex++; // Increment for the next chunk
+
+        src.onended = () => {
+            console.log(`%c[AUDIO-DEBUG] Finished playing chunk #${nextPlaybackIndex - 1}`, 
+                'background: #f39c12; color: white; padding: 2px 5px; border-radius: 3px;');
+            isPlaying = false;
+            // Remove from allAudioSources to prevent re-stopping
+            const index = window.allAudioSources.indexOf(src);
+            if (index > -1) {
+                window.allAudioSources.splice(index, 1);
+            }
+            if (window.currentBot && window.currentBot.audioSources) {
+                const botSrcIndex = window.currentBot.audioSources.indexOf(src);
+                if (botSrcIndex > -1) {
+                    window.currentBot.audioSources.splice(botSrcIndex, 1);
+                }
+            }
+
+            playLoop(); // Attempt to play the next chunk
+
+            // Check if all chunks have been received and played
+            if (allAudioChunksReceived && indexedAudioChunks.size === 0 && !isPlaying) {
+                console.log('%c[AUDIO-DEBUG] All received audio chunks have been played. Resetting state.', 'color: red; font-weight: bold;');
+                resetPlaybackState();
+            }
+        };
+
+        src.start();
+    } else {
+        // console.log(`%c[AUDIO-DEBUG] Chunk #${nextPlaybackIndex} not yet available. Waiting... Stored: ${indexedAudioChunks.size}`, 
+        //     'background: #3498db; color: white; padding: 2px 5px; border-radius: 3px;');
+        // isPlaying = false; // No, keep isPlaying true if we are in the loop, waiting for next chunk
+        // If no chunk is available, the loop will pause until new chunks arrive or it's terminated.
     }
 }
 
 // Entry to start or resume playback loop
 function playLoop() {
     if (!isLoopActive) {
-        const loopIndices = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
-        
-        if (loopIndices.length === 0) {
-            console.log(`%c[AUDIO-DEBUG] No chunks to play, skipping playback loop`, 
-                'background: #7f8c8d; color: white; padding: 2px 5px; border-radius: 3px;');
-            return;
-        }
-        
-        console.log(`%c[AUDIO-DEBUG] Starting playback loop: next=${nextPlaybackIndex}, chunks=[${loopIndices.join(', ')}]`, 
-            'background: #27ae60; color: white; padding: 2px 5px; border-radius: 3px;');
-            
-        // If our nextPlaybackIndex is too high (might have been reset incorrectly),
-        // reset it to the lowest available chunk index
-        if (loopIndices.length > 0 && !loopIndices.includes(nextPlaybackIndex)) {
-            const oldIndex = nextPlaybackIndex;
-            nextPlaybackIndex = loopIndices[0];
-            console.log(`%c[AUDIO-DEBUG] Reset playback index from ${oldIndex} to ${nextPlaybackIndex} to match available chunks`, 
-                'background: #16a085; color: white; padding: 2px 5px; border-radius: 3px;');
-        }
-        
+        isLoopActive = true;
+        console.log('%c[AUDIO-DEBUG] PlayLoop started.', 'color: blue; font-weight: bold;');
+    }
+
+    if (isPlaying) {
+        // console.log('%c[AUDIO-DEBUG] PlayLoop: Already playing a chunk, returning.', 'color: orange;');
+        return; // Another chunk is already in progress
+    }
+
+    if (indexedAudioChunks.has(nextPlaybackIndex)) {
         scheduleNext();
+    } else {
+        // console.log('%c[AUDIO-DEBUG] PlayLoop: Next chunk #${nextPlaybackIndex} not available. Pausing loop.', 'color: purple;');
+        // isLoopActive = false; // No, loop remains active, just no current chunk to play
+        // isPlaying is already false here
+        // If audio-done has been received and queue is empty, then truly stop.
+        // This check might be better placed in 'audio-done' or after src.onended
     }
 }
+
+function resetPlaybackState() {
+    console.log('%c[AUDIO-DEBUG] Resetting playback state.', 'color: red; font-weight: bold;');
+    indexedAudioChunks.clear();
+    nextPlaybackIndex = 0;
+    isPlaying = false;
+    isLoopActive = false; // Stop the loop
+    allAudioChunksReceived = false; // Reset this flag as well
+    // stopAllAudio(); // This is usually called separately when user clicks stop or clears chat
+}
+
+// const MinTextLength = 40; // Already defined in ProgressiveTTSSynthesizer
 
 // Audio system management
 // Create audio system object and expose it to the window
@@ -152,8 +151,10 @@ window.audioSystem = {
     window.speakingSegment = false;     // Global flag for speaking detection
     window.silenceStart = null;         // Global timestamp for silence detection
     window.isProcessingOrPlayingAudio = false;  // Global flag for processing state
+    window.currentBotMessageElement = null; // Used to track the current bot message div for updates
     
     // VAD-Einstellungen: laden und an Backend weitergeben
+    // Ensure these elements exist before trying to use them
     const thresholdSlider = document.getElementById('thresholdSlider');
     const thresholdValue = document.getElementById('thresholdValue');
     const silenceTimeoutSlider = document.getElementById('silenceTimeoutSlider');
@@ -169,86 +170,119 @@ window.audioSystem = {
     const hangoverSlider = document.getElementById('hangoverSlider');
     const hangoverValue = document.getElementById('hangoverValue');
 
+    // Check if elements exist
+    if (!thresholdSlider) console.error("Element with ID 'thresholdSlider' not found.");
+    if (!silenceTimeoutSlider) console.error("Element with ID 'silenceTimeoutSlider' not found.");
+    if (!minSpeechDurationSlider) console.error("Element with ID 'minSpeechDurationSlider' not found.");
+    if (!startThresholdSlider) console.error("Element with ID 'startThresholdSlider' not found.");
+    if (!endThresholdSlider) console.error("Element with ID 'endThresholdSlider' not found.");
+    if (!smoothingWindowSlider) console.error("Element with ID 'smoothingWindowSlider' not found.");
+    if (!hangoverSlider) console.error("Element with ID 'hangoverSlider' not found.");
+
+
     // Lade initiale VAD-Einstellungen vom Backend
     (async () => {
       try {
         const resp = await fetch('/api/settings');
         if (resp.ok) {
           const settings = await resp.json();
-          thresholdSlider.value = settings.threshold;
-          thresholdValue.textContent = settings.threshold;
-          window.silenceThreshold = settings.threshold;
-          silenceTimeoutSlider.value = settings.silenceTimeoutSec;
-          silenceTimeoutValue.textContent = settings.silenceTimeoutSec;
-          minSpeechDurationSlider.value = settings.minSpeechDurationSec;
-          minSpeechDurationValue.textContent = settings.minSpeechDurationSec;
-          startThresholdSlider.value = settings.startThreshold;
-          startThresholdValue.textContent = settings.startThreshold;
-          window.startThreshold = settings.startThreshold;
-          endThresholdSlider.value = settings.endThreshold;
-          endThresholdValue.textContent = settings.endThreshold;
-          window.endThreshold = settings.endThreshold;
-          smoothingWindowSlider.value = settings.rmsSmoothingWindowSec;
-          smoothingWindowValue.textContent = settings.rmsSmoothingWindowSec;
-          window.rmsSmoothingWindowSec = settings.rmsSmoothingWindowSec;
-          hangoverSlider.value = settings.hangoverDurationSec;
-          hangoverValue.textContent = settings.hangoverDurationSec;
-          window.hangoverDurationSec = settings.hangoverDurationSec;
+          // Add null checks before accessing properties
+          if (thresholdSlider) thresholdSlider.value = settings.threshold;
+          if (thresholdValue) thresholdValue.textContent = settings.threshold;
+          window.silenceThreshold = settings.threshold; // This is a global, so no element check needed directly
+          
+          if (silenceTimeoutSlider) silenceTimeoutSlider.value = settings.silenceTimeoutSec;
+          if (silenceTimeoutValue) silenceTimeoutValue.textContent = settings.silenceTimeoutSec;
+          
+          if (minSpeechDurationSlider) minSpeechDurationSlider.value = settings.minSpeechDurationSec;
+          if (minSpeechDurationValue) minSpeechDurationValue.textContent = settings.minSpeechDurationSec;
+          
+          if (startThresholdSlider) startThresholdSlider.value = settings.startThreshold;
+          if (startThresholdValue) startThresholdValue.textContent = settings.startThreshold;
+          window.startThreshold = settings.startThreshold; // Global
+          
+          if (endThresholdSlider) endThresholdSlider.value = settings.endThreshold;
+          if (endThresholdValue) endThresholdValue.textContent = settings.endThreshold;
+          window.endThreshold = settings.endThreshold; // Global
+          
+          if (smoothingWindowSlider) smoothingWindowSlider.value = settings.rmsSmoothingWindowSec;
+          if (smoothingWindowValue) smoothingWindowValue.textContent = settings.rmsSmoothingWindowSec;
+          window.rmsSmoothingWindowSec = settings.rmsSmoothingWindowSec; // Global
+          
+          if (hangoverSlider) hangoverSlider.value = settings.hangoverDurationSec;
+          if (hangoverValue) hangoverValue.textContent = settings.hangoverDurationSec;
+          window.hangoverDurationSec = settings.hangoverDurationSec; // Global
+          
         } else {
           console.error(`Failed to load VAD settings: ${resp.status}`);
-          window.silenceThreshold = parseFloat(thresholdSlider.value);
+          if (thresholdSlider) window.silenceThreshold = parseFloat(thresholdSlider.value);
         }
       } catch (err) {
         console.error('Error loading VAD settings', err);
-        window.silenceThreshold = parseFloat(thresholdSlider.value);
+        if (thresholdSlider) window.silenceThreshold = parseFloat(thresholdSlider.value);
       }
     })();
 
     // Aktualisiere UI und lokale Parameter bei Änderung (sofort)
-    thresholdValue.textContent = thresholdSlider.value;
-    thresholdSlider.addEventListener('input', () => {
-      window.silenceThreshold = parseFloat(thresholdSlider.value);
-      thresholdValue.textContent = thresholdSlider.value;
-    });
-    silenceTimeoutValue.textContent = silenceTimeoutSlider.value;
-    silenceTimeoutSlider.addEventListener('input', () => {
-      silenceTimeoutValue.textContent = silenceTimeoutSlider.value;
-    });
-    minSpeechDurationValue.textContent = minSpeechDurationSlider.value;
-    minSpeechDurationSlider.addEventListener('input', () => {
-      minSpeechDurationValue.textContent = minSpeechDurationSlider.value;
-    });
-    startThresholdValue.textContent = startThresholdSlider.value;
-    startThresholdSlider.addEventListener('input', () => {
-      window.startThreshold = parseFloat(startThresholdSlider.value);
-      startThresholdValue.textContent = startThresholdSlider.value;
-    });
-    endThresholdValue.textContent = endThresholdSlider.value;
-    endThresholdSlider.addEventListener('input', () => {
-      window.endThreshold = parseFloat(endThresholdSlider.value);
-      endThresholdValue.textContent = endThresholdSlider.value;
-    });
-    smoothingWindowValue.textContent = smoothingWindowSlider.value;
-    smoothingWindowSlider.addEventListener('input', () => {
-      window.rmsSmoothingWindowSec = parseFloat(smoothingWindowSlider.value);
-      smoothingWindowValue.textContent = smoothingWindowSlider.value;
-    });
-    hangoverValue.textContent = hangoverSlider.value;
-    hangoverSlider.addEventListener('input', () => {
-      window.hangoverDurationSec = parseFloat(hangoverSlider.value);
-      hangoverValue.textContent = hangoverSlider.value;
-    });
+    if (thresholdSlider && thresholdValue) {
+        thresholdValue.textContent = thresholdSlider.value;
+        thresholdSlider.addEventListener('input', () => {
+            window.silenceThreshold = parseFloat(thresholdSlider.value);
+            thresholdValue.textContent = thresholdSlider.value;
+        });
+    }
+    if (silenceTimeoutSlider && silenceTimeoutValue) {
+        silenceTimeoutValue.textContent = silenceTimeoutSlider.value;
+        silenceTimeoutSlider.addEventListener('input', () => {
+            silenceTimeoutValue.textContent = silenceTimeoutSlider.value;
+        });
+    }
+    if (minSpeechDurationSlider && minSpeechDurationValue) {
+        minSpeechDurationValue.textContent = minSpeechDurationSlider.value;
+        minSpeechDurationSlider.addEventListener('input', () => {
+            minSpeechDurationValue.textContent = minSpeechDurationSlider.value;
+        });
+    }
+    if (startThresholdSlider && startThresholdValue) {
+        startThresholdValue.textContent = startThresholdSlider.value;
+        startThresholdSlider.addEventListener('input', () => {
+            window.startThreshold = parseFloat(startThresholdSlider.value);
+            startThresholdValue.textContent = startThresholdSlider.value;
+        });
+    }
+    if (endThresholdSlider && endThresholdValue) {
+        endThresholdValue.textContent = endThresholdSlider.value;
+        endThresholdSlider.addEventListener('input', () => {
+            window.endThreshold = parseFloat(endThresholdSlider.value);
+            endThresholdValue.textContent = endThresholdSlider.value;
+        });
+    }
+    if (smoothingWindowSlider && smoothingWindowValue) {
+        smoothingWindowValue.textContent = smoothingWindowSlider.value;
+        smoothingWindowSlider.addEventListener('input', () => {
+            window.rmsSmoothingWindowSec = parseFloat(smoothingWindowSlider.value);
+            smoothingWindowValue.textContent = smoothingWindowSlider.value;
+        });
+    }
+    if (hangoverSlider && hangoverValue) {
+        hangoverValue.textContent = hangoverSlider.value;
+        hangoverSlider.addEventListener('input', () => {
+            window.hangoverDurationSec = parseFloat(hangoverSlider.value);
+            hangoverValue.textContent = hangoverSlider.value;
+        });
+    }
 
     // Sende geänderte VAD-Einstellungen beim Loslassen des Sliders ans Backend
     function updateVadSettings() {
+      // Ensure all sliders exist before trying to read their values
       const payload = {
-        threshold: parseFloat(thresholdSlider.value),
-        silenceTimeoutSec: parseFloat(silenceTimeoutSlider.value),
-        minSpeechDurationSec: parseFloat(minSpeechDurationSlider.value),
-        startThreshold: parseFloat(startThresholdSlider.value),
-        endThreshold: parseFloat(endThresholdSlider.value),
-        rmsSmoothingWindowSec: parseFloat(smoothingWindowSlider.value),
-        hangoverDurationSec: parseFloat(hangoverSlider.value)
+        threshold: thresholdSlider ? parseFloat(thresholdSlider.value) : 0.5, // Default if null
+        silenceTimeoutSec: silenceTimeoutSlider ? parseFloat(silenceTimeoutSlider.value) : 2.0,
+        minSpeechDurationSec: minSpeechDurationSlider ? parseFloat(minSpeechDurationSlider.value) : 0.2,
+        startThreshold: startThresholdSlider ? parseFloat(startThresholdSlider.value) : 0.5,
+        endThreshold: endThresholdSlider ? parseFloat(endThresholdSlider.value) : 0.3,
+        rmsSmoothingWindowSec: smoothingWindowSlider ? parseFloat(smoothingWindowSlider.value) : 0.1,
+        hangoverDurationSec: hangoverSlider ? parseFloat(hangoverSlider.value) : 0.5
       };
       fetch('/api/settings', {
         method: 'PUT',
@@ -258,13 +292,13 @@ window.audioSystem = {
         if (!resp.ok) console.error(`Error updating VAD settings: ${resp.status}`);
       }).catch(err => console.error('Error updating VAD settings', err));
     }
-    thresholdSlider.addEventListener('change', updateVadSettings);
-    silenceTimeoutSlider.addEventListener('change', updateVadSettings);
-    minSpeechDurationSlider.addEventListener('change', updateVadSettings);
-    startThresholdSlider.addEventListener('change', updateVadSettings);
-    endThresholdSlider.addEventListener('change', updateVadSettings);
-    smoothingWindowSlider.addEventListener('change', updateVadSettings);
-    hangoverSlider.addEventListener('change', updateVadSettings);
+    if (thresholdSlider) thresholdSlider.addEventListener('change', updateVadSettings);
+    if (silenceTimeoutSlider) silenceTimeoutSlider.addEventListener('change', updateVadSettings);
+    if (minSpeechDurationSlider) minSpeechDurationSlider.addEventListener('change', updateVadSettings);
+    if (startThresholdSlider) startThresholdSlider.addEventListener('change', updateVadSettings);
+    if (endThresholdSlider) endThresholdSlider.addEventListener('change', updateVadSettings);
+    if (smoothingWindowSlider) smoothingWindowSlider.addEventListener('change', updateVadSettings);
+    if (hangoverSlider) hangoverSlider.addEventListener('change', updateVadSettings);
 
     this.initCapture();
     this.setupEventListeners();
@@ -505,9 +539,9 @@ window.audioSystem = {
     document.querySelector('.button-group').appendChild(restartAudioBtn);
   },
   
+  // Track the moment the recording/capture starts
+  // Track recording start for WebSocket, but HTTP mode handles start in manual handler
   initCapture: async function() {
-    // Track the moment the recording/capture starts
-    // Track recording start for WebSocket, but HTTP mode handles start in manual handler
     if (!window.optimizationSettings.useLegacyHttp) {
       // WebSocket mode: start streaming without recording latency start (server does VAD)
       if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
@@ -554,355 +588,405 @@ window.audioSystem = {
   },
   
   initServerASR: async function() {
-    window.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const source = window.audioContext.createMediaStreamSource(window.audioStream);
-    const scriptNode = window.audioContext.createScriptProcessor(4096, 1, 1);
-    source.connect(scriptNode);
-    scriptNode.connect(window.audioContext.destination);
+    // Reset playback state before new connection
+    resetPlaybackState();
+    window.audioBufferForChunking = new Float32Array(0); // Initialize/reset the persistent buffer
 
-    const ratio = window.audioContext.sampleRate / TargetSampleRate;
-    let sampleBuffer = [];
+    // Dynamically construct WebSocket URL with current optimization settings
+    const queryParams = new URLSearchParams({
+        DisableVad: window.optimizationSettings.disableVad,
+        DisableTts: window.optimizationSettings.disableTts,
+        DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS, // Inverted logic for this param
+        TtsVoice: document.getElementById('voice') ? document.getElementById('voice').value : 'nova',
+        TtsMinFirstChunkLength: window.optimizationSettings.ttsMinFirstChunkLength,
+        TtsMaxFirstChunkLength: window.optimizationSettings.ttsMaxFirstChunkLength,
+        TtsSubsequentChunkLength: window.optimizationSettings.ttsSubsequentChunkLength,
+        ChatModel: document.getElementById('model') ? document.getElementById('model').value : "gpt-3.5-turbo", // Add ChatModel
+        // Add VAD settings from the sliders in debugPanel that are also in VadSettings.cs
+        Threshold: document.getElementById('thresholdSlider') ? parseFloat(document.getElementById('thresholdSlider').value) : 0.5,
+        SilenceTimeoutSec: document.getElementById('silenceTimeoutSlider') ? parseFloat(document.getElementById('silenceTimeoutSlider').value) : 2.0,
+        MinSpeechDurationSec: document.getElementById('minSpeechDurationSlider') ? parseFloat(document.getElementById('minSpeechDurationSlider').value) : 0.2,
+        StartThreshold: document.getElementById('startThresholdSlider') ? parseFloat(document.getElementById('startThresholdSlider').value) : 0.5,
+        EndThreshold: document.getElementById('endThresholdSlider') ? parseFloat(document.getElementById('endThresholdSlider').value) : 0.3,
+        RmsSmoothingWindowSec: document.getElementById('smoothingWindowSlider') ? parseFloat(document.getElementById('smoothingWindowSlider').value) : 0.1,
+        HangoverDurationSec: document.getElementById('hangoverSlider') ? parseFloat(document.getElementById('hangoverSlider').value) : 0.5,
+        // VAD Spike/3rd party settings from optimizationManager's state
+        VadSpikeThreshold: window.optimizationSettings.vadSpikeThreshold,
+        EnableSpikeDetection: window.optimizationSettings.enableSpikeDetection,
+        EnableThirdPartyVad: window.optimizationSettings.enableThirdPartyVad
+    }).toString();
 
-    const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    // Connect to WebSocket endpoint (server will use settings from SettingsController)
-    const socket = new WebSocket(`${wsProtocol}://${location.host}/ws/audio`);
-    socket.binaryType = 'arraybuffer';
-    socket.onopen = () => debugLog('WebSocketAudioService connected');
-    socket.onerror = err => console.error('WebSocket error', err);
-    socket.onclose = () => debugLog('WebSocketAudioService closed');
-    socket.onmessage = e => this.handleServerEvent(e.data);
-    // Keep socket global for restart cleanup
-    window.wsAudioSocket = socket;
+    const wsUrl = `wss://${window.location.host}/ws/audio?${queryParams}`;
+    debugLog(`Connecting to WebSocket: ${wsUrl}`);
 
-    scriptNode.onaudioprocess = (event) => {
-      const input = event.inputBuffer.getChannelData(0);
-      // visualize audio level (RMS)
-      const rms = Math.sqrt(input.reduce((sum, v) => sum + v * v, 0) / input.length);
-      this.updateAudioVisualization(rms);
-      // downsampling to 16kHz and framing
-      for (let i = 0; i < input.length; i += ratio) {
-        sampleBuffer.push(input[Math.floor(i)]);
+    window.wsAudioSocket = new WebSocket(wsUrl);
+    window.wsAudioSocket.binaryType = 'arraybuffer'; // Ensure binary type is set for audio data
+
+    window.wsAudioSocket.onopen = () => {
+      console.log("WebSocket connection established for audio.");
+      // Send initial VAD settings
+      // These settings are also passed via URL, but sending them as a message ensures
+      // the backend uses them if URL parsing fails or for future flexibility.
+      const initialVadSettings = {
+        UseWebRTCVAD: optimizationSettings.useWebRTCVAD,
+        WebRTCVADMode: optimizationSettings.webRTCVADMode,
+        Threshold: optimizationSettings.vadThreshold, // Use the one from optimizationSettings
+        SilenceTimeoutSec: optimizationSettings.vadSilenceTimeout, // Use the one from optimizationSettings
+        MinSpeechDurationSec: 0.2, // Corrected: Use appropriate float for seconds
+        StartThreshold: optimizationSettings.vadStartThreshold,
+        EndThreshold: optimizationSettings.vadEndThreshold,
+        RmsSmoothingWindowSec: optimizationSettings.vadRmsSmoothingWindow,
+        HangoverDurationSec: 0.5, // Corrected: Use appropriate float for seconds
+        SpikeDetectionEnabled: optimizationSettings.vadSpikeDetectionEnabled,
+        SpikeThresholdFactor: optimizationSettings.vadSpikeThresholdFactor,
+        SpikeMinDurationMs: optimizationSettings.vadSpikeMinDurationMs,
+        ConsecutiveSpikeThreshold: optimizationSettings.vadConsecutiveSpikeThreshold,
+        UseDynamicThreshold: optimizationSettings.vadUseDynamicThreshold,
+        DynamicThresholdFactor: optimizationSettings.vadDynamicThresholdFactor,
+        DynamicThresholdDecay: optimizationSettings.vadDynamicThresholdDecay,
+        MinRMSForDynamicThreshold: optimizationSettings.vadMinRMSForDynamicThreshold
+      };
+      if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
+        window.wsAudioSocket.send(JSON.stringify({
+          type: "initialVadSettings",
+          payload: initialVadSettings
+        }));
+        console.log("Sent initial VAD settings via WebSocket message:", initialVadSettings);
       }
-      const frameSize = TargetSampleRate * FrameDurationMs / 1000;
-      while (sampleBuffer.length >= frameSize) {
-        const frame = sampleBuffer.splice(0, frameSize);
-        const pcm16 = new Int16Array(frame.length);
-        for (let i = 0; i < frame.length; i++) {
-          const s = Math.max(-1, Math.min(1, frame[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(pcm16.buffer);
-        }
+
+      // Start sending audio data if recording is enabled
+      if (window.recordingEnabled && window.audioStream) {
+        // This part is handled by the ScriptProcessorNode's onaudioprocess
+        console.log("WebSocket open, audio processing will send data.");
       }
     };
 
-    status.textContent = 'Zuhören...';
-  },
-  // Start the HTTP (legacy) audio processing pipeline
-  startHttpPipeline: function() {
-    if (window.httpRecording) return;
-    debugLog('Starting HTTP pipeline');
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        window.httpMediaStream = stream;
-        window.httpChunks = [];
-        const recorder = new MediaRecorder(stream);
-        window.httpRecorder = recorder;
-        recorder.ondataavailable = e => window.httpChunks.push(e.data);
-        recorder.start();
-        status.textContent = 'Recording (HTTP)...';
-        stopBtn.textContent = 'Stop HTTP Recording';
-        window.httpRecording = true;
-      })
-      .catch(err => console.error('Error acquiring media for HTTP:', err));
-  },
-  // Stop the HTTP pipeline and send audio to server
-  stopHttpPipeline: function() {
-    if (!window.httpRecording) return;
-    debugLog('Stopping HTTP pipeline');
-    window.httpRecording = false;
-    status.textContent = 'Processing (HTTP)...';
-    stopBtn.textContent = 'Aufnahme starten';
-    const recorder = window.httpRecorder;
-    if (recorder && recorder.state === 'recording') {
-      recorder.onstop = async () => {
-        const stopTime = Date.now();
-        window.recordingStopTime = stopTime;
+    window.wsAudioSocket.onmessage = async (event) => {
+      if (typeof event.data === 'string') {
         try {
-          const blob = new Blob(window.httpChunks, { type: 'audio/webm' });
-          const fd = new FormData();
-          fd.append('file', blob, 'audio.webm');
-          // transcription
-          const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
-          optimizationManager.trackLatency('transcriptionReceived');
-          const data = await resp.json();
-          const userMsg = createUserMessage(data.prompt);
-          // record text latency
-          const textTime = Date.now();
-          const botObj = createBotMessage(data.response);
-          // Show stop button and attach handler for HTTP audio
-          botObj.stopButton.style.display = 'inline-block';
-          botObj._audioStopped = false;
-          botObj.stopButton.onclick = () => {
-            botObj._audioStopped = true;
-            if (botObj.audioElement) botObj.audioElement.pause();
-            botObj.stopButton.style.display = 'none';
-            stopAllAudio();
-          };
-          if (botObj.textSpan) {
-            const delta = textTime - stopTime;
-            botObj.textSpan.textContent = delta + ' ms';
-          }
-          optimizationManager.trackLatency('llmResponseStart');
-          // TTS
-          const resp2 = await fetch('/api/speech', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ Input: data.response, Voice: voiceSel.value })
-          });
-          const audioBlob = await resp2.blob();
-          optimizationManager.trackLatency('ttsEnd');
-          const audioUrl = URL.createObjectURL(audioBlob);
-          const audio = new Audio(audioUrl);
-          // Track HTMLAudioElement for stops
-          window.allAudioElements = window.allAudioElements || [];
-          window.allAudioElements.push(audio);
-          botObj.audioElement = audio;
-          audio.oncanplaythrough = () => audio.play();
-          audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            // Hide stop button when done
-            if (botObj.stopButton) botObj.stopButton.style.display = 'none';
-          };
-          status.textContent = 'Bereit (HTTP-Modus)';
-          // cleanup
-          window.httpMediaStream.getTracks().forEach(t => t.stop());
-        } catch (err) {
-          console.error('HTTP pipeline error:', err);
-          status.textContent = 'Error in HTTP pipeline';
+          const eventObject = JSON.parse(event.data);
+          window.audioSystem.handleServerEvent(eventObject); // MODIFIED CALL
+        } catch (e) {
+          console.error("[WebSocket] Error parsing JSON from server:", e, event.data);
         }
-      };
-      recorder.stop();
-    }
-  },
-  
-  updateAudioVisualization: function(rms) {
-    // Audio level history: separate container for bars + numeric values
-    if (window.audioLevelHistory) {
-      const recordDiv = document.createElement('div');
-      recordDiv.style.display = 'flex';
-      recordDiv.style.alignItems = 'center';
-      recordDiv.style.marginBottom = '2px';
-      
-      // Bar representation
-      const bar = document.createElement('div');
-      bar.style.width = `${Math.min(rms * 1000, 100)}%`;
-      bar.style.height = '10px';
-      bar.style.backgroundColor = rms > window.silenceThreshold ? '#4CAF50' : '#F44336';
-      bar.style.marginRight = '8px';
-      
-      // Numeric value
-      const text = document.createElement('span');
-      text.textContent = rms.toFixed(4);
-      
-      recordDiv.appendChild(bar);
-      recordDiv.appendChild(text);
-      window.audioLevelHistory.appendChild(recordDiv);
-      
-      // Keep only most recent entries
-      while (window.audioLevelHistory.children.length > 51) {
-        // first child is the <h4> header, preserve it
-        window.audioLevelHistory.removeChild(window.audioLevelHistory.children[1]);
+      } else if (event.data instanceof ArrayBuffer) {
+        if (!window.audioContext) {
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        try {
+            const audioBuffer = await window.audioContext.decodeAudioData(event.data);
+            const actualChunkIndex = window.lastReceivedAudioChunkIndex;
+
+            if (actualChunkIndex === undefined) {
+                console.error("%c[AUDIO-ERROR] Received binary audio data but lastReceivedAudioChunkIndex is undefined. Audio-chunk-info might be missing or out of order.", 'color: red; font-weight: bold;');
+                return;
+            }
+
+            indexedAudioChunks.set(actualChunkIndex, audioBuffer); // global
+            console.log(`%c[AUDIO-DEBUG] Queued audio chunk #${actualChunkIndex} for playback. Total queued: ${indexedAudioChunks.size}`,
+                'background: #2ecc71; color: white; padding: 2px 5px; border-radius: 3px;');
+
+            if (typeof playLoop === 'function') {
+              playLoop(); // global
+            }
+        } catch (e) {
+            console.error('%c[AUDIO-ERROR] Error decoding audio data:', 'color: red; font-weight: bold;', e, event.data);
+        }
+      } else {
+        console.warn("[WebSocket] Received unknown message type:", event.data);
       }
+    };
+
+    window.wsAudioSocket.onerror = (error) => {
+      console.error('WebSocket Error:', error);
+      debugLog(`WebSocket Error: ${error.message || 'Unknown error'}`);
+      status.textContent = 'WebSocket Fehler';
+      stopBtn.textContent = 'Neu verbinden'; // Or similar
+      stopBtn.disabled = false;
+    };
+
+    window.wsAudioSocket.onclose = (event) => {
+      debugLog(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
+      status.textContent = 'Getrennt. Neu verbinden?';
+      if (!event.wasClean) {
+        // Handle unclean closure, maybe attempt reconnect or notify user
+      }
+      stopBtn.textContent = 'Neu verbinden';
+      stopBtn.disabled = false;
+      window.isListening = false; // Ensure listening is false on close
+      window.recordingEnabled = false; 
+      window.wsAudioSocket = null; // Clear reference
+    };
+
+    // Initialize audio processing script processor
+    if (!window.audioContext) {
+        const contextOptions = { sampleRate: TargetSampleRate };
+        try {
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)(contextOptions);
+            if (window.audioContext.sampleRate !== TargetSampleRate) {
+                console.warn(`[AUDIO-SYSTEM] Could not create AudioContext with ${TargetSampleRate}Hz. Actual: ${window.audioContext.sampleRate}Hz. This may affect ASR/VAD quality if resampling is not performed.`);
+                // Attempt to recreate with default if specific rate failed or was not met.
+                try { await window.audioContext.close(); } catch(e) { console.error("Error closing audio context", e); }
+                window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.warn(`[AUDIO-SYSTEM] Reverted to default AudioContext. Sample rate: ${window.audioContext.sampleRate}Hz.`);
+            } else {
+                console.log(`[AUDIO-SYSTEM] AudioContext created with ${window.audioContext.sampleRate}Hz sample rate.`);
+            }
+        } catch (e) {
+            console.warn(`[AUDIO-SYSTEM] Error creating AudioContext with preferred sample rate: ${e}. Falling back to default.`);
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            console.log(`[AUDIO-SYSTEM] AudioContext created with default sample rate: ${window.audioContext.sampleRate}Hz.`);
+        }
     }
     
-    // Track noise levels for statistics
-    currentNoiseLevel = rms;
-    noiseValues.push(rms);
-    if (noiseValues.length > 100) { // Keep last 100 values (5 seconds at 50ms intervals)
-      noiseValues.shift();
+    if (window.audioContext.state === 'suspended') {
+        await window.audioContext.resume();
     }
-    
-    // Update statistics
-    if (rms > maxNoiseLevel) {
-      maxNoiseLevel = rms;
-    }
-    
-    // Calculate average noise level
-    const sum = noiseValues.reduce((a, b) => a + b, 0);
-    averageNoiseLevel = sum / noiseValues.length;
-    
-    // Update visualization in debug panel
-    if (debugPanel.style.display !== 'none') {
-      // Update current level bar
-      const levelBar = document.getElementById('currentAudioLevel');
-      levelBar.style.width = `${Math.min(rms * 1000, 100)}%`;
-      levelBar.style.backgroundColor = rms > window.silenceThreshold ? '#4CAF50' : '#F44336';
+
+    // The scriptNode buffer size (e.g., 4096) determines how often onaudioprocess is called.
+    // It does not need to be SamplesPerChunk.
+    window.scriptNode = window.audioContext.createScriptProcessor(4096, 1, 1);
+    window.scriptNode.onaudioprocess = (audioProcessingEvent) => {
+      if (!window.isListening || !window.wsAudioSocket || window.wsAudioSocket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const inputData = audioProcessingEvent.inputBuffer.getChannelData(0); // Float32Array
+
+      // Append new data to the persistent buffer
+      const currentPersistentBuffer = window.audioBufferForChunking;
+      const combinedBuffer = new Float32Array(currentPersistentBuffer.length + inputData.length);
+      combinedBuffer.set(currentPersistentBuffer);
+      combinedBuffer.set(inputData, currentPersistentBuffer.length);
+      window.audioBufferForChunking = combinedBuffer;
+
+      // Process and send chunks
+      while (window.audioBufferForChunking.length >= SamplesPerChunk) {
+        const chunkToProcess = window.audioBufferForChunking.slice(0, SamplesPerChunk);
+        window.audioBufferForChunking = window.audioBufferForChunking.slice(SamplesPerChunk);
+
+        const pcmData = new Int16Array(SamplesPerChunk);
+        for (let i = 0; i < SamplesPerChunk; i++) {
+          pcmData[i] = Math.max(-32768, Math.min(32767, chunkToProcess[i] * 32768));
+        }
+
+        if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
+          window.wsAudioSocket.send(pcmData.buffer); // Sends 320 samples * 2 bytes/sample = 640 bytes
+        }
+      }
       
-      // Update threshold line position
-      const thresholdLine = document.getElementById('thresholdLine');
-      thresholdLine.style.top = `-${Math.min(window.silenceThreshold * 1000, 100)}%`;
-      
-      // Update stats
-      document.getElementById('currentNoise').textContent = rms.toFixed(4);
-      document.getElementById('averageNoise').textContent = averageNoiseLevel.toFixed(4);
-      document.getElementById('maxNoise').textContent = maxNoiseLevel.toFixed(4);
-      document.getElementById('currentAudioValue').textContent = rms.toFixed(3);
-      
-      // Calculate recommended threshold - typically slightly above the average
-      const recommendedThreshold = Math.min(averageNoiseLevel * 1.5, (averageNoiseLevel + maxNoiseLevel) / 4);
-      document.getElementById('recommendedThreshold').textContent = recommendedThreshold.toFixed(4);
+      // RMS calculation for visualization (using the raw inputData from the event for responsiveness)
+      let sumSquares = 0.0;
+      for (const sample of inputData) {
+          sumSquares += sample * sample;
+      }
+      const rms = Math.sqrt(sumSquares / inputData.length);
+      this.updateAudioVisualization(rms);
+    };
+
+    // Get microphone access and connect to the audio processing pipeline
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(stream => {
+                window.audioStream = stream; // Store the stream globally
+                window.sourceNode = window.audioContext.createMediaStreamSource(stream);
+                window.sourceNode.connect(window.scriptNode);
+                window.scriptNode.connect(window.audioContext.destination); // Important: connect to destination
+                
+                debugLog('Microphone access granted and audio pipeline connected.');
+                status.textContent = 'Verbunden. Aufnahme aktiv.';
+                stopBtn.textContent = 'Aufnahme stoppen';
+                window.isListening = true; 
+                window.recordingEnabled = true;
+            })
+            .catch(err => {
+                console.error('Error acquiring media for WebSocket ASR:', err);
+                status.textContent = 'Fehler beim Mikrofonzugriff.';
+                debugLog(`Error acquiring media: ${err.toString()}`);
+                stopBtn.textContent = 'Mikrofonzugriff erneut versuchen';
+                window.isListening = false;
+                window.recordingEnabled = false;
+            });
+    } else {
+        console.error('getUserMedia not supported on this browser.');
+        status.textContent = 'getUserMedia nicht unterstützt.';
+        debugLog('getUserMedia not supported.');
+        window.isListening = false;
+        window.recordingEnabled = false;
     }
   },
-  handleServerEvent: async function(message) {
-    let ev;
-    try {
-      ev = JSON.parse(message);
-    } catch (err) {
-      console.error('Failed to parse WS message', err);
+  startHttpPipeline: function() {
+    if (!window.audioStream || !window.webSocket || window.webSocket.readyState !== WebSocket.OPEN) {
+      debugLog('Cannot start HTTP pipeline: Audio stream or WebSocket not ready.');
+      if (window.webSocket && window.webSocket.readyState !== WebSocket.OPEN) {
+          status.textContent = 'Verbindung verloren. Neu verbinden.';
+          stopBtn.textContent = 'Neu verbinden';
+      }
       return;
     }
-    const { event, data } = ev;
-    // Log only meaningful events (prompt, errors, done), skip per-token and audio-chunk logs
-    if (event === 'prompt' || event === 'error' || event === 'done') {
-      eventLog(`${event}${data ? ': ' + (data.prompt || data.error) : ''}`);
+    window.isListening = true;
+    window.sourceNode = window.audioContext.createMediaStreamSource(window.audioStream);
+    window.sourceNode.connect(window.scriptNode);
+    window.scriptNode.connect(window.audioContext.destination); // Connect to destination to keep processing alive
+    debugLog('Audio pipeline started. Listening...');
+    status.textContent = 'Höre zu...';
+    stopBtn.textContent = 'Aufnahme stoppen';
+    // Reset latency tracking for new interaction
+    if (window.optimizationManager) window.optimizationManager.resetLatencyStats(); 
+    if (window.optimizationManager) window.optimizationManager.trackLatency('recordingStart');
+  },
+  stopHttpPipeline: function() {
+    window.isListening = false;
+    if (window.sourceNode) {
+      window.sourceNode.disconnect();
+      window.sourceNode = null;
     }
-    switch (event) {
-      case 'prompt':
-        // Record transcription received time
-        const nowT = Date.now();
-        window.lastTranscriptionTime = nowT;
-        optimizationManager.trackLatency('transcriptionReceived');
-        createUserMessage(data.prompt);
-        break;
-      case 'token':
-        // On first token of a new response, stop previous audio and create new bot message
-        if (!window.currentBot) {
-          stopAllAudio();
-          const botObj = createBotMessage('');
-          botObj._audioStopped = false;
-          window.currentBot = botObj;
-          // Track LLM response start and text latency
-          const nowL = Date.now();
-          optimizationManager.trackLatency('llmResponseStart');
-          if (window.lastTranscriptionTime) {
-            const textLat = nowL - window.lastTranscriptionTime;
-            botObj.textSpan.textContent = textLat + ' ms';
+    if (window.scriptNode) {
+      window.scriptNode.disconnect();
+      // scriptNode is not nulled here, as it might be reused by initServerASR
+    }
+    // Don't close WebSocket here if we want to send a final message or keep it for next recording
+    // webSocket.close(); 
+    debugLog('Audio pipeline stopped.');
+    status.textContent = 'Bereit für nächste Aufnahme';
+    stopBtn.textContent = 'Aufnahme starten';
+  },
+  updateAudioVisualization: function(rms) {
+    const currentAudioLevel = document.getElementById('currentAudioLevel');
+    const currentAudioValue = document.getElementById('currentAudioValue');
+    if (currentAudioLevel && currentAudioValue) {
+        const percentage = Math.min(100, (rms * 500)); // Adjust multiplier for sensitivity
+        currentAudioLevel.style.width = percentage + '%';
+        currentAudioValue.textContent = rms.toFixed(3);
+    }
+    // Update noise stats if debug panel is open
+    // This part might be better if VAD events from backend provide noise floor and dynamic threshold
+  },
+  handleServerEvent: function(eventData) {
+    debugLog(`[WebSocket] Received from server:`, eventData);
+    switch (eventData.type) {
+        case 'vad_settings_updated':
+            debugLog('VAD settings updated by server:', eventData.payload);
+            if (window.optimizationManager && typeof window.optimizationManager.updateVadSettingsUIFromState === 'function') {
+                // Update the global settings object first
+                if (eventData.payload) {
+                    for (const key in eventData.payload) {
+                        if (window.optimizationSettings.hasOwnProperty(key)) {
+                            // Basic type conversion based on existing type in window.optimizationSettings
+                            if (typeof window.optimizationSettings[key] === 'boolean') {
+                                window.optimizationSettings[key] = Boolean(eventData.payload[key]);
+                            } else if (typeof window.optimizationSettings[key] === 'number') {
+                                window.optimizationSettings[key] = Number(eventData.payload[key]);
+                            } else {
+                                window.optimizationSettings[key] = eventData.payload[key];
+                            }
+                        }
+                    }
+                }
+                window.optimizationManager.updateVadSettingsUIFromState();
+            } else {
+                console.warn('optimizationManager not found or updateVadSettingsUIFromState is not a function when trying to update VAD sliders from server event.');
+            }
+            break;
+        case 'pipeline_options_updated':
+            debugLog('Pipeline options updated by server:', eventData.payload);
+            if (window.optimizationManager && typeof window.optimizationManager.updateOptimizationUIFromSettings === 'function') {
+                 // Update the global settings object first
+                if (eventData.payload) {
+                    for (const key in eventData.payload) {
+                        if (window.optimizationSettings.hasOwnProperty(key)) {
+                             // Basic type conversion based on existing type in window.optimizationSettings
+                            if (typeof window.optimizationSettings[key] === 'boolean') {
+                                window.optimizationSettings[key] = Boolean(eventData.payload[key]);
+                            } else if (typeof window.optimizationSettings[key] === 'number') {
+                                window.optimizationSettings[key] = Number(eventData.payload[key]);
+                            } else {
+                                window.optimizationSettings[key] = eventData.payload[key];
+                            }
+                        }
+                    }
+                }
+                window.optimizationManager.updateOptimizationUIFromSettings();
+            } else {
+                console.warn('optimizationManager not found or updateOptimizationUIFromSettings is not a function when trying to update pipeline UI from server event.');
+            }
+            break;
+        case 'prompt':
+            if (window.uiManager && typeof window.uiManager.updateRecognizedText === 'function') {
+                window.uiManager.updateRecognizedText(eventData.payload.prompt, false);
+            } else {
+                console.error('uiManager.updateRecognizedText is not available');
+            }
+            break;
+        case 'reply':
+            debugLog('Received final reply from server:', eventData.payload);
+            const replyText = eventData.payload && eventData.payload.reply ? eventData.payload.reply : '';
+            if (window.uiManager && typeof window.uiManager.updateBotMessage === 'function') {
+                window.uiManager.updateBotMessage(replyText, true); // true for final
+            } else {
+                console.error('uiManager.updateBotMessage is not available');
+            }
+            let latencyDisplay = "N/A";
+            if (eventData.payload && eventData.payload.latency_info) {
+                const { transcriptionTime, llmTime, totalTime } = eventData.payload.latency_info;
+                latencyDisplay = `Trans: ${transcriptionTime}ms, LLM: ${llmTime}ms, Total: ${totalTime}ms`;
+            }
+            if (window.uiManager && typeof window.uiManager.updateLatencyDisplay === 'function') {
+                window.uiManager.updateLatencyDisplay(latencyDisplay);
+            } else {
+                console.error('uiManager.updateLatencyDisplay is not available');
+            }
+            break;
+        case 'token':
+          if (!window.currentBotMessageElement) {
+              if (window.uiManager && typeof window.uiManager.createBotMessage === 'function') {
+                window.currentBotMessageElement = window.uiManager.createBotMessage('', window.optimizationSettings.chatModel, window.optimizationSettings.ttsVoice);
+              } else {
+                console.error('uiManager.createBotMessage is not available');
+              }
           }
-          // Show stop button and attach handler
-          botObj.stopButton.style.display = 'inline-block';
-          botObj.stopButton.onclick = () => {
-            // Mark stopped to ignore further chunks
-            botObj._audioStopped = true;
-            // Stop WebSocket AudioContext source if present
-            if (botObj.audioSource) {
-              try { botObj.audioSource.stop(); } catch {};
-            }
-            // Stop HTML AudioElement if present
-            if (botObj.audioElement) {
-              botObj.audioElement.pause();
-            }
-            botObj.stopButton.style.display = 'none';
-            stopAllAudio();
-          };
-        }
-        window.currentBot.content.textContent += data.token;
-        break;
-        case 'audio-chunk':
-        // Wenn vom Backend ein Index mitgeschickt wird, verwenden wir diesen
-        const chunkIndex = data.index !== undefined ? data.index : 0;
-        console.log(`%c[AUDIO-DEBUG] Chunk arrived: index=${chunkIndex}, ${data.chunk.length} bytes, timestamp=${Date.now()}`, 'background: #3498db; color: white; padding: 2px 5px; border-radius: 3px;');
-        
-        // If user stopped this message's audio, skip further chunks
-        if (window.currentBot && window.currentBot._audioStopped) {
+          if (window.currentBotMessageElement) {
+              const textElement = window.currentBotMessageElement.querySelector('.message-content');
+              if (textElement) {
+                  if (textElement.textContent === '') { // Check for empty if that's the initial state
+                      textElement.textContent = eventData.payload.token;
+                  } else {
+                      textElement.textContent += eventData.payload.token;
+                  }
+                  if (window.uiManager && typeof window.uiManager.scrollToBottom === 'function') {
+                    window.uiManager.scrollToBottom();
+                  } else {
+                    console.error('uiManager.scrollToBottom is not available');
+                  }
+              }
+          }
           break;
-        }
-        
-        // On the first audio chunk, reset the playback system
-        if (chunkIndex === 0) {
-          // Stop any current playback
-          window.allAudioSources?.forEach(s => { try { s.stop(); } catch { } });
-          // Clear any existing chunks
-          indexedAudioChunks.clear();
-          // Reset playback index
-          nextPlaybackIndex = 0;
-          console.log("%c[AUDIO-DEBUG] First chunk detected, reset audio playback system", 
-            'background: #1abc9c; color: white; padding: 2px 5px; border-radius: 3px;');
-        }
-        
-        // Record audio latency on first chunk
-        const nowA = Date.now();
-        optimizationManager.trackLatency('ttsEnd');
-        if (window.currentBot && !window.currentBot._audioLatencyRecorded) {
-          window.currentBot._audioLatencyRecorded = true;
-          if (window.lastTranscriptionTime) {
-            const audioLat = nowA - window.lastTranscriptionTime;
-            window.currentBot.audioSpan.textContent = audioLat + ' ms';
+        case 'audio-chunk-info':
+          // Corrected: Use eventData.payload instead of undefined 'payload'
+          if (eventData.payload && eventData.payload.index !== undefined) {
+              window.lastReceivedAudioChunkIndex = eventData.payload.index; 
+              console.log(`%c[AUDIO-DEBUG] Received audio-chunk-info for index: ${eventData.payload.index}. Duration: ${eventData.payload.durationMs}ms. IsFinal: ${eventData.payload.isFinal}. Next binary data will be for this chunk.`, 'color: #8e44ad; font-weight: bold;');
+          } else {
+              console.warn('[AUDIO-DEBUG] Received audio-chunk-info with missing index or payload:', eventData);
           }
-        }
-
-        // 1. Bytes in ArrayBuffer umwandeln
-        const bytes = Uint8Array.from(atob(data.chunk), c => c.charCodeAt(0));
-        const arrayBuffer = bytes.buffer;
-
-        try {
-            // 2. Promise‐Decode
-            const audioBuffer = await new Promise((resolve, reject) =>
-                window.audioContext.decodeAudioData(arrayBuffer, resolve, reject)
-            );
-
-            // 3. In die Map mit dem richtigen Index speichern
-            indexedAudioChunks.set(chunkIndex, audioBuffer);
-            console.log(`%c[AUDIO-DEBUG] Chunk stored: index=${chunkIndex}, duration=${audioBuffer.duration.toFixed(2)}s, chunks in map=${indexedAudioChunks.size}`, 
-                'background: #2ecc71; color: white; padding: 2px 5px; border-radius: 3px;');
-                
-            // Debug-Ausgabe aller vorhandenen Chunks
-            const allIndices = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
-            console.log(`%c[AUDIO-DEBUG] Current chunks in map: ${allIndices.join(', ')}`, 
-                'background: #95a5a6; color: white; padding: 2px 5px; border-radius: 3px;');
-            
-                // Now we handle the chunk reset at the arrival stage, just store this buffer
-            
-            // Start playback loop if not already active
-            playLoop();
-        } catch (err) {
-            console.error(`Fehler beim Dekodieren des Audio-Chunks ${chunkIndex}:`, err);
-        }
-
-        break;
-      case 'audio-done':
-        break;
-      case 'done':
-        // DON'T reset the audio yet - let all chunks finish playing naturally
-        // Just mark the bot as completed and show a log
-        console.log("%c[AUDIO-DEBUG] Done event received from server - letting audio continue playing", 
-            'background: #e74c3c; color: white; padding: 2px 5px; border-radius: 3px;');
-            
-        // We'll set a flag indicating no more chunks will arrive, but existing ones should play
-        window._allAudioChunksReceived = true;
-        
-        // Schedule cleanup for the NEXT message, not this one
-        window._cleanupAfterPlayback = () => {
-          // Only clear if we're not already in another message
-          if (window._allAudioChunksReceived) {
-            console.log("[done] Final audio cleanup after playback");
-            window.currentBot = null;
-            isPlaying = false;
-            window._allAudioChunksReceived = false;
+          break;
+        case 'audio-done':
+          console.log('%c[AUDIO-SYSTEM] Explicit Audio-done JSON event received from server.', 'color: #3498db; font-weight: bold;');
+          allAudioChunksReceived = true; 
+          if (indexedAudioChunks.size === 0 && !isPlaying) { 
+              console.log('%c[AUDIO-DEBUG] All received audio chunks have been played (audio-done received). Resetting state.', 'color: red; font-weight: bold;');
+              if (typeof resetPlaybackState === 'function') {
+                resetPlaybackState();
+              }
           }
-        };
-        
-        // Check if all chunks have already been processed, and if so, mark playback as complete
-        if (indexedAudioChunks.size === 0 && !isLoopActive) {
-          console.log("[done] All audio chunks already processed - marking playback as completed");
-          window._cleanupAfterPlayback();
-        }
-        break;
-      case 'error':
-        console.error('Server error', data.error);
-        break;
+          break;
+        case 'done':
+          console.log('Received done event from server:', eventData.payload);
+          window.currentBotMessageElement = null; 
+          break;
+        default:
+          // Corrected: Use eventData.type and eventData.payload for logging unhandled events
+          console.warn(`Received unhandled event type: ${eventData.type}`, eventData.payload);
     }
   }
 };

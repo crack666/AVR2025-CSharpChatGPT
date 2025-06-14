@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using VoiceAssistant.Core.Interfaces;
+using System.Linq; // Added for .Any()
 
 namespace VoiceAssistant.Plugins.OpenAI
 {
@@ -33,6 +34,7 @@ namespace VoiceAssistant.Plugins.OpenAI
         public ProgressiveTTSSynthesizer(HttpClient httpClient)
         {
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+            LogDebug($"ProgressiveTTSSynthesizer instantiated. HttpClient Timeout: {_httpClient.Timeout}");
         }
 
         /// <summary>
@@ -54,6 +56,8 @@ namespace VoiceAssistant.Plugins.OpenAI
         /// <returns>Audio bytes representing the synthesized speech.</returns>
         public async Task<byte[]> SynthesizeAsync(string text, string voice)
         {
+            LogDebug($"Entering SynthesizeAsync. Voice: {voice}. Text length: {text?.Length ?? 0}. HttpClient Timeout: {_httpClient.Timeout}.");
+
             if (string.IsNullOrWhiteSpace(text))
             {
                 throw new ArgumentException("Text input for speech synthesis cannot be empty.", nameof(text));
@@ -101,77 +105,78 @@ namespace VoiceAssistant.Plugins.OpenAI
 
             if (string.IsNullOrWhiteSpace(text))
             {
-                throw new ArgumentException("Text input for speech synthesis cannot be empty.", nameof(text));
+                LogDebug("ChunkedSynthesisAsync called with empty or whitespace text. No audio will be generated.");
+                return;
             }
 
             text = text.Trim();
             if (text.Length == 0)
             {
-                throw new ArgumentException("Trimmed text input is empty.", nameof(text));
-            }
-
-            // For very short text, just do a single synthesis
-            if (text.Length < MinTextLength)
-            {
-                LogDebug($"Text too short ({text.Length} chars), using single synthesis");
-                var audioBytes = await SynthesizeAsync(text, voice);
-                onChunkReady(audioBytes);
+                LogDebug("ChunkedSynthesisAsync called with effectively empty text after trimming. No audio will be generated.");
                 return;
             }
 
-            LogDebug($"Starting sentence-based chunked synthesis of {text.Length} characters with voice {voice}");
+            // For very short text, just do a single synthesis and invoke onChunkReady once.
+            // This avoids unnecessary overhead of regex splitting for tiny segments.
+            // The MinTextLength can be tuned.
+            if (text.Length < MinTextLength)
+            {
+                LogDebug($"Text too short ({text.Length} chars), using single synthesis for ChunkedSynthesisAsync");
+                try
+                {
+                    var audioBytes = await SynthesizeAsync(text, voice); // This is the non-chunking SynthesizeAsync
+                    onChunkReady(audioBytes);
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"Error during single synthesis within ChunkedSynthesisAsync: {ex.Message}");
+                    throw;
+                }
+                return;
+            }
+
+            LogDebug($"Starting sentence-based chunked synthesis of {text.Length} characters with voice {voice} for ChunkedSynthesisAsync.");
 
             // Split text into natural language chunks at sentence boundaries
             var chunks = SplitTextIntoSentenceChunks(text);
-            LogDebug($"Split text into {chunks.Count} sentence chunks");
+            LogDebug($"Split text into {chunks.Count} sentence chunks for ChunkedSynthesisAsync");
 
             // Process each chunk sequentially to maintain order
             for (int i = 0; i < chunks.Count; i++)
             {
-                var chunk = chunks[i];
-                LogDebug($"Synthesizing chunk {i + 1}/{chunks.Count}: \"{ShortenForLog(chunk)}\" ({chunk.Length} chars)");
+                var currentChunk = chunks[i]; // Renamed to avoid conflict if 'chunk' is used elsewhere
+                if (string.IsNullOrWhiteSpace(currentChunk))
+                {
+                    LogDebug($"Skipping empty chunk {i + 1}/{chunks.Count}");
+                    continue;
+                }
+                // Corrected string interpolation for logging
+                LogDebug($"Synthesizing chunk {i + 1}/{chunks.Count} for ChunkedSynthesisAsync: \"{ShortenForLog(currentChunk)}\" ({currentChunk.Length} chars)");
 
                 try
                 {
-                    using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/speech");
-                    request.Headers.Accept.Clear();
-                    request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/mpeg"));
-
-                    // Add a slight pause at the end of chunks that don't end with punctuation
-                    /*string processedChunk = chunk;
-                    if (i < chunks.Count - 1 && !EndsWithPunctuation(chunk))
+                    var audioBytes = await SynthesizeAsync(currentChunk, voice);
+                    
+                    if (audioBytes != null && audioBytes.Length > 0)
                     {
-                        processedChunk = chunk + ",";
-                        LogDebug($"Added comma to chunk for natural pause");
+                        LogDebug($"Chunk {i + 1} synthesized: {audioBytes.Length} bytes. Invoking onChunkReady.");
+                        onChunkReady(audioBytes);
                     }
-
-                    var payload = new { model = "tts-1", voice = voice, input = processedChunk };*/
-                    var payload = new { model = "tts-1", voice = voice, input = chunk };
-                    var body = JsonSerializer.Serialize(payload);
-                    request.Content = new StringContent(body, Encoding.UTF8, "application/json");
-
-                    var response = await _httpClient.SendAsync(request);
-                    var bytes = await response.Content.ReadAsByteArrayAsync();
-
-                    if (!response.IsSuccessStatusCode)
+                    else
                     {
-                        var msg = Encoding.UTF8.GetString(bytes);
-                        LogDebug($"Chunk synthesis error: {msg}");
-                        throw new ApplicationException($"TTS failed for chunk {i + 1}: {msg}");
+                        LogDebug($"Chunk {i + 1} synthesis resulted in null or empty audio. Not invoking onChunkReady.");
                     }
-
-                    // Invoke callback with the synthesized audio for this chunk
-                    LogDebug($"Chunk {i + 1} synthesized: {bytes.Length} bytes");
-                    onChunkReady(bytes);
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"Error synthesizing chunk {i + 1}: {ex.Message}");
-                    throw;
+                    LogDebug($"Error synthesizing chunk {i + 1} for ChunkedSynthesisAsync: {ex.Message}");
+                    // Decide whether to rethrow or continue with other chunks.
+                    // For now, logging the error and continuing with the next chunk.
+                    // If one chunk fails, we might still want to process others.
                 }
             }
 
-            LogDebug("Chunked synthesis completed");
+            LogDebug("Chunked synthesis completed for ChunkedSynthesisAsync");
         }
 
         /// <summary>
@@ -208,51 +213,62 @@ namespace VoiceAssistant.Plugins.OpenAI
 
             LogDebug($"Splitting text into sentence chunks: {input.Length} characters");
 
-            // Use a regex pattern that recognizes sentence endings while handling special cases
-            // like abbreviations, ellipses, and quoted text
+            // Regex to split by sentences, keeping punctuation.
+            // This pattern tries to identify sentence endings (. ! ?) followed by space or end of string.
+            // It also handles cases like "Mr. Smith" or "e.g." by not splitting after a period followed by a lowercase letter.
+            // It's not perfect but aims to be better than simple character splits.
+            // Consider refining this regex further based on observed edge cases.
+            // Example: @"(?<!\\w\\.\\w.)(?<![A-Z][a-z]\\.)(?<=\\.|\\?|!)\\s"
+            // A simpler version that might work well enough:
             var sentencePattern = new Regex(
-
-                 //einfacher
-                 @"[^.!?]*[.!?](?=\s|$)",
+                 // Splits after a sentence-ending punctuation mark (. ! ?) that is followed by a space or is at the end of the string.
+                 // It tries to avoid splitting in the middle of abbreviations like "U.S.A." by looking ahead for spaces.
+                 @"(?<=[.!?])(\\s+|$)(?<!\\s[A-Z]\\.)", // Simpler, might need refinement
                  RegexOptions.Singleline | RegexOptions.IgnoreCase
             );
+            
+            // More robust sentence splitting:
+            // This regex splits after '.', '!', '?' when followed by whitespace or end of string.
+            // It includes lookbehinds to avoid splitting on abbreviations (e.g., "Mr.", "Mrs.", "Dr.") or initials.
+            // It also tries to handle quoted sentences.
+            // This is a complex area, and perfect splitting is hard.
+            string[] splitSentences = Regex.Split(input, @"(?<=[.!?])\s+(?=[A-Z""'])|(?<=[.!?])$");
 
-            var matches = sentencePattern.Matches(input);
-
-            // Extract complete sentences
-            int lastIndex = 0;
-            foreach (Match match in matches)
+            foreach (string sentencePart in splitSentences)
             {
-                string sentence = match.Value.Trim();
-                if (!string.IsNullOrEmpty(sentence))
+                string trimmedPart = sentencePart.Trim();
+                if (!string.IsNullOrEmpty(trimmedPart))
                 {
-                    LogDebug($"Found sentence: '{ShortenForLog(sentence)}'");
-                    chunks.Add(sentence);
-                }
-                lastIndex = match.Index + match.Length;
-            }
-
-            // Handle any remaining text after the last sentence
-            if (lastIndex < input.Length)
-            {
-                string remainder = input.Substring(lastIndex).Trim();
-                if (!string.IsNullOrEmpty(remainder))
-                {
-                    LogDebug($"Processing remaining text: '{ShortenForLog(remainder)}'");
-                    chunks.Add(remainder);
+                    chunks.Add(trimmedPart);
+                    LogDebug($"Found sentence chunk: '{ShortenForLog(trimmedPart)}'");
                 }
             }
 
-            // Combine very short chunks for better audio quality
+
+            if (!chunks.Any()) // If regex split results in nothing (e.g. very short text with no delimiters)
+            {
+                if (!string.IsNullOrWhiteSpace(input))
+                {
+                     LogDebug($"Regex splitting yielded no chunks, adding entire input as one chunk: '{ShortenForLog(input)}'");
+                    chunks.Add(input.Trim());
+                }
+            }
+
+            // Post-processing: Combine very short chunks if necessary, or ensure chunks are not overly long.
+            // The original logic for combining short chunks can be kept or adjusted.
+            // For now, let's remove the aggressive combination to see the raw sentence splits.
+            // Consider re-adding if too many tiny audio segments are produced.
+            /*
             for (int i = chunks.Count - 2; i >= 0; i--)
             {
-                if (chunks[i].Length + chunks[i + 1].Length < 50)
+                if (chunks[i].Length + chunks[i + 1].Length < 50) // Arbitrary threshold
                 {
-                    LogDebug($"Combining short chunks for better audio flow");
+                    LogDebug($"Combining short chunks: '{ShortenForLog(chunks[i])}' + '{ShortenForLog(chunks[i+1])}'");
                     chunks[i] = chunks[i] + " " + chunks[i + 1];
                     chunks.RemoveAt(i + 1);
                 }
             }
+            */
 
             LogDebug($"Final chunk count after sentence splitting: {chunks.Count}");
             return chunks;

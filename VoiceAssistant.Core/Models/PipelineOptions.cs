@@ -13,6 +13,8 @@ namespace VoiceAssistant.Core.Models
         public bool DisableTokenStreaming { get; set; }
         /// <summary>Disable progressive (chunked) TTS; use single-shot synthesis.</summary>
         public bool DisableProgressiveTts { get; set; }
+        /// <summary>Disable Text-to-Speech output entirely.</summary>
+        public bool DisableTts { get; set; }
         /// <summary>Chat model identifier (e.g., "gpt-3.5-turbo").</summary>
         public string ChatModel { get; set; } = "gpt-3.5-turbo";
         /// <summary>TTS voice identifier (e.g., "nova").</summary>
