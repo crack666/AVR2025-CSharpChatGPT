@@ -40,25 +40,28 @@ namespace VoiceAssistant.Plugins.OpenAI
         }
 
         /// <summary>
-        /// Generates a response based on the given chat history.
+        /// Generates a response based on the given chat history and chat model.
         /// If a token callback is registered, uses streaming mode for real-time updates.
         /// </summary>
         /// <param name="chatHistory">Ordered list of chat messages (user + bot).</param>
+        /// <param name="chatModel">The OpenAI model to use (e.g., "gpt-4", "gpt-3.5-turbo").</param>
         /// <returns>Generated response text.</returns>
-        public async Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory)
+        public async Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory, string chatModel)
         {
             if (chatHistory == null)
                 throw new ArgumentNullException(nameof(chatHistory));
+            if (string.IsNullOrEmpty(chatModel))
+                chatModel = DefaultChatModel; // Use default if not provided
 
             // Use the _onTokenReceived callback to decide the path, but pass DefaultChatModel
             if (_onTokenReceived == null)
             {
                 // Non-streaming path
-                return await GenerateNonStreamingResponseAsync(chatHistory, DefaultChatModel);
+                return await GenerateNonStreamingResponseAsync(chatHistory, chatModel);
             }
 
             // Streaming path with callback
-            return await GenerateStreamingResponseAsync(chatHistory, DefaultChatModel, _onTokenReceived);
+            return await GenerateStreamingResponseAsync(chatHistory, chatModel, _onTokenReceived);
         }
 
         /// <summary>
@@ -75,7 +78,7 @@ namespace VoiceAssistant.Plugins.OpenAI
             Action<string> onTokenReceived)
         {
             if (chatHistory == null) throw new ArgumentNullException(nameof(chatHistory));
-            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName));
+            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName)); // Ensure modelName is not null or empty here as well
 
             var fullResponse = new StringBuilder();
             await foreach (var (token, _) in StreamTokensAsync(chatHistory, modelName))
@@ -102,7 +105,7 @@ namespace VoiceAssistant.Plugins.OpenAI
             string modelName)
         {
             if (chatHistory == null) throw new ArgumentNullException(nameof(chatHistory));
-            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName));
+            if (string.IsNullOrEmpty(modelName)) throw new ArgumentNullException(nameof(modelName)); // Ensure modelName is not null or empty
 
             LogDebug($"Starting StreamTokensAsync with model: {modelName}");
 

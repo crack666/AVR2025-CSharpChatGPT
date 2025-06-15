@@ -1,992 +1,836 @@
-const FrameDurationMs = 20;
-const TargetSampleRate = 16000;
-const SamplesPerChunk = TargetSampleRate * (FrameDurationMs / 1000); // 320 samples
-let isLoopActive = false;   // Flag, ob die Audio-Wiedergabe aktiv ist
+// Constants
+const FRAME_DURATION_MS = 20;
+const TARGET_SAMPLE_RATE = 16000;
+const SAMPLES_PER_CHUNK = TARGET_SAMPLE_RATE * (FRAME_DURATION_MS / 1000); // 320 samples
+const IS_DEBUG_MODE = true; // Enable/disable extensive logging
 
-// Audio-Chunk-Verwaltung
-const indexedAudioChunks = new Map();  // Map zur Speicherung von Audio-Chunks nach Index
-let nextPlaybackIndex = 0;  // Der nächste zu spielende Chunk-Index
-let isPlaying = false;      // Flag, ob gerade Audio abgespielt wird
-let allAudioChunksReceived = false; // Flag to indicate if 'audio-done' has been received
+// --- Progressive TTS Playback State & Functions ---
+const indexedAudioChunks = new Map();
+let nextPlaybackIndex = 0;
+let isCurrentlyPlayingTTS = false;
+let allAudioChunksReceived = false;
+let isTTSLoopActive = false;
+let lastReceivedAudioChunkIndex = -1; // Stores the index from 'audio-chunk-info'
 
-// Spielt den nächsten Buffer, sobald keiner läuft
-/*
-function playNext() {
-    if (audioQueue.length === 0) {
-        isPlaying = false;
-        return;
+function debugLog(...args) {
+    if (IS_DEBUG_MODE) {
+        console.log('%c[AUDIO-SYSTEM]', 'color: cyan', ...args);
     }
+}
 
-    const buffer = audioQueue.shift();
-    const src = window.audioContext.createBufferSource();
-    src.buffer = buffer;
-    src.connect(window.audioContext.destination);
-
-    // Tracken fürs Stoppen
-    currentSource = src;
-    window.currentBot = window.currentBot || {};
-    window.currentBot.audioSources = window.currentBot.audioSources || [];
-    window.currentBot.audioSources.push(src);
-    window.allAudioSources = window.allAudioSources || [];
-    window.allAudioSources.push(src);
-
-    isPlaying = true;
-    src.onended = () => {
-        currentSource = null;
-        playNext();          // Chaining: wenn dieser Buffer fertig, kommt der nächste
-    };
-
-    src.start();
-}*/
-// Schedule playback of the next chunk in sequence
-function scheduleNext() {
-    // Überprüfe, ob der nächste zu spielende Chunk bereits verfügbar ist
+function scheduleTTSChunk() {
     if (indexedAudioChunks.has(nextPlaybackIndex)) {
-        // Hole den nächsten Chunk aus der Map und entferne ihn
         const buffer = indexedAudioChunks.get(nextPlaybackIndex);
         indexedAudioChunks.delete(nextPlaybackIndex);
-        
-        console.log(`%c[AUDIO-DEBUG] Playing chunk #${nextPlaybackIndex}, duration=${buffer.duration.toFixed(2)}s, remaining chunks=${indexedAudioChunks.size}`, 
-            'background: #e74c3c; color: white; padding: 2px 5px; border-radius: 3px;');
-        
-        // Erstelle AudioBufferSourceNode und spiele ab
-        const src = window.audioContext.createBufferSource();
+
+        debugLog(`Playing TTS chunk #${nextPlaybackIndex}, duration=${buffer.duration.toFixed(2)}s, remaining TTS chunks=${indexedAudioChunks.size}`);
+
+        const audioContextRef = getAudioContext(); // Ensure AudioContext is available
+        if (!audioContextRef) {
+            console.error("Cannot play TTS chunk, AudioContext not available.");
+            isCurrentlyPlayingTTS = false;
+            return;
+        }
+
+        const src = audioContextRef.createBufferSource();
         src.buffer = buffer;
-        src.connect(window.audioContext.destination);
-        
-        // Referenzen für stopAllAudio speichern
+        src.connect(audioContextRef.destination);
+
+        // Manage audio sources for stopping
         window.allAudioSources = window.allAudioSources || [];
         window.allAudioSources.push(src);
-        
-        // Pro-Nachricht-Tracking
-        if (window.currentBot) {
-            window.currentBot.audioSources = window.currentBot.audioSources || [];
+        if (window.currentBot && window.currentBot.audioSources) { // If per-message tracking is still used
             window.currentBot.audioSources.push(src);
         }
-        
-        isPlaying = true;
-        nextPlaybackIndex++; // Increment for the next chunk
+
+        isCurrentlyPlayingTTS = true;
+        const playedChunkIndex = nextPlaybackIndex; // Capture index for onended
+        nextPlaybackIndex++;
 
         src.onended = () => {
-            console.log(`%c[AUDIO-DEBUG] Finished playing chunk #${nextPlaybackIndex - 1}`, 
-                'background: #f39c12; color: white; padding: 2px 5px; border-radius: 3px;');
-            isPlaying = false;
-            // Remove from allAudioSources to prevent re-stopping
-            const index = window.allAudioSources.indexOf(src);
-            if (index > -1) {
-                window.allAudioSources.splice(index, 1);
-            }
+            debugLog(`Finished playing TTS chunk #${playedChunkIndex}`);
+            isCurrentlyPlayingTTS = false;
+            
+            const indexInAll = window.allAudioSources.indexOf(src);
+            if (indexInAll > -1) window.allAudioSources.splice(indexInAll, 1);
             if (window.currentBot && window.currentBot.audioSources) {
-                const botSrcIndex = window.currentBot.audioSources.indexOf(src);
-                if (botSrcIndex > -1) {
-                    window.currentBot.audioSources.splice(botSrcIndex, 1);
-                }
+                const indexInBot = window.currentBot.audioSources.indexOf(src);
+                if (indexInBot > -1) window.currentBot.audioSources.splice(indexInBot, 1);
             }
 
-            playLoop(); // Attempt to play the next chunk
+            ttsPlayLoop(); // Attempt to play the next chunk
 
-            // Check if all chunks have been received and played
-            if (allAudioChunksReceived && indexedAudioChunks.size === 0 && !isPlaying) {
-                console.log('%c[AUDIO-DEBUG] All received audio chunks have been played. Resetting state.', 'color: red; font-weight: bold;');
-                resetPlaybackState();
+            if (allAudioChunksReceived && indexedAudioChunks.size === 0 && !isCurrentlyPlayingTTS) {
+                debugLog('All received TTS chunks have been played. Resetting TTS playback state.');
+                resetTTSPlaybackState();
             }
         };
-
         src.start();
-    } else {
-        // console.log(`%c[AUDIO-DEBUG] Chunk #${nextPlaybackIndex} not yet available. Waiting... Stored: ${indexedAudioChunks.size}`, 
-        //     'background: #3498db; color: white; padding: 2px 5px; border-radius: 3px;');
-        // isPlaying = false; // No, keep isPlaying true if we are in the loop, waiting for next chunk
-        // If no chunk is available, the loop will pause until new chunks arrive or it's terminated.
     }
 }
 
-// Entry to start or resume playback loop
-function playLoop() {
-    if (!isLoopActive) {
-        isLoopActive = true;
-        console.log('%c[AUDIO-DEBUG] PlayLoop started.', 'color: blue; font-weight: bold;');
+function ttsPlayLoop() {
+    if (!isTTSLoopActive) {
+        isTTSLoopActive = true;
+        debugLog('TTS PlayLoop started.');
     }
-
-    if (isPlaying) {
-        // console.log('%c[AUDIO-DEBUG] PlayLoop: Already playing a chunk, returning.', 'color: orange;');
-        return; // Another chunk is already in progress
-    }
-
+    if (isCurrentlyPlayingTTS) return;
     if (indexedAudioChunks.has(nextPlaybackIndex)) {
-        scheduleNext();
+        scheduleTTSChunk();
     } else {
-        // console.log('%c[AUDIO-DEBUG] PlayLoop: Next chunk #${nextPlaybackIndex} not available. Pausing loop.', 'color: purple;');
-        // isLoopActive = false; // No, loop remains active, just no current chunk to play
-        // isPlaying is already false here
-        // If audio-done has been received and queue is empty, then truly stop.
-        // This check might be better placed in 'audio-done' or after src.onended
+        // debugLog(`TTS PlayLoop: Next chunk #${nextPlaybackIndex} not available. Pausing loop.`);
     }
 }
 
-function resetPlaybackState() {
-    console.log('%c[AUDIO-DEBUG] Resetting playback state.', 'color: red; font-weight: bold;');
+function resetTTSPlaybackState() {
+    debugLog('Resetting TTS playback state.');
     indexedAudioChunks.clear();
     nextPlaybackIndex = 0;
-    isPlaying = false;
-    isLoopActive = false; // Stop the loop
-    allAudioChunksReceived = false; // Reset this flag as well
-    // stopAllAudio(); // This is usually called separately when user clicks stop or clears chat
+    isCurrentlyPlayingTTS = false;
+    isTTSLoopActive = false;
+    allAudioChunksReceived = false;
+    lastReceivedAudioChunkIndex = -1;
+    isTTSSpeaking = false; // Ensure this is also reset
 }
 
-// const MinTextLength = 40; // Already defined in ProgressiveTTSSynthesizer
+// --- Core Audio State ---
+let audioContext = null; // Singleton AudioContext
+let microphoneStream = null;
+let mediaStreamSource = null;
+let scriptProcessorNode = null;
+let isRecordingActive = false; // Is microphone actively capturing and sending data
+let isTTSSpeaking = false; // Is TTS audio currently playing (used to pause mic processing)
+let audioBufferForServer = new Float32Array(0); // Buffer for microphone audio before sending
 
-// Audio system management
-// Create audio system object and expose it to the window
-window.audioSystem = {
-  init: function() {
-    // Declare global variables for recording state
-    window.recordingEnabled = true;     // Controls if recording is enabled
-    window.isListening = true;          // Controls if we're listening for audio
-    window.recorder = null;             // Global reference to MediaRecorder
-    window.audioStream = null;          // Global reference to audio stream
-    window.audioContext = null;         // Global reference to audio context
-    window.audioAnalyser = null;        // Global reference to audio analyser
-    window.chunks = [];                 // Global array for recording chunks
-    window.speakingSegment = false;     // Global flag for speaking detection
-    window.silenceStart = null;         // Global timestamp for silence detection
-    window.isProcessingOrPlayingAudio = false;  // Global flag for processing state
-    window.currentBotMessageElement = null; // Used to track the current bot message div for updates
-    
-    // VAD-Einstellungen: laden und an Backend weitergeben
-    // Ensure these elements exist before trying to use them
-    const thresholdSlider = document.getElementById('thresholdSlider');
-    const thresholdValue = document.getElementById('thresholdValue');
-    const silenceTimeoutSlider = document.getElementById('silenceTimeoutSlider');
-    const silenceTimeoutValue = document.getElementById('silenceTimeoutValue');
-    const minSpeechDurationSlider = document.getElementById('minSpeechDurationSlider');
-    const minSpeechDurationValue = document.getElementById('minSpeechDurationValue');
-    const startThresholdSlider = document.getElementById('startThresholdSlider');
-    const startThresholdValue = document.getElementById('startThresholdValue');
-    const endThresholdSlider = document.getElementById('endThresholdSlider');
-    const endThresholdValue = document.getElementById('endThresholdValue');
-    const smoothingWindowSlider = document.getElementById('smoothingWindowSlider');
-    const smoothingWindowValue = document.getElementById('smoothingWindowValue');
-    const hangoverSlider = document.getElementById('hangoverSlider');
-    const hangoverValue = document.getElementById('hangoverValue');
+// --- WebSocket State ---
+let webSocket = null;
+let currentBotModel = null; // To store the model used for the current/last bot message
+let currentBotVoice = null; // To store the voice used for the current/last bot message
 
-    // Check if elements exist
-    if (!thresholdSlider) console.error("Element with ID 'thresholdSlider' not found.");
-    if (!silenceTimeoutSlider) console.error("Element with ID 'silenceTimeoutSlider' not found.");
-    if (!minSpeechDurationSlider) console.error("Element with ID 'minSpeechDurationSlider' not found.");
-    if (!startThresholdSlider) console.error("Element with ID 'startThresholdSlider' not found.");
-    if (!endThresholdSlider) console.error("Element with ID 'endThresholdSlider' not found.");
-    if (!smoothingWindowSlider) console.error("Element with ID 'smoothingWindowSlider' not found.");
-    if (!hangoverSlider) console.error("Element with ID 'hangoverSlider' not found.");
-
-
-    // Lade initiale VAD-Einstellungen vom Backend
-    (async () => {
-      try {
-        const resp = await fetch('/api/settings');
-        if (resp.ok) {
-          const settings = await resp.json();
-          // Add null checks before accessing properties
-          if (thresholdSlider) thresholdSlider.value = settings.threshold;
-          if (thresholdValue) thresholdValue.textContent = settings.threshold;
-          window.silenceThreshold = settings.threshold; // This is a global, so no element check needed directly
-          
-          if (silenceTimeoutSlider) silenceTimeoutSlider.value = settings.silenceTimeoutSec;
-          if (silenceTimeoutValue) silenceTimeoutValue.textContent = settings.silenceTimeoutSec;
-          
-          if (minSpeechDurationSlider) minSpeechDurationSlider.value = settings.minSpeechDurationSec;
-          if (minSpeechDurationValue) minSpeechDurationValue.textContent = settings.minSpeechDurationSec;
-          
-          if (startThresholdSlider) startThresholdSlider.value = settings.startThreshold;
-          if (startThresholdValue) startThresholdValue.textContent = settings.startThreshold;
-          window.startThreshold = settings.startThreshold; // Global
-          
-          if (endThresholdSlider) endThresholdSlider.value = settings.endThreshold;
-          if (endThresholdValue) endThresholdValue.textContent = settings.endThreshold;
-          window.endThreshold = settings.endThreshold; // Global
-          
-          if (smoothingWindowSlider) smoothingWindowSlider.value = settings.rmsSmoothingWindowSec;
-          if (smoothingWindowValue) smoothingWindowValue.textContent = settings.rmsSmoothingWindowSec;
-          window.rmsSmoothingWindowSec = settings.rmsSmoothingWindowSec; // Global
-          
-          if (hangoverSlider) hangoverSlider.value = settings.hangoverDurationSec;
-          if (hangoverValue) hangoverValue.textContent = settings.hangoverDurationSec;
-          window.hangoverDurationSec = settings.hangoverDurationSec; // Global
-          
+// --- Helper Functions ---
+function getAudioContext() {
+    if (!audioContext) {
+        const AudioContextGlobal = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextGlobal) {
+            try {
+                audioContext = new AudioContextGlobal({ sampleRate: TARGET_SAMPLE_RATE });
+                debugLog(`AudioContext created (state: ${audioContext.state}). Sample rate: ${audioContext.sampleRate}`);
+            } catch (e) {
+                console.error("Failed to create AudioContext:", e);
+                return null;
+            }
         } else {
-          console.error(`Failed to load VAD settings: ${resp.status}`);
-          if (thresholdSlider) window.silenceThreshold = parseFloat(thresholdSlider.value);
+            console.error("Browser does not support AudioContext.");
+            return null;
         }
-      } catch (err) {
-        console.error('Error loading VAD settings', err);
-        if (thresholdSlider) window.silenceThreshold = parseFloat(thresholdSlider.value);
-      }
-    })();
+    }
+    return audioContext;
+}
 
-    // Aktualisiere UI und lokale Parameter bei Änderung (sofort)
-    if (thresholdSlider && thresholdValue) {
-        thresholdValue.textContent = thresholdSlider.value;
-        thresholdSlider.addEventListener('input', () => {
-            window.silenceThreshold = parseFloat(thresholdSlider.value);
-            thresholdValue.textContent = thresholdSlider.value;
-        });
+async function resumeAudioContext() {
+    const ac = getAudioContext();
+    if (ac && ac.state === 'suspended') {
+        try {
+            await ac.resume();
+            debugLog(`AudioContext resumed (state: ${ac.state}).`);
+        } catch (e) {
+            console.error("Error resuming AudioContext:", e);
+            throw e; // Re-throw for caller to handle
+        }
     }
-    if (silenceTimeoutSlider && silenceTimeoutValue) {
-        silenceTimeoutValue.textContent = silenceTimeoutSlider.value;
-        silenceTimeoutSlider.addEventListener('input', () => {
-            silenceTimeoutValue.textContent = silenceTimeoutSlider.value;
-        });
+    return ac && ac.state === 'running';
+}
+
+// --- Exported Core Functions ---
+export async function initAudioSystem() {
+    debugLog('Initializing audio system...');
+    await attemptAutomaticAudioStart();
+    // Ensure optimizationManager and uiManager are initialized by main.js before this
+    if (window.optimizationManager && typeof window.optimizationManager.init === 'function') {
+        // Assuming optimizationManager.init() is idempotent or handles multiple calls gracefully
+        // window.optimizationManager.init(); 
+    } else {
+        console.warn("[AUDIO-SYSTEM] optimizationManager not found on window or not initialized.");
     }
-    if (minSpeechDurationSlider && minSpeechDurationValue) {
-        minSpeechDurationValue.textContent = minSpeechDurationSlider.value;
-        minSpeechDurationSlider.addEventListener('input', () => {
-            minSpeechDurationValue.textContent = minSpeechDurationSlider.value;
-        });
+    if (window.uiManager && typeof window.uiManager.init === 'function') {
+        // window.uiManager.init();
+    } else {
+        console.warn("[AUDIO-SYSTEM] uiManager not found on window or not initialized.");
     }
-    if (startThresholdSlider && startThresholdValue) {
-        startThresholdValue.textContent = startThresholdSlider.value;
-        startThresholdSlider.addEventListener('input', () => {
-            window.startThreshold = parseFloat(startThresholdSlider.value);
-            startThresholdValue.textContent = startThresholdSlider.value;
-        });
+}
+
+export async function startRecording() {
+    if (isRecordingActive) {
+        debugLog("Recording is already active.");
+        return;
     }
-    if (endThresholdSlider && endThresholdValue) {
-        endThresholdValue.textContent = endThresholdSlider.value;
-        endThresholdSlider.addEventListener('input', () => {
-            window.endThreshold = parseFloat(endThresholdSlider.value);
-            endThresholdValue.textContent = endThresholdSlider.value;
-        });
-    }
-    if (smoothingWindowSlider && smoothingWindowValue) {
-        smoothingWindowValue.textContent = smoothingWindowSlider.value;
-        smoothingWindowSlider.addEventListener('input', () => {
-            window.rmsSmoothingWindowSec = parseFloat(smoothingWindowSlider.value);
-            smoothingWindowValue.textContent = smoothingWindowSlider.value;
-        });
-    }
-    if (hangoverSlider && hangoverValue) {
-        hangoverValue.textContent = hangoverSlider.value;
-        hangoverSlider.addEventListener('input', () => {
-            window.hangoverDurationSec = parseFloat(hangoverSlider.value);
-            hangoverValue.textContent = hangoverSlider.value;
-        });
+    debugLog("Attempting to start recording...");
+    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+        window.uiManager.showStatus("Verbinde Audio-Pipeline...");
     }
 
-    // Sende geänderte VAD-Einstellungen beim Loslassen des Sliders ans Backend
-    function updateVadSettings() {
-      // Ensure all sliders exist before trying to read their values
-      const payload = {
-        threshold: thresholdSlider ? parseFloat(thresholdSlider.value) : 0.5, // Default if null
-        silenceTimeoutSec: silenceTimeoutSlider ? parseFloat(silenceTimeoutSlider.value) : 2.0,
-        minSpeechDurationSec: minSpeechDurationSlider ? parseFloat(minSpeechDurationSlider.value) : 0.2,
-        startThreshold: startThresholdSlider ? parseFloat(startThresholdSlider.value) : 0.5,
-        endThreshold: endThresholdSlider ? parseFloat(endThresholdSlider.value) : 0.3,
-        rmsSmoothingWindowSec: smoothingWindowSlider ? parseFloat(smoothingWindowSlider.value) : 0.1,
-        hangoverDurationSec: hangoverSlider ? parseFloat(hangoverSlider.value) : 0.5
-      };
-      fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      }).then(resp => {
-        if (!resp.ok) console.error(`Error updating VAD settings: ${resp.status}`);
-      }).catch(err => console.error('Error updating VAD settings', err));
+    resetTTSPlaybackState();
+    // Clear any previous bot message UI that might be half-streamed
+    if (window.uiManager && typeof window.uiManager.clearCurrentBotMessage === 'function') {
+        window.uiManager.clearCurrentBotMessage(); 
     }
-    if (thresholdSlider) thresholdSlider.addEventListener('change', updateVadSettings);
-    if (silenceTimeoutSlider) silenceTimeoutSlider.addEventListener('change', updateVadSettings);
-    if (minSpeechDurationSlider) minSpeechDurationSlider.addEventListener('change', updateVadSettings);
-    if (startThresholdSlider) startThresholdSlider.addEventListener('change', updateVadSettings);
-    if (endThresholdSlider) endThresholdSlider.addEventListener('change', updateVadSettings);
-    if (smoothingWindowSlider) smoothingWindowSlider.addEventListener('change', updateVadSettings);
-    if (hangoverSlider) hangoverSlider.addEventListener('change', updateVadSettings);
 
-    this.initCapture();
-    this.setupEventListeners();
-  },
-
-  // Function to completely reset and restart audio recording
-  restartAudioCapture: function() {
-    if (window.wsAudioSocket) {
-      debugLog("Closing existing WebSocketAudioService connection");
-      window.wsAudioSocket.close();
-      window.wsAudioSocket = null;
-    }
-    debugLog("Restarting audio capture system");
-    // Prevent onstop handler from triggering processing during restart
-    window._ignoreNextStop = true;
-    
     try {
-      // Explicitly stop any ongoing media recorder
-      if (window.recorder && window.recorder.state === "recording") {
-        window.recorder.stop();
-        debugLog("Stopped ongoing recording during restart");
-      }
-      
-      // Cancel any ongoing SSE connections
-      if (window.eventSource) {
-        window.eventSource.close();
-        window.eventSource = null;
-        debugLog("Closed event source during restart");
-      }
-      
-      // Stop all audio playback
-      stopAllAudio();
-      
-      // First, clean up existing audio capture if any
-      if (window.audioContext && !window.optimizationSettings.useCachedAudioContext) {
-        window.audioContext.close().catch(e => console.error("Error closing AudioContext:", e));
-        window.audioContext = null;
-      }
-      
-      if (window.audioStream) {
-        window.audioStream.getTracks().forEach(track => {
-          track.stop();
-          debugLog("Stopped track: " + track.id);
+        const contextRunning = await resumeAudioContext();
+        if (!contextRunning) {
+            updateUIAfterAudioInitAttempt(false, 'AudioContext not running after resume attempt.');
+            return;
+        }
+
+        if (!microphoneStream) {
+            debugLog("Requesting microphone access...");
+            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
+            debugLog("Microphone access granted.");
+        }
+
+        await connectAudioPipeline(); // This will also connect WebSocket with new params
+        isRecordingActive = true;
+        updateUIAfterAudioInitAttempt(true);
+
+    } catch (error) {
+        console.error("Failed to start recording:", error);
+        let reason = 'Unknown error during startRecording';
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            reason = 'Microphone access denied';
+        } else if (error.message.includes('AudioContext')) {
+            reason = 'AudioContext issue';
+        } else if (error.message.includes('WebSocket')) {
+            reason = 'WebSocket connection error: ' + error.message;
+        }
+        updateUIAfterAudioInitAttempt(false, reason);
+        await cleanUpAudioResources(false);
+    }
+}
+
+export async function stopRecording(sendEndOfStream = true) {
+    if (!isRecordingActive) {
+        debugLog("Recording is not active.");
+        return;
+    }
+    debugLog(`Stopping recording. Send end of stream: ${sendEndOfStream}`);
+    isRecordingActive = false; 
+    await cleanUpAudioResources(sendEndOfStream);
+    updateUIAfterStopRecording();
+}
+
+export async function restartAudioSystemAndClearState() {
+    debugLog("Restarting audio system and clearing state...");
+    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+        window.uiManager.showStatus("Audio-System wird neu gestartet...");
+    }
+    await stopAllAudioPlayback();
+    await stopRecording(false);
+    resetTTSPlaybackState();
+    if (window.uiManager && typeof window.uiManager.clearCurrentBotMessage === 'function') {
+        window.uiManager.clearCurrentBotMessage();
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 100)); 
+    
+    debugLog("Re-initializing audio system components...");
+    // No need to call initAudioSystem() directly if it just does attemptAutomaticAudioStart
+    // The user will typically click "start recording" which handles the full setup.
+    // However, ensuring the audio context is ready is good.
+    await attemptAutomaticAudioStart(); 
+    if (window.uiManager && typeof window.uiManager.hideStatus === 'function') {
+        window.uiManager.hideStatus();
+    }
+    if (window.uiManager && typeof window.uiManager.updateButtonStates === 'function') {
+        window.uiManager.updateButtonStates(false); // Set to not recording
+    }
+}
+
+export function stopAllAudioPlayback() {
+    debugLog("Stopping all TTS audio playback.");
+    if (window.allAudioSources) {
+        window.allAudioSources.forEach(src => {
+            try {
+                src.onended = null; // Prevent onended logic from firing
+                src.stop();
+            } catch (e) {
+                // console.warn("Error stopping an audio source:", e);
+            }
         });
-        window.audioStream = null;
-      }
-      
-      // Reset all global components
-      window.recorder = null;
-      window.audioAnalyser = null;
-      
-      // Reset flags and states
-      window.isProcessingOrPlayingAudio = false;
-      window.speakingSegment = false;
-      window.silenceStart = null;
-      window.recordingStartTime = null;
-      
-      // Enable flags
-      window.recordingEnabled = true;
-      window.isListening = true;
-    } catch (e) {
-      debugLog("Error during cleanup phase of audio restart: " + e.toString());
+        window.allAudioSources = [];
     }
+    if (window.currentBot && window.currentBot.audioSources) {
+        window.currentBot.audioSources = [];
+    }
+    resetTTSPlaybackState(); // Also resets TTS specific flags
+    isTTSSpeaking = false; // General flag
+    // If using the other audioQueue system, clear it too
+    // audioQueue = []; 
+    // if (currentAudioElement) { currentAudioElement.pause(); currentAudioElement = null; }
+}
+
+// --- Internal Core Logic ---
+async function attemptAutomaticAudioStart() {
+    debugLog('Attempting automatic audio start on page load...');
+    try {
+        const contextRunning = await resumeAudioContext();
+        if (!contextRunning) {
+            debugLog("Automatic AudioContext resume failed or context not running. User gesture will be required.");
+            updateUIAfterAudioInitAttempt(false, 'AudioContext blocked'); // Inform UI, but don't mark as critical error yet
+            return;
+        }
+        // Don't request microphone automatically here, wait for startRecording or specific user action
+        // If we wanted to auto-start mic:
+        // if (!microphoneStream) {
+        //     microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
+        // }
+        // await connectAudioPipeline(); // This would also connect WebSocket
+        // isRecordingActive = true;
+        // updateUIAfterAudioInitAttempt(true);
+        debugLog("AudioContext is running. Ready for user to start recording.");
+
+    } catch (error) {
+        console.warn("Automatic audio start failed:", error);
+        updateUIAfterAudioInitAttempt(false, 'Automatic start failed');
+    }
+}
+
+async function connectAudioPipeline() {
+    const ac = getAudioContext();
+    if (!microphoneStream || !ac || ac.state !== 'running') {
+        throw new Error("Cannot connect audio pipeline: Stream or AudioContext not ready or not running.");
+    }
+
+    debugLog('Connecting audio pipeline...');
+    if (mediaStreamSource) mediaStreamSource.disconnect();
+    if (scriptProcessorNode) scriptProcessorNode.disconnect();
+
+    mediaStreamSource = ac.createMediaStreamSource(microphoneStream);
+    const bufferSize = 4096;
+    scriptProcessorNode = ac.createScriptProcessor(bufferSize, 1, 1);
+
+    scriptProcessorNode.onaudioprocess = (audioProcessingEvent) => {
+        if (!isRecordingActive) return; // Only gate on isRecordingActive
+        
+        // Check if TTS is speaking *only if* progressive TTS is enabled and active
+        // For non-progressive, or if TTS is disabled, we should not pause mic input based on isTTSSpeaking
+        let pipelineOptions = {};
+        if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
+            pipelineOptions = window.optimizationManager.getCurrentPipelineOptions();
+        }
+        const progressiveTTSEnabled = !pipelineOptions.DisableProgressiveTts;
+
+        if (progressiveTTSEnabled && isTTSSpeaking) {
+            // debugLog("Microphone processing paused due to active progressive TTS.");
+            return; // Pause sending mic data if progressive TTS is active and speaking
+        }
+
+        const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+        const currentServerBuffer = audioBufferForServer;
+        const combinedBuffer = new Float32Array(currentServerBuffer.length + inputData.length);
+        combinedBuffer.set(currentServerBuffer);
+        combinedBuffer.set(inputData, currentServerBuffer.length);
+        audioBufferForServer = combinedBuffer;
+
+        while (audioBufferForServer.length >= SAMPLES_PER_CHUNK) {
+            const chunkToProcess = audioBufferForServer.slice(0, SAMPLES_PER_CHUNK);
+            audioBufferForServer = audioBufferForServer.slice(SAMPLES_PER_CHUNK);
+            sendAudioChunkToServer(chunkToProcess);
+        }
+        
+        let sumSquares = 0.0;
+        for (const sample of inputData) sumSquares += sample * sample;
+        const rms = Math.sqrt(sumSquares / inputData.length);
+        if (window.uiManager && typeof window.uiManager.updateAudioVisualization === 'function') {
+            window.uiManager.updateAudioVisualization(rms);
+        }
+    };
+
+    mediaStreamSource.connect(scriptProcessorNode);
+    scriptProcessorNode.connect(ac.destination);
+
+    debugLog('Audio pipeline connected to ScriptProcessor.');
+    await connectWebSocket();
+}
+
+async function cleanUpAudioResources(sendEndOfStream = true) {
+    debugLog("Cleaning up audio resources...");
+    if (scriptProcessorNode) {
+        scriptProcessorNode.disconnect();
+        scriptProcessorNode.onaudioprocess = null; 
+        // scriptProcessorNode = null; // Can be reused if context is the same
+    }
+    if (mediaStreamSource) {
+        mediaStreamSource.disconnect();
+        // mediaStreamSource = null;
+    }
+    if (microphoneStream) {
+        microphoneStream.getTracks().forEach(track => track.stop());
+        microphoneStream = null;
+        debugLog('Microphone stream stopped.');
+    }
+    // Don't close/nullify audioContext here as it can be reused.
+    // It's closed by user action or if page unloads.
+
+    audioBufferForServer = new Float32Array(0); // Clear buffer
+    await closeWebSocket(sendEndOfStream);
+}
+
+function getWebSocketUrlWithParams() {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const host = window.location.host;
     
-    // Small delay to ensure previous resources are cleaned up
-    setTimeout(() => {
-      // Re-initialize capture based on current pipeline mode (HTTP or WebSocket)
-      this.initCapture();
-      // If in HTTP legacy mode, auto-start HTTP pipeline
-      if (window.optimizationSettings.useLegacyHttp) {
-        debugLog('Auto-starting HTTP pipeline after restart');
-        this.startHttpPipeline();
-      }
-    }, 300);
-  },
-  
-  setupEventListeners: function() {
-    // Global stop/start button for controlling recording
-    stopBtn.addEventListener('click', function stopRecordingHandler() {
-      // HTTP-Post legacy pipeline fallback
-      if (window.optimizationSettings.useLegacyHttp) {
-        // Toggle recording state
-      if (!window.httpRecording) {
-        // Start HTTP recording
-        window.httpRecording = true;
-        navigator.mediaDevices.getUserMedia({ audio: true })
-          .then(stream => {
-            window.httpMediaStream = stream;
-            window.httpChunks = [];
-            const recorder = new MediaRecorder(stream);
-            window.httpRecorder = recorder;
-            recorder.ondataavailable = e => window.httpChunks.push(e.data);
-            recorder.start();
-            status.textContent = 'Recording (HTTP)...';
-            stopBtn.textContent = 'Stop HTTP Recording';
-          })
-            .catch(err => console.error('Error acquiring media for HTTP:', err));
+    let queryParams = {};
+    if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
+        queryParams = window.optimizationManager.getCurrentPipelineOptions();
+        // Store model and voice for creating bot message later
+        currentBotModel = queryParams.ChatModel;
+        currentBotVoice = queryParams.TtsVoice;
+        debugLog("[AUDIO-SYSTEM] Using pipeline options from optimizationManager:", queryParams);
+    } else {
+        console.error("[AUDIO-SYSTEM] CRITICAL: optimizationManager.getCurrentPipelineOptions() is not available. WebSocket connection will likely fail or use incorrect parameters.");
+        // Fallback to some very basic defaults, though this state should ideally not be reached.
+        queryParams = {
+            Language: 'en',
+            ChatModel: 'gpt-3.5-turbo',
+            TtsVoice: 'nova',
+            DisableVad: false,
+            DisableTts: false,
+            DisableProgressiveTts: false,
+        };
+        currentBotModel = queryParams.ChatModel;
+        currentBotVoice = queryParams.TtsVoice;
+    }
+
+    if (window.optimizationManager && typeof window.optimizationManager.getCurrentVadSettings === 'function') {
+        const vadSettings = window.optimizationManager.getCurrentVadSettings();
+        // Only include VAD settings if VAD is not disabled by pipeline options
+        if (!queryParams.DisableVad) {
+            queryParams = {...queryParams, ...vadSettings};
+            debugLog("[AUDIO-SYSTEM] Including VAD settings from optimizationManager:", vadSettings);
         } else {
-          // Stop HTTP recording and process
-          window.httpRecording = false;
-          status.textContent = 'Processing (HTTP)...';
-          stopBtn.textContent = 'Aufnahme starten';
-          const recorder = window.httpRecorder;
-          if (recorder && recorder.state === 'recording') {
-            recorder.onstop = async () => {
-              // Track recording end latency
-              optimizationManager.trackLatency('recordingStop');
-              try {
-                const blob = new Blob(window.httpChunks, { type: 'audio/webm' });
-                const fd = new FormData();
-                fd.append('file', blob, 'audio.webm');
-                // Send transcription request
-                const resp = await fetch('/api/processAudio', { method: 'POST', body: fd });
-                const transcriptionTime = Date.now();
-                optimizationManager.trackLatency('transcriptionReceived');
-                const data = await resp.json();
-                // Display messages and instrument latencies
-                createUserMessage(data.prompt);
-                const botObj = createBotMessage(data.response);
-                // Text latency
-                const textLat = transcriptionTime - (window.recordingStopTime || transcriptionTime);
-                if (botObj.textSpan) botObj.textSpan.textContent = textLat + ' ms';
-                optimizationManager.trackLatency('llmResponseStart');
-                // Send TTS request
-                const resp2 = await fetch('/api/speech', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ Input: data.response, Voice: voiceSel.value })
-                });
-                const audioBlob = await resp2.blob();
-                const ttsTime = Date.now();
-                optimizationManager.trackLatency('ttsEnd');
-                // Audio latency
-                const audioLat = ttsTime - transcriptionTime;
-                if (botObj.audioSpan) botObj.audioSpan.textContent = audioLat + ' ms';
-                // Play audio
-                const url = URL.createObjectURL(audioBlob);
-                const audio = new Audio(url);
-                audio.oncanplaythrough = () => audio.play();
-                audio.onended = () => URL.revokeObjectURL(url);
-                status.textContent = 'Listening...';
-                // Cleanup media stream
-                window.httpMediaStream.getTracks().forEach(t => t.stop());
-              } catch (err) {
-                console.error('HTTP pipeline error:', err);
-                status.textContent = 'Error in HTTP pipeline';
-              }
-            };
-            // Store recording stop time
-            window.recordingStopTime = Date.now();
-            recorder.stop();
-          }
+            debugLog("[AUDIO-SYSTEM] VAD is disabled by pipeline options, not including VAD settings.");
+        }
+    } else {
+        console.warn("[AUDIO-SYSTEM] optimizationManager.getCurrentVadSettings() not available. VAD settings might be incorrect if VAD is enabled.");
+    }
+
+    const queryString = new URLSearchParams(queryParams).toString();
+    const path = `/ws/audio?${queryString}`;
+    const fullUrl = `${protocol}://${host}${path}`;
+    debugLog("[AUDIO-SYSTEM] Constructed WebSocket URL:", fullUrl);
+    return fullUrl;
+}
+
+async function connectWebSocket() {
+    if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+        debugLog('WebSocket already open. Checking if VAD settings need update.');
+        if (window.optimizationManager && typeof window.optimizationManager.getCurrentVadSettings === 'function') {
+            const pipelineOptions = window.optimizationManager.getCurrentPipelineOptions ? window.optimizationManager.getCurrentPipelineOptions() : { DisableVad: false };
+            if (!pipelineOptions.DisableVad) {
+                const vadSettings = window.optimizationManager.getCurrentVadSettings();
+                if (vadSettings) sendWebSocketMessage({ type: 'vad_settings', payload: vadSettings });
+            } else {
+                 debugLog("VAD disabled, not sending VAD settings update on existing WebSocket.");
+            }
         }
         return;
-      }
-      // Store reference to this handler for later restoration
-      window.stopRecordingHandler = stopRecordingHandler;
-      
-      if (window.isListening) {
-        // Currently listening, so stop
-        debugLog("Stop button clicked - Stopping recording");
-        
-        // We need to access these variables from within the recorder context
-        // so we use window scope to ensure they're available everywhere
-        window.isListening = false;
-        window.recordingEnabled = false;
-        
-        // Force stop any active recording
-        if (window.audioStream) {
-          window.audioStream.getTracks().forEach(track => { 
-            debugLog("Stopping audio track: " + track.id);
-            track.enabled = false; 
-          });
-        }
-        
-        status.textContent = 'Aufnahme gestoppt - Klicke erneut zum Fortsetzen';
-        stopBtn.textContent = 'Aufnahme starten';
-      } else {
-        // Currently stopped, so restart
-        debugLog("Start button clicked - Restarting recording");
-        
-        // Force complete restart of audio system
-        audioSystem.restartAudioCapture();
-        
-        status.textContent = 'Zuhören...';
-        stopBtn.textContent = 'Aufnahme stoppen';
-      }
-    });
-    
-    // Store original handler reference
-    stopBtn._originalClickHandler = stopBtn.onclick;
-    
-    // Add separate button for stopping audio playback
-    const stopAudioBtn = document.createElement('button');
-    stopAudioBtn.textContent = 'Audio stoppen';
-    stopAudioBtn.className = 'stop-button';
-    stopAudioBtn.style.marginLeft = '10px';
-    stopAudioBtn.addEventListener('click', () => {
-      stopAllAudio();
-      
-      // Explicit audio debug message
-      debugLog("Audio gestoppt, Audio-Processing wieder aktiviert");
-      
-      status.textContent = 'Audio gestoppt';
-      
-      // Force immediate re-enabling of audio processing when manually stopping
-      window.isProcessingOrPlayingAudio = false;
-      
-      // Make sure we don't interfere with recording state
-      // Only affect audio processing, not recording permission
-    });
-    document.querySelector('.button-group').appendChild(stopAudioBtn);
-    
-    // Add restart audio system button
-    const restartAudioBtn = document.createElement('button');
-    restartAudioBtn.textContent = 'Audio-System Neustart';
-    restartAudioBtn.className = 'secondary';
-    restartAudioBtn.style.marginLeft = '10px';
-    restartAudioBtn.addEventListener('click', () => {
-      // First, stop any ongoing audio playback
-      stopAllAudio();
-      
-      // Make sure any processing is canceled
-      window.isProcessingOrPlayingAudio = false;
-      
-      // Only restart the audio system if we're not in the middle of processing
-      debugLog("Manual audio system restart requested");
-      
-      // Notify the user
-      status.textContent = 'Audio-System wird neu gestartet...';
-      
-      // Use a small timeout to allow UI to update
-      setTimeout(() => {
-        // Do the actual restart
-        audioSystem.restartAudioCapture();
-      }, 100);
-    });
-    document.querySelector('.button-group').appendChild(restartAudioBtn);
-  },
-  
-  // Track the moment the recording/capture starts
-  // Track recording start for WebSocket, but HTTP mode handles start in manual handler
-  initCapture: async function() {
-    if (!window.optimizationSettings.useLegacyHttp) {
-      // WebSocket mode: start streaming without recording latency start (server does VAD)
-      if (asrMode.value === 'browser' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
-        this.initBrowserASR();
-      } else {
-        this.initServerASR();
-      }
-    } else {
-      // HTTP mode: await manual control via stopBtn
-      status.textContent = 'Bereit (HTTP-Modus)';
-      stopBtn.textContent = 'Aufnahme starten';
     }
-  },
-  
-  initBrowserASR: function() {
-    // Streaming ASR via Web Speech API
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = langSel.value;
-    recognition.onstart = () => { status.textContent = 'Listening (ASR)...'; };
-    recognition.onerror = (e) => { console.error('Speech recognition error', e); status.textContent = 'Error in recognition'; };
-    recognition.onresult = async (event) => {
-      let interimTranscript = '';
-      let finalTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const transcript = result[0].transcript;
-        if (result.isFinal) finalTranscript += transcript;
-        else interimTranscript += transcript;
-      }
-      if (interimTranscript) {
-        status.textContent = interimTranscript;
-      }
-      if (finalTranscript) {
-        status.textContent = 'Processing...';
-        await this.sendChat(finalTranscript.trim());
-        status.textContent = 'Listening (ASR)...';
-      }
-    };
-    recognition.onend = () => recognition.start();
-    recognition.start();
-  },
-  
-  initServerASR: async function() {
-    // Reset playback state before new connection
-    resetPlaybackState();
-    window.audioBufferForChunking = new Float32Array(0); // Initialize/reset the persistent buffer
+    if (webSocket && webSocket.readyState === WebSocket.CONNECTING) {
+        debugLog("WebSocket is already connecting. Aborting new connection attempt.");
+        return Promise.reject(new Error("WebSocket connection attempt already in progress."));
+    }
 
-    // Dynamically construct WebSocket URL with current optimization settings
-    const queryParams = new URLSearchParams({
-        DisableVad: window.optimizationSettings.disableVad,
-        DisableTts: window.optimizationSettings.disableTts,
-        DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS, // Inverted logic for this param
-        TtsVoice: document.getElementById('voice') ? document.getElementById('voice').value : 'nova',
-        TtsMinFirstChunkLength: window.optimizationSettings.ttsMinFirstChunkLength,
-        TtsMaxFirstChunkLength: window.optimizationSettings.ttsMaxFirstChunkLength,
-        TtsSubsequentChunkLength: window.optimizationSettings.ttsSubsequentChunkLength,
-        ChatModel: document.getElementById('model') ? document.getElementById('model').value : "gpt-3.5-turbo", // Add ChatModel
-        // Add VAD settings from the sliders in debugPanel that are also in VadSettings.cs
-        Threshold: document.getElementById('thresholdSlider') ? parseFloat(document.getElementById('thresholdSlider').value) : 0.5,
-        SilenceTimeoutSec: document.getElementById('silenceTimeoutSlider') ? parseFloat(document.getElementById('silenceTimeoutSlider').value) : 2.0,
-        MinSpeechDurationSec: document.getElementById('minSpeechDurationSlider') ? parseFloat(document.getElementById('minSpeechDurationSlider').value) : 0.2,
-        StartThreshold: document.getElementById('startThresholdSlider') ? parseFloat(document.getElementById('startThresholdSlider').value) : 0.5,
-        EndThreshold: document.getElementById('endThresholdSlider') ? parseFloat(document.getElementById('endThresholdSlider').value) : 0.3,
-        RmsSmoothingWindowSec: document.getElementById('smoothingWindowSlider') ? parseFloat(document.getElementById('smoothingWindowSlider').value) : 0.1,
-        HangoverDurationSec: document.getElementById('hangoverSlider') ? parseFloat(document.getElementById('hangoverSlider').value) : 0.5,
-        // VAD Spike/3rd party settings from optimizationManager's state
-        VadSpikeThreshold: window.optimizationSettings.vadSpikeThreshold,
-        EnableSpikeDetection: window.optimizationSettings.enableSpikeDetection,
-        EnableThirdPartyVad: window.optimizationSettings.enableThirdPartyVad
-    }).toString();
-
-    const wsUrl = `wss://${window.location.host}/ws/audio?${queryParams}`;
+    const wsUrl = getWebSocketUrlWithParams();
     debugLog(`Connecting to WebSocket: ${wsUrl}`);
+    webSocket = new WebSocket(wsUrl);
+    webSocket.binaryType = 'arraybuffer';
 
-    window.wsAudioSocket = new WebSocket(wsUrl);
-    window.wsAudioSocket.binaryType = 'arraybuffer'; // Ensure binary type is set for audio data
-
-    window.wsAudioSocket.onopen = () => {
-      console.log("WebSocket connection established for audio.");
-      // Send initial VAD settings
-      // These settings are also passed via URL, but sending them as a message ensures
-      // the backend uses them if URL parsing fails or for future flexibility.
-      const initialVadSettings = {
-        UseWebRTCVAD: optimizationSettings.useWebRTCVAD,
-        WebRTCVADMode: optimizationSettings.webRTCVADMode,
-        Threshold: optimizationSettings.vadThreshold, // Use the one from optimizationSettings
-        SilenceTimeoutSec: optimizationSettings.vadSilenceTimeout, // Use the one from optimizationSettings
-        MinSpeechDurationSec: 0.2, // Corrected: Use appropriate float for seconds
-        StartThreshold: optimizationSettings.vadStartThreshold,
-        EndThreshold: optimizationSettings.vadEndThreshold,
-        RmsSmoothingWindowSec: optimizationSettings.vadRmsSmoothingWindow,
-        HangoverDurationSec: 0.5, // Corrected: Use appropriate float for seconds
-        SpikeDetectionEnabled: optimizationSettings.vadSpikeDetectionEnabled,
-        SpikeThresholdFactor: optimizationSettings.vadSpikeThresholdFactor,
-        SpikeMinDurationMs: optimizationSettings.vadSpikeMinDurationMs,
-        ConsecutiveSpikeThreshold: optimizationSettings.vadConsecutiveSpikeThreshold,
-        UseDynamicThreshold: optimizationSettings.vadUseDynamicThreshold,
-        DynamicThresholdFactor: optimizationSettings.vadDynamicThresholdFactor,
-        DynamicThresholdDecay: optimizationSettings.vadDynamicThresholdDecay,
-        MinRMSForDynamicThreshold: optimizationSettings.vadMinRMSForDynamicThreshold
-      };
-      if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
-        window.wsAudioSocket.send(JSON.stringify({
-          type: "initialVadSettings",
-          payload: initialVadSettings
-        }));
-        console.log("Sent initial VAD settings via WebSocket message:", initialVadSettings);
-      }
-
-      // Start sending audio data if recording is enabled
-      if (window.recordingEnabled && window.audioStream) {
-        // This part is handled by the ScriptProcessorNode's onaudioprocess
-        console.log("WebSocket open, audio processing will send data.");
-      }
-    };
-
-    window.wsAudioSocket.onmessage = async (event) => {
-      if (typeof event.data === 'string') {
-        try {
-          const eventObject = JSON.parse(event.data);
-          window.audioSystem.handleServerEvent(eventObject); // MODIFIED CALL
-        } catch (e) {
-          console.error("[WebSocket] Error parsing JSON from server:", e, event.data);
-        }
-      } else if (event.data instanceof ArrayBuffer) {
-        if (!window.audioContext) {
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
-        try {
-            const audioBuffer = await window.audioContext.decodeAudioData(event.data);
-            const actualChunkIndex = window.lastReceivedAudioChunkIndex;
-
-            if (actualChunkIndex === undefined) {
-                console.error("%c[AUDIO-ERROR] Received binary audio data but lastReceivedAudioChunkIndex is undefined. Audio-chunk-info might be missing or out of order.", 'color: red; font-weight: bold;');
-                return;
+    return new Promise((resolve, reject) => {
+        webSocket.onopen = () => {
+            debugLog('WebSocket connection established.');
+            if (window.optimizationManager && typeof window.optimizationManager.getCurrentVadSettings === 'function') {
+                const pipelineOptions = window.optimizationManager.getCurrentPipelineOptions ? window.optimizationManager.getCurrentPipelineOptions() : { DisableVad: false };
+                if (!pipelineOptions.DisableVad) {
+                    const vadSettings = window.optimizationManager.getCurrentVadSettings();
+                    if (vadSettings) {
+                        sendWebSocketMessage({ type: 'vad_settings', payload: vadSettings });
+                        debugLog('Sent initial VAD settings via WebSocket:', vadSettings);
+                    }
+                } else {
+                    debugLog("VAD disabled, not sending initial VAD settings.");
+                }
             }
-
-            indexedAudioChunks.set(actualChunkIndex, audioBuffer); // global
-            console.log(`%c[AUDIO-DEBUG] Queued audio chunk #${actualChunkIndex} for playback. Total queued: ${indexedAudioChunks.size}`,
-                'background: #2ecc71; color: white; padding: 2px 5px; border-radius: 3px;');
-
-            if (typeof playLoop === 'function') {
-              playLoop(); // global
+            if (window.uiManager && typeof window.uiManager.hideStatus === 'function') {
+                window.uiManager.hideStatus();
             }
-        } catch (e) {
-            console.error('%c[AUDIO-ERROR] Error decoding audio data:', 'color: red; font-weight: bold;', e, event.data);
-        }
-      } else {
-        console.warn("[WebSocket] Received unknown message type:", event.data);
-      }
-    };
+            resolve();
+        };
 
-    window.wsAudioSocket.onerror = (error) => {
-      console.error('WebSocket Error:', error);
-      debugLog(`WebSocket Error: ${error.message || 'Unknown error'}`);
-      status.textContent = 'WebSocket Fehler';
-      stopBtn.textContent = 'Neu verbinden'; // Or similar
-      stopBtn.disabled = false;
-    };
+        webSocket.onmessage = (event) => {
+            handleWebSocketMessage(event);
+        };
 
-    window.wsAudioSocket.onclose = (event) => {
-      debugLog(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
-      status.textContent = 'Getrennt. Neu verbinden?';
-      if (!event.wasClean) {
-        // Handle unclean closure, maybe attempt reconnect or notify user
-      }
-      stopBtn.textContent = 'Neu verbinden';
-      stopBtn.disabled = false;
-      window.isListening = false; // Ensure listening is false on close
-      window.recordingEnabled = false; 
-      window.wsAudioSocket = null; // Clear reference
-    };
-
-    // Initialize audio processing script processor
-    if (!window.audioContext) {
-        const contextOptions = { sampleRate: TargetSampleRate };
-        try {
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)(contextOptions);
-            if (window.audioContext.sampleRate !== TargetSampleRate) {
-                console.warn(`[AUDIO-SYSTEM] Could not create AudioContext with ${TargetSampleRate}Hz. Actual: ${window.audioContext.sampleRate}Hz. This may affect ASR/VAD quality if resampling is not performed.`);
-                // Attempt to recreate with default if specific rate failed or was not met.
-                try { await window.audioContext.close(); } catch(e) { console.error("Error closing audio context", e); }
-                window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                console.warn(`[AUDIO-SYSTEM] Reverted to default AudioContext. Sample rate: ${window.audioContext.sampleRate}Hz.`);
-            } else {
-                console.log(`[AUDIO-SYSTEM] AudioContext created with ${window.audioContext.sampleRate}Hz sample rate.`);
+        webSocket.onerror = (error) => {
+            console.error('WebSocket Error:', error);
+            if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+                window.uiManager.showStatus("WebSocket Fehler. Aufnahme gestoppt.", true);
             }
-        } catch (e) {
-            console.warn(`[AUDIO-SYSTEM] Error creating AudioContext with preferred sample rate: ${e}. Falling back to default.`);
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            console.log(`[AUDIO-SYSTEM] AudioContext created with default sample rate: ${window.audioContext.sampleRate}Hz.`);
+            // Ensure recording is marked as stopped and UI is updated
+            if (isRecordingActive) {
+                isRecordingActive = false; // Critical to set this before calling updateUIAfterStopRecording
+                updateUIAfterStopRecording(); 
+            }
+            webSocket = null; // Nullify to allow reconnect attempts
+            reject(new Error('WebSocket connection error')); // Reject promise for connectWebSocket
+        };
+
+        webSocket.onclose = (event) => {
+            debugLog(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}, WasClean: ${event.wasClean}`);
+            const wasRecording = isRecordingActive;
+            isRecordingActive = false; // Always set recording to false on close
+
+            if (wasRecording && !event.wasClean) {
+                if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+                    window.uiManager.showStatus("WebSocket unerwartet geschlossen. Aufnahme gestoppt.", true);
+                }
+            }
+            // Update UI regardless of clean close, as recording has stopped
+            updateUIAfterStopRecording(); 
+            webSocket = null; // Clear instance to allow new connections
+            // Do not reject here if onopen was already called, as the promise would have resolved.
+            // The error handling for unexpected close during active recording is handled above.
+        };
+    });
+}
+
+async function closeWebSocket(sendEndOfStream = true) {
+    if (webSocket) {
+        if (sendEndOfStream && webSocket.readyState === WebSocket.OPEN) {
+            debugLog("Sending end_of_stream to WebSocket.");
+            sendWebSocketMessage({ type: 'end_of_stream' });
+            // Wait a moment for the message to be sent before closing
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
+        if (webSocket.readyState === WebSocket.OPEN || webSocket.readyState === WebSocket.CONNECTING) {
+           webSocket.close(1000, "Client initiated disconnect");
+        }
+        webSocket = null; // Ensure it's nulled after calling close
+        debugLog('WebSocket connection closed or closing initiated.');
     }
-    
-    if (window.audioContext.state === 'suspended') {
-        await window.audioContext.resume();
-    }
+}
 
-    // The scriptNode buffer size (e.g., 4096) determines how often onaudioprocess is called.
-    // It does not need to be SamplesPerChunk.
-    window.scriptNode = window.audioContext.createScriptProcessor(4096, 1, 1);
-    window.scriptNode.onaudioprocess = (audioProcessingEvent) => {
-      if (!window.isListening || !window.wsAudioSocket || window.wsAudioSocket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-
-      const inputData = audioProcessingEvent.inputBuffer.getChannelData(0); // Float32Array
-
-      // Append new data to the persistent buffer
-      const currentPersistentBuffer = window.audioBufferForChunking;
-      const combinedBuffer = new Float32Array(currentPersistentBuffer.length + inputData.length);
-      combinedBuffer.set(currentPersistentBuffer);
-      combinedBuffer.set(inputData, currentPersistentBuffer.length);
-      window.audioBufferForChunking = combinedBuffer;
-
-      // Process and send chunks
-      while (window.audioBufferForChunking.length >= SamplesPerChunk) {
-        const chunkToProcess = window.audioBufferForChunking.slice(0, SamplesPerChunk);
-        window.audioBufferForChunking = window.audioBufferForChunking.slice(SamplesPerChunk);
-
-        const pcmData = new Int16Array(SamplesPerChunk);
-        for (let i = 0; i < SamplesPerChunk; i++) {
-          pcmData[i] = Math.max(-32768, Math.min(32767, chunkToProcess[i] * 32768));
+function sendWebSocketMessage(messageObject) {
+    if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+        try {
+            webSocket.send(JSON.stringify(messageObject));
+        } catch (e) {
+            console.error("Error sending JSON message via WebSocket:", e, messageObject);
         }
-
-        if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
-          window.wsAudioSocket.send(pcmData.buffer); // Sends 320 samples * 2 bytes/sample = 640 bytes
-        }
-      }
-      
-      // RMS calculation for visualization (using the raw inputData from the event for responsiveness)
-      let sumSquares = 0.0;
-      for (const sample of inputData) {
-          sumSquares += sample * sample;
-      }
-      const rms = Math.sqrt(sumSquares / inputData.length);
-      this.updateAudioVisualization(rms);
-    };
-
-    // Get microphone access and connect to the audio processing pipeline
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        navigator.mediaDevices.getUserMedia({ audio: true })
-            .then(stream => {
-                window.audioStream = stream; // Store the stream globally
-                window.sourceNode = window.audioContext.createMediaStreamSource(stream);
-                window.sourceNode.connect(window.scriptNode);
-                window.scriptNode.connect(window.audioContext.destination); // Important: connect to destination
-                
-                debugLog('Microphone access granted and audio pipeline connected.');
-                status.textContent = 'Verbunden. Aufnahme aktiv.';
-                stopBtn.textContent = 'Aufnahme stoppen';
-                window.isListening = true; 
-                window.recordingEnabled = true;
-            })
-            .catch(err => {
-                console.error('Error acquiring media for WebSocket ASR:', err);
-                status.textContent = 'Fehler beim Mikrofonzugriff.';
-                debugLog(`Error acquiring media: ${err.toString()}`);
-                stopBtn.textContent = 'Mikrofonzugriff erneut versuchen';
-                window.isListening = false;
-                window.recordingEnabled = false;
-            });
     } else {
-        console.error('getUserMedia not supported on this browser.');
-        status.textContent = 'getUserMedia nicht unterstützt.';
-        debugLog('getUserMedia not supported.');
-        window.isListening = false;
-        window.recordingEnabled = false;
+        // console.warn('[WebSocket] Attempted to send JSON message but WebSocket is not open:', messageObject);
     }
-  },
-  startHttpPipeline: function() {
-    if (!window.audioStream || !window.webSocket || window.webSocket.readyState !== WebSocket.OPEN) {
-      debugLog('Cannot start HTTP pipeline: Audio stream or WebSocket not ready.');
-      if (window.webSocket && window.webSocket.readyState !== WebSocket.OPEN) {
-          status.textContent = 'Verbindung verloren. Neu verbinden.';
-          stopBtn.textContent = 'Neu verbinden';
-      }
-      return;
+}
+
+function sendAudioChunkToServer(float32ArrayChunk) {
+    if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+        // Convert Float32Array to Int16Array (PCM16)
+        const pcmData = new Int16Array(float32ArrayChunk.length);
+        for (let i = 0; i < float32ArrayChunk.length; i++) {
+            pcmData[i] = Math.max(-32768, Math.min(32767, float32ArrayChunk[i] * 32768));
+        }
+        try {
+            webSocket.send(pcmData.buffer); // Send as ArrayBuffer
+        } catch (e) {
+            console.error("Error sending audio chunk via WebSocket:", e);
+        }
+    } else {
+        // console.warn('[WebSocket] Attempted to send audio chunk but WebSocket is not open.');
     }
-    window.isListening = true;
-    window.sourceNode = window.audioContext.createMediaStreamSource(window.audioStream);
-    window.sourceNode.connect(window.scriptNode);
-    window.scriptNode.connect(window.audioContext.destination); // Connect to destination to keep processing alive
-    debugLog('Audio pipeline started. Listening...');
-    status.textContent = 'Höre zu...';
-    stopBtn.textContent = 'Aufnahme stoppen';
-    // Reset latency tracking for new interaction
-    if (window.optimizationManager) window.optimizationManager.resetLatencyStats(); 
-    if (window.optimizationManager) window.optimizationManager.trackLatency('recordingStart');
-  },
-  stopHttpPipeline: function() {
-    window.isListening = false;
-    if (window.sourceNode) {
-      window.sourceNode.disconnect();
-      window.sourceNode = null;
-    }
-    if (window.scriptNode) {
-      window.scriptNode.disconnect();
-      // scriptNode is not nulled here, as it might be reused by initServerASR
-    }
-    // Don't close WebSocket here if we want to send a final message or keep it for next recording
-    // webSocket.close(); 
-    debugLog('Audio pipeline stopped.');
-    status.textContent = 'Bereit für nächste Aufnahme';
-    stopBtn.textContent = 'Aufnahme starten';
-  },
-  updateAudioVisualization: function(rms) {
-    const currentAudioLevel = document.getElementById('currentAudioLevel');
-    const currentAudioValue = document.getElementById('currentAudioValue');
-    if (currentAudioLevel && currentAudioValue) {
-        const percentage = Math.min(100, (rms * 500)); // Adjust multiplier for sensitivity
-        currentAudioLevel.style.width = percentage + '%';
-        currentAudioValue.textContent = rms.toFixed(3);
-    }
-    // Update noise stats if debug panel is open
-    // This part might be better if VAD events from backend provide noise floor and dynamic threshold
-  },
-  handleServerEvent: function(eventData) {
-    debugLog(`[WebSocket] Received from server:`, eventData);
-    switch (eventData.type) {
-        case 'vad_settings_updated':
-            debugLog('VAD settings updated by server:', eventData.payload);
-            if (window.optimizationManager && typeof window.optimizationManager.updateVadSettingsUIFromState === 'function') {
-                // Update the global settings object first
-                if (eventData.payload) {
-                    for (const key in eventData.payload) {
-                        if (window.optimizationSettings.hasOwnProperty(key)) {
-                            // Basic type conversion based on existing type in window.optimizationSettings
-                            if (typeof window.optimizationSettings[key] === 'boolean') {
-                                window.optimizationSettings[key] = Boolean(eventData.payload[key]);
-                            } else if (typeof window.optimizationSettings[key] === 'number') {
-                                window.optimizationSettings[key] = Number(eventData.payload[key]);
-                            } else {
-                                window.optimizationSettings[key] = eventData.payload[key];
-                            }
+}
+
+async function handleWebSocketMessage(event) {
+    if (typeof event.data === 'string') {
+        try {
+            const msg = JSON.parse(event.data);
+            // debugLog('Received JSON from server:', msg); // Can be too verbose
+
+            switch (msg.type) {
+                case 'vad_settings_updated':
+                case 'pipeline_options_updated':
+                    debugLog(`Server confirmed ${msg.type}:`, msg.payload);
+                    if (window.optimizationManager && typeof window.optimizationManager.updateSettingsFromServer === 'function') {
+                        window.optimizationManager.updateSettingsFromServer(msg.payload);
+                    }
+                    break;
+                case 'transcription_update':
+                    if (window.uiManager && typeof window.uiManager.updateRecognizedText === 'function') {
+                        window.uiManager.updateRecognizedText(msg.payload.text, msg.payload.isFinal);
+                    }
+                    if (msg.payload.isFinal && msg.payload.text) {
+                        debugLog("Final transcription received:", msg.payload.text);
+                        // Latency tracking for transcription can happen here or in uiManager
+                        if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
+                            window.optimizationManager.trackLatency('transcriptionReceived');
                         }
                     }
-                }
-                window.optimizationManager.updateVadSettingsUIFromState();
-            } else {
-                console.warn('optimizationManager not found or updateVadSettingsUIFromState is not a function when trying to update VAD sliders from server event.');
-            }
-            break;
-        case 'pipeline_options_updated':
-            debugLog('Pipeline options updated by server:', eventData.payload);
-            if (window.optimizationManager && typeof window.optimizationManager.updateOptimizationUIFromSettings === 'function') {
-                 // Update the global settings object first
-                if (eventData.payload) {
-                    for (const key in eventData.payload) {
-                        if (window.optimizationSettings.hasOwnProperty(key)) {
-                             // Basic type conversion based on existing type in window.optimizationSettings
-                            if (typeof window.optimizationSettings[key] === 'boolean') {
-                                window.optimizationSettings[key] = Boolean(eventData.payload[key]);
-                            } else if (typeof window.optimizationSettings[key] === 'number') {
-                                window.optimizationSettings[key] = Number(eventData.payload[key]);
-                            } else {
-                                window.optimizationSettings[key] = eventData.payload[key];
+                    break;
+                case 'final_transcription': // Deprecated if transcription_update with isFinal=true is used
+                     if (window.uiManager && typeof window.uiManager.updateRecognizedText === 'function') {
+                        window.uiManager.updateRecognizedText(msg.payload.prompt, true);
+                        debugLog("Legacy final_transcription received:", msg.payload.prompt);
+                    }
+                    break;
+                case 'llm_token':
+                    if (window.uiManager && typeof window.uiManager.appendTokenToBotMessage === 'function') {
+                        // Ensure a bot message container exists, using current model/voice
+                        if (!window.uiManager.currentBotMessageDiv) {
+                             if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
+                                window.optimizationManager.trackLatency('llmResponseStart');
                             }
+                            window.uiManager.createBotMessage("", currentBotModel, currentBotVoice);
+                        }
+                        window.uiManager.appendTokenToBotMessage(msg.payload.token);
+                    }
+                    break;
+                case 'llm_reply': // Final LLM reply (if not fully streamed or for summary)
+                    debugLog('Received final LLM reply object:', msg.payload);
+                    if (window.uiManager && typeof window.uiManager.finalizeBotMessage === 'function') {
+                        // If streaming was not used or to confirm full text
+                        window.uiManager.finalizeBotMessage(msg.payload.reply, currentBotModel, currentBotVoice);
+                    }
+                    if (msg.payload.latency_info && window.uiManager && typeof window.uiManager.updateMessageLatency === 'function') {
+                        window.uiManager.updateMessageLatency(msg.payload.latency_info);
+                    }
+                    // Determine if TTS should play based on server hint and client settings
+                    let pipelineOpts = {};
+                    if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
+                        pipelineOpts = window.optimizationManager.getCurrentPipelineOptions();
+                    }
+                    const clientWantsTTS = !pipelineOpts.DisableTts;
+                    const serverWillSendTTS = !msg.payload.disableTts; // Server hint
+                    isTTSSpeaking = clientWantsTTS && serverWillSendTTS;
+                    if (isTTSSpeaking) {
+                        debugLog("TTS will play for this reply.");
+                         if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
+                            window.optimizationManager.trackLatency('ttsStart');
+                        }
+                    } else {
+                        debugLog("TTS is disabled for this reply (client or server).");
+                         if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
+                            window.optimizationManager.trackLatency('ttsEnd'); // No TTS, so it ends immediately
                         }
                     }
-                }
-                window.optimizationManager.updateOptimizationUIFromSettings();
-            } else {
-                console.warn('optimizationManager not found or updateOptimizationUIFromSettings is not a function when trying to update pipeline UI from server event.');
+                    break;
+                case 'audio_chunk_info':
+                    lastReceivedAudioChunkIndex = msg.payload.index;
+                    if (msg.payload.isFinal) {
+                        allAudioChunksReceived = true;
+                    }
+                    isTTSSpeaking = true; // Actively receiving TTS data
+                    break;
+                case 'audio_stream_end':
+                    debugLog('Server signaled audio_stream_end for current TTS.');
+                    allAudioChunksReceived = true;
+                    // isTTSSpeaking will be set to false by the ttsPlayLoop when all chunks are played
+                    // or if resetTTSPlaybackState is called.
+                    // However, if no chunks were ever played (e.g. empty TTS), reset it here.
+                    if (indexedAudioChunks.size === 0 && !isCurrentlyPlayingTTS) {
+                        debugLog('All TTS chunks played or none to play after audio_stream_end. Resetting TTS state.');
+                        resetTTSPlaybackState(); // This sets isTTSSpeaking to false
+                         if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
+                            window.optimizationManager.trackLatency('ttsEnd');
+                        }
+                    }
+                    break;
+                case 'error':
+                    console.error('[WebSocket] Server error message:', msg.payload.message);
+                    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+                        window.uiManager.showStatus(`Server Fehler: ${msg.payload.message}`, true);
+                    }
+                    break;
+                case 'ping':
+                    sendWebSocketMessage({ type: 'pong', timestamp: msg.timestamp });
+                    break;
+                default:
+                    console.warn('Received unhandled JSON message type:', msg.type, msg);
             }
-            break;
-        case 'prompt':
-            if (window.uiManager && typeof window.uiManager.updateRecognizedText === 'function') {
-                window.uiManager.updateRecognizedText(eventData.payload.prompt, false);
-            } else {
-                console.error('uiManager.updateRecognizedText is not available');
-            }
-            break;
-        case 'reply':
-            debugLog('Received final reply from server:', eventData.payload);
-            const replyText = eventData.payload && eventData.payload.reply ? eventData.payload.reply : '';
-            if (window.uiManager && typeof window.uiManager.updateBotMessage === 'function') {
-                window.uiManager.updateBotMessage(replyText, true); // true for final
-            } else {
-                console.error('uiManager.updateBotMessage is not available');
-            }
-            let latencyDisplay = "N/A";
-            if (eventData.payload && eventData.payload.latency_info) {
-                const { transcriptionTime, llmTime, totalTime } = eventData.payload.latency_info;
-                latencyDisplay = `Trans: ${transcriptionTime}ms, LLM: ${llmTime}ms, Total: ${totalTime}ms`;
-            }
-            if (window.uiManager && typeof window.uiManager.updateLatencyDisplay === 'function') {
-                window.uiManager.updateLatencyDisplay(latencyDisplay);
-            } else {
-                console.error('uiManager.updateLatencyDisplay is not available');
-            }
-            break;
-        case 'token':
-          if (!window.currentBotMessageElement) {
-              if (window.uiManager && typeof window.uiManager.createBotMessage === 'function') {
-                window.currentBotMessageElement = window.uiManager.createBotMessage('', window.optimizationSettings.chatModel, window.optimizationSettings.ttsVoice);
-              } else {
-                console.error('uiManager.createBotMessage is not available');
-              }
-          }
-          if (window.currentBotMessageElement) {
-              const textElement = window.currentBotMessageElement.querySelector('.message-content');
-              if (textElement) {
-                  if (textElement.textContent === '') { // Check for empty if that's the initial state
-                      textElement.textContent = eventData.payload.token;
-                  } else {
-                      textElement.textContent += eventData.payload.token;
-                  }
-                  if (window.uiManager && typeof window.uiManager.scrollToBottom === 'function') {
-                    window.uiManager.scrollToBottom();
-                  } else {
-                    console.error('uiManager.scrollToBottom is not available');
-                  }
-              }
-          }
-          break;
-        case 'audio-chunk-info':
-          // Corrected: Use eventData.payload instead of undefined 'payload'
-          if (eventData.payload && eventData.payload.index !== undefined) {
-              window.lastReceivedAudioChunkIndex = eventData.payload.index; 
-              console.log(`%c[AUDIO-DEBUG] Received audio-chunk-info for index: ${eventData.payload.index}. Duration: ${eventData.payload.durationMs}ms. IsFinal: ${eventData.payload.isFinal}. Next binary data will be for this chunk.`, 'color: #8e44ad; font-weight: bold;');
-          } else {
-              console.warn('[AUDIO-DEBUG] Received audio-chunk-info with missing index or payload:', eventData);
-          }
-          break;
-        case 'audio-done':
-          console.log('%c[AUDIO-SYSTEM] Explicit Audio-done JSON event received from server.', 'color: #3498db; font-weight: bold;');
-          allAudioChunksReceived = true; 
-          if (indexedAudioChunks.size === 0 && !isPlaying) { 
-              console.log('%c[AUDIO-DEBUG] All received audio chunks have been played (audio-done received). Resetting state.', 'color: red; font-weight: bold;');
-              if (typeof resetPlaybackState === 'function') {
-                resetPlaybackState();
-              }
-          }
-          break;
-        case 'done':
-          console.log('Received done event from server:', eventData.payload);
-          window.currentBotMessageElement = null; 
-          break;
-        default:
-          // Corrected: Use eventData.type and eventData.payload for logging unhandled events
-          console.warn(`Received unhandled event type: ${eventData.type}`, eventData.payload);
+        } catch (e) {
+            console.error("Error parsing JSON from server or handling message:", e, event.data);
+        }
+    } else if (event.data instanceof ArrayBuffer) { // Binary data for Progressive TTS
+        // debugLog(`Received binary audio data (ArrayBuffer), size: ${event.data.byteLength} bytes. Expected for chunk index: ${lastReceivedAudioChunkIndex}`);
+        const ac = getAudioContext();
+        if (!ac) {
+            console.error("Cannot process binary audio, AudioContext not available.");
+            return;
+        }
+        if (lastReceivedAudioChunkIndex === -1) {
+            console.error("Received binary audio data, but lastReceivedAudioChunkIndex is not set. 'audio_chunk_info' might be missing or out of order.");
+            return;
+        }
+        try {
+            const audioBuffer = await ac.decodeAudioData(event.data);
+            indexedAudioChunks.set(lastReceivedAudioChunkIndex, audioBuffer);
+            // debugLog(`Queued TTS audio chunk #${lastReceivedAudioChunkIndex}. Total queued: ${indexedAudioChunks.size}`);
+            lastReceivedAudioChunkIndex = -1; // Reset for the next 'audio_chunk_info'
+            ttsPlayLoop();
+        } catch (e) {
+            console.error('Error decoding audio data for TTS:', e, event.data);
+        }
+    } else {
+        console.warn("[WebSocket] Received unknown message type:", event.data);
     }
-  }
-};
+}
+
+
+function updateUIAfterAudioInitAttempt(success, reason = '') {
+    if (window.uiManager && typeof window.uiManager.updateButtonStates === 'function') {
+        window.uiManager.updateButtonStates(isRecordingActive); // Pass current recording state
+    }
+    if (success) {
+        if (window.uiManager && typeof window.uiManager.hideStatus === 'function') {
+            window.uiManager.hideStatus();
+        }
+        debugLog(`Audio initialization/start successful. isRecordingActive: ${isRecordingActive}. Reason: ${reason || 'N/A'}`);
+    } else {
+        if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+            let message = "Mikrofonzugriff oder Audio-Initialisierung fehlgeschlagen.";
+            if (reason === 'AudioContext blocked') {
+                message = "Audiowiedergabe blockiert. Bitte klicken Sie auf die Aufnahme-Schaltfläche.";
+            } else if (reason === 'Microphone access denied') {
+                message = "Mikrofonzugriff verweigert. Bitte Zugriff erlauben und erneut versuchen.";
+            } else if (reason && reason.toLowerCase().includes('audiocontext not running')) {
+                message = `Audio System nicht bereit. Bitte klicken Sie auf die Aufnahme-Schaltfläche. (${reason})`;
+            } else if (reason) {
+                message = `Fehler: ${reason}.`;
+            }
+            window.uiManager.showStatus(message, true);
+        }
+        console.warn(`Audio initialization/start failed: ${reason}`);
+    }
+}
+
+function updateUIAfterStopRecording() {
+    if (window.uiManager && typeof window.uiManager.updateButtonStates === 'function') {
+        window.uiManager.updateButtonStates(false); // Explicitly false as recording has stopped
+    }
+    // Optionally, show a status if it wasn't an error that stopped it
+    // if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+    //     window.uiManager.showStatus("Aufnahme gestoppt.");
+    // }
+    debugLog("UI updated after stopping recording.");
+}
+
+// --- Settings Change Handler ---
+export async function handleSettingsChange({ type }) {
+    debugLog(`[AUDIO-SYSTEM] handleSettingsChange called with type: ${type}`);
+    if (!window.optimizationManager) {
+        console.error("[AUDIO-SYSTEM] optimizationManager not found. Cannot handle settings change.");
+        return;
+    }
+
+    if (type === 'pipeline') {
+        debugLog("[AUDIO-SYSTEM] Pipeline settings changed (e.g., model, voice, language, TTS mode).");
+        if (isRecordingActive) {
+            debugLog("[AUDIO-SYSTEM] Recording is active. Restarting recording with new pipeline settings.");
+            if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+                window.uiManager.showStatus("Pipeline-Einstellungen geändert. Audio wird neu gestartet...", false);
+            }
+            await stopRecording(false); // Stop current recording without sending end_of_stream
+            // Add a small delay to ensure resources are released before reconnecting
+            await new Promise(resolve => setTimeout(resolve, 250)); 
+            await startRecording(); // This will use the new settings from optimizationManager
+        } else {
+            debugLog("[AUDIO-SYSTEM] Recording not active. New pipeline settings will be used on next start.");
+            // Optionally, if WebSocket is connected but idle, could close and reopen it,
+            // but typically it's better to do it on next recording start.
+            if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+                debugLog("[AUDIO-SYSTEM] Closing idle WebSocket due to pipeline settings change.");
+                await closeWebSocket(false);
+            }
+        }
+    } else if (type === 'vad') {
+        debugLog("[AUDIO-SYSTEM] VAD settings changed.");
+        const pipelineOptions = window.optimizationManager.getCurrentPipelineOptions ? window.optimizationManager.getCurrentPipelineOptions() : { DisableVad: false };
+        if (!pipelineOptions.DisableVad) {
+            if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+                const vadSettings = window.optimizationManager.getCurrentVadSettings();
+                if (vadSettings) {
+                    sendWebSocketMessage({ type: 'vad_settings', payload: vadSettings });
+                    debugLog("[AUDIO-SYSTEM] Sent updated VAD settings to server.", vadSettings);
+                }
+            } else {
+                debugLog("[AUDIO-SYSTEM] WebSocket not open or VAD disabled. New VAD settings will be sent on next connection/enable.");
+            }
+        } else {
+            debugLog("[AUDIO-SYSTEM] VAD is currently disabled by pipeline options. No VAD settings sent.");
+        }
+    }
+}
+
+// --- General Audio Playback (e.g., for non-progressive TTS if server sends full audio files) ---
+// This is a simpler queue for playing single audio buffers if needed.
+// Progressive TTS uses indexedAudioChunks and playLoop.
+let generalAudioQueue = [];
+let isGeneralAudioPlaying = false;
+
+export async function playGeneralAudio(arrayBuffer) {
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        debugLog("playGeneralAudio called with empty data.");
+        return;
+    }
+    const ac = getAudioContext();
+    if (!ac) {
+        console.error("Cannot play general audio, AudioContext not available.");
+        return;
+    }
+    try {
+        const audioBuffer = await ac.decodeAudioData(arrayBuffer.slice(0)); // Use slice(0) to copy buffer for safety
+        generalAudioQueue.push(audioBuffer);
+        if (!isGeneralAudioPlaying) {
+            processGeneralAudioQueue();
+        }
+    } catch (e) {
+        console.error("Error decoding general audio data:", e);
+    }
+}
+
+async function processGeneralAudioQueue() {
+    if (generalAudioQueue.length === 0) {
+        isGeneralAudioPlaying = false;
+        return;
+    }
+    isGeneralAudioPlaying = true;
+    const audioBuffer = generalAudioQueue.shift();
+    const ac = getAudioContext();
+    const sourceNode = ac.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(ac.destination);
+    sourceNode.onended = () => {
+        processGeneralAudioQueue(); // Play next
+    };
+    sourceNode.start();
+    debugLog("Playing general audio from queue.");
+}
+
+
+// --- DOMContentLoaded ---
+// It's generally better if main.js or another entry point explicitly calls initAudioSystem.
+// However, if this script is loaded standalone and needs to self-initialize:
+/*document.addEventListener('DOMContentLoaded', () => {
+    debugLog("DOMContentLoaded event. audio-system.js is ready.");
+    // If uiManager and optimizationManager are expected to be ready, init here.
+    // Otherwise, ensure main.js calls initAudioSystem() after all managers are set up.
+    // initAudioSystem(); // Consider if this should be called here or by an external orchestrator.
+});*/
+
+// Example of how ui-manager.js might interact:
+/*
+// In ui-manager.js (conceptual)
+import { startRecording, stopRecording, restartAudioSystemAndClearState, stopAllAudioPlayback } from './audio-system.js';
+
+document.getElementById('startRecordBtn').addEventListener('click', startRecording);
+document.getElementById('stopRecordBtn').addEventListener('click', () => stopRecording(true));
+document.getElementById('restartSystemBtn').addEventListener('click', restartAudioSystemAndClearState);
+document.getElementById('stopTTSBtn').addEventListener('click', stopAllAudioPlayback);
+*/

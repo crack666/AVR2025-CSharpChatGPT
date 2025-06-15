@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.IO;
 using System.Net.Http;
@@ -23,32 +24,78 @@ namespace VoiceAssistant.Plugins.OpenAI
             _logger = logger;
         }
 
-        public async Task<string> RecognizeAsync(Stream audioStream, string contentType, string fileName)
+        public async Task<string> RecognizeAsync(Stream audioStream, string language, string? contentType = null, string? fileName = null)
         {
-            // Log request details for debugging
             long dataLength = audioStream.CanSeek ? audioStream.Length : -1;
-            _logger.LogInformation("Whisper API request: model=whisper-1, contentType={ContentType}, fileName={FileName}, dataLength={DataLength}",
-                contentType, fileName, dataLength);
+            // Use a default filename if null or empty, otherwise use the provided filename.
+            string effectiveFileName = fileName ?? "audio.wav"; // Simplified null coalescing
+            if (string.IsNullOrEmpty(effectiveFileName)) // Ensure it's not empty after coalescing (though ?? "audio.wav" prevents this)
+            {
+                effectiveFileName = "audio.wav";
+            }
+            
+            // Ensure the filename has an extension, default to .wav if not present or if content type suggests it.
+            if (!Path.HasExtension(effectiveFileName) || 
+                (contentType == "audio/wav" && Path.GetExtension(effectiveFileName)?.ToLowerInvariant() != ".wav"))
+            {
+                effectiveFileName = Path.ChangeExtension(effectiveFileName, ".wav");
+            }
+            // If content type is mp3, ensure extension is .mp3
+            else if (contentType == "audio/mpeg" && Path.GetExtension(effectiveFileName)?.ToLowerInvariant() != ".mp3")
+            {
+                 effectiveFileName = Path.ChangeExtension(effectiveFileName, ".mp3");
+            }
+
+            _logger.LogInformation("Whisper API request: model=whisper-1, language={Language}, dataLength={DataLength}, fileName={FileName}, contentType={ContentType}",
+                language, dataLength, effectiveFileName, contentType);
+
             using var multipart = new MultipartFormDataContent();
             multipart.Add(new StringContent("whisper-1"), "model");
-            var fileContent = new StreamContent(audioStream);
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
-            multipart.Add(fileContent, "file", fileName);
+
+            if (!string.IsNullOrEmpty(language))
+            {
+                multipart.Add(new StringContent(language), "language");
+            }
+
+            var streamContent = new StreamContent(audioStream);
+            
+            // Validate and set ContentType
+            string validContentType = "audio/wav"; // Default to audio/wav
+            if (!string.IsNullOrEmpty(contentType))
+            {
+                try
+                {
+                    // Attempt to parse the provided contentType to ensure it's valid
+                    var parsedMediaType = new MediaTypeHeaderValue(contentType);
+                    validContentType = parsedMediaType.ToString(); // Use the parsed (and validated) value
+                }
+                catch (FormatException)
+                {
+                    _logger.LogWarning("Invalid contentType '{ContentType}' provided. Defaulting to '{DefaultContentType}'. Check the calling code.", contentType, validContentType);
+                    // Keep the default "audio/wav" if parsing fails
+                }
+            }
+            streamContent.Headers.ContentType = new MediaTypeHeaderValue(validContentType);
+            
+            multipart.Add(streamContent, "file", effectiveFileName);
 
             var response = await _httpClient.PostAsync("https://api.openai.com/v1/audio/transcriptions", multipart);
             var body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
             {
-                // Bubble up detailed error for debugging
+                _logger.LogError("Whisper API error {StatusCode}: {Body}. Request details: model=whisper-1, language={Language}, fileName={FileName}, contentType={ContentType}", 
+                                (int)response.StatusCode, body, language, effectiveFileName, contentType);
                 throw new ApplicationException($"Whisper API error {(int)response.StatusCode}: {body}");
             }
             using var doc = JsonDocument.Parse(body);
             if (!doc.RootElement.TryGetProperty("text", out var textProp))
             {
+                _logger.LogError("Whisper API response missing 'text' field: {Body}. Request details: model=whisper-1, language={Language}, fileName={FileName}, contentType={ContentType}", 
+                                body, language, effectiveFileName, contentType);
                 throw new ApplicationException($"Whisper API response missing 'text' field: {body}");
             }
             var resultText = textProp.GetString() ?? string.Empty;
-            _logger.LogInformation("Whisper API response: text={ResponseText}", resultText);
+            _logger.LogInformation("Whisper API response: text=\"{ResponseText}\" for language {Language}, fileName {FileName}", resultText, language, effectiveFileName);
             return resultText;
         }
     }

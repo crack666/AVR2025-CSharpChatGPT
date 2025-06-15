@@ -1,139 +1,190 @@
+// Import functions from audio-system.js
+import { startRecording, stopRecording, restartAudioSystemAndClearState, stopAllAudioPlayback } from './audio-system.js';
+
 // UI Manager
 const uiManager = {
   init: function() {
-    // Setup event listeners
+    // 1. Assign DOM elements to instance properties FIRST
+    this.stopBtn = document.getElementById('stopBtn');
+    this.clearBtn = document.getElementById('clearBtn');
+    this.debugBtn = document.getElementById('debugBtn');
+    this.optimizationBtn = document.getElementById('optimizationBtn');
+    this.chatLog = document.getElementById('chatLog');
+    this.status = document.getElementById('status');
+    this.modelSel = document.getElementById('model');
+    this.voiceSel = document.getElementById('voice');
+    this.debugPanel = document.getElementById('debugPanel');
+    this.optimizationPanel = document.getElementById('optimizationPanel');
+    this.currentModelEl = document.getElementById('currentModel');
+    this.stopAudioPlaybackBtn = document.getElementById('stopAudioPlaybackBtn');
+    this.restartAudioSysBtn = document.getElementById('restartAudioSysBtn');
+
+    // 2. THEN setup event listeners that use these properties
     this.setupEventListeners();
     
-    // Load model select
-    const loadPromise = loadModels();
-    const currentModelEl = document.getElementById('currentModel');
-    modelSel.addEventListener('change', () => { 
-      if (currentModelEl) currentModelEl.textContent = modelSel.value; 
-    });
-    loadPromise.then(() => { 
-      if (currentModelEl) currentModelEl.textContent = modelSel.value; 
-    });
+    // 3. Other initializations like loading models and voices
+    // Ensure modelSel is found before adding event listener or calling loadModels if it depends on it.
+    if (this.modelSel) {
+        const loadPromise = loadModels(); // Assuming loadModels is defined globally or imported
+        const currentModelElRef = this.currentModelEl; // Use the already queried element
+
+        this.modelSel.addEventListener('change', () => { 
+          if (currentModelElRef) currentModelElRef.textContent = this.modelSel.value; 
+        });
+        loadPromise.then(() => { 
+          if (currentModelElRef) currentModelElRef.textContent = this.modelSel.value; 
+        });
+    } else {
+        console.warn("[UI-MGR] Model select element (#model) not found during init.");
+    }
     
     // Initialize speech synthesis voices
+    // Assuming populateVoices is defined globally or imported
     speechSynthesis.onvoiceschanged = populateVoices;
     populateVoices();
+
+    console.log("[UI-MGR] UI Manager initialized.");
   },
   
   setupEventListeners: function() {
-    // Clear chat button
-    clearBtn.addEventListener('click', async () => {
-      try {
-        // Save reference to the original chatLog element
-        const originalChatLog = document.getElementById('chatLog');
-        
-        // Create a completely new chatLog element
-        const newChatLog = document.createElement('div');
-        newChatLog.id = 'chatLog';
-        newChatLog.className = originalChatLog.className;
-        
-        // Replace the old chatLog with the new one
-        originalChatLog.parentNode.replaceChild(newChatLog, originalChatLog);
-        
-        // Update all global references to UI elements
-        window.chatLog = newChatLog;
-        window.refreshUIElements();
-        
-        // Update status
-        window.status.textContent = 'Chat wird geleert...';
-
-        // Reset audio playback system
-        if (window.audioSystem && typeof window.audioSystem.resetAudioPlayback === 'function') {
-          debugLog("Calling audioSystem.resetAudioPlayback().");
-          window.audioSystem.resetAudioPlayback();
-        }
-        
-        // Call API to clear backend chat history
-        const response = await fetch('/api/clearChat', { 
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+    // Main recording Start/Stop Button
+    if (this.stopBtn) {
+        this.stopBtn.addEventListener('click', () => {
+            if (this.stopBtn.textContent === 'Aufnahme starten' || this.stopBtn.textContent === 'Neu verbinden') {
+                console.log("[UI-MANAGER] Start recording button clicked.");
+                startRecording();
+            } else {
+                console.log("[UI-MANAGER] Stop recording button clicked.");
+                stopRecording(true); // true to send end_of_stream
+            }
         });
-        
-        if (response.ok) {
-          // Reset global state
-          window.currentLatencyElem = null;
-          window.allAudioElements = [];
-          window.chunks = [];
-          
-          // Close any open EventSource connections
-          if (window.eventSource) {
-            window.eventSource.close();
-            window.eventSource = null;
+    } else {
+        console.warn("[UI-MGR] Main recording button (#stopBtn) not found during setupEventListeners.");
+    }
+
+    // Clear chat button
+    if (this.clearBtn) {
+      this.clearBtn.addEventListener('click', async () => {
+        try {
+          const originalChatLog = this.chatLog;
+          if (!originalChatLog) {
+            console.error("[UI-MGR] ChatLog element not found for clearing.");
+            return;
           }
           
-          // Make sure we're not blocking audio processing
-          window.isProcessingOrPlayingAudio = false;
-          window.speakingSegment = false;
-          window.silenceStart = null;
+          const newChatLog = document.createElement('div');
+          newChatLog.id = 'chatLog';
+          newChatLog.className = originalChatLog.className;
           
-          // Add a welcome message to the new chat
-          const placeholderMessage = document.createElement('div');
-          placeholderMessage.className = 'welcome-message';
-          placeholderMessage.innerHTML = '<p>Chat wurde geleert. Beginnen Sie eine neue Konversation...</p>';
-          newChatLog.appendChild(placeholderMessage);
+          originalChatLog.parentNode.replaceChild(newChatLog, originalChatLog);
           
-          // Set a delayed ready status
-          setTimeout(() => {
-            window.status.textContent = 'Chat erfolgreich geleert';
-          }, 300);
+          this.chatLog = newChatLog; // Update internal reference
           
-          debugLog("Chat history cleared in both frontend and backend");
+          if (typeof refreshUIElements === 'function') refreshUIElements();
           
-          // Restart the audio capture system to make sure everything is fresh
-          setTimeout(() => {
-            audioSystem.restartAudioCapture();
-          }, 500);
-        } else {
-          window.status.textContent = 'Frontend geleert, Backend-Fehler';
-          debugLog(`Failed to clear backend chat: ${response.status} ${response.statusText}`);
+          if (this.status) this.status.textContent = 'Chat wird geleert...';
+
+          console.log("[UI-MANAGER] Clearing chat, stopping all audio playback.");
+          stopAllAudioPlayback();
+          
+          const response = await fetch('/api/clearChat', { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+          
+          if (response.ok) {
+            const placeholderMessage = document.createElement('div');
+            placeholderMessage.className = 'welcome-message';
+            placeholderMessage.innerHTML = '<p>Chat wurde geleert. Beginnen Sie eine neue Konversation...</p>';
+            this.chatLog.appendChild(placeholderMessage);
+            
+            setTimeout(() => {
+              if (this.status) this.status.textContent = 'Chat erfolgreich geleert';
+            }, 300);
+            
+            console.log("[UI-MANAGER] Chat history cleared. Restarting audio system.");
+            setTimeout(() => {
+              restartAudioSystemAndClearState();
+            }, 500);
+          } else {
+            if (this.status) this.status.textContent = 'Frontend geleert, Backend-Fehler';
+            console.error(`[UI-MANAGER] Failed to clear backend chat: ${response.status} ${response.statusText}`);
+          }
+        } catch (error) {
+          if (this.status) this.status.textContent = 'Frontend geleert, Backend-Fehler';
+          console.error(`[UI-MANAGER] Error clearing backend chat: ${error.message}`);
         }
-      } catch (error) {
-        window.status.textContent = 'Frontend geleert, Backend-Fehler';
-        debugLog(`Error clearing backend chat: ${error.message}`);
-      }
-    });
+      });
+    } else {
+        console.warn("[UI-MGR] Clear chat button (#clearBtn) not found during setupEventListeners.");
+    }
     
+    // Stop Audio Playback Button
+    if (this.stopAudioPlaybackBtn) {
+        this.stopAudioPlaybackBtn.addEventListener('click', () => {
+            console.log("[UI-MANAGER] Stop all audio playback button clicked.");
+            stopAllAudioPlayback();
+            if (this.status) this.status.textContent = 'Audio Wiedergabe gestoppt.';
+            // Optionally hide the button again if it's only shown during playback
+            // this.stopAudioPlaybackBtn.style.display = 'none'; 
+        });
+    } else {
+        console.warn("[UI-MGR] Stop Audio Playback button (#stopAudioPlaybackBtn) not found by ui-manager during setupEventListeners.");
+    }
+
+    // Restart Audio System Button
+    if (this.restartAudioSysBtn) {
+        this.restartAudioSysBtn.addEventListener('click', () => {
+            console.log("[UI-MANAGER] Restart audio system button clicked.");
+            if (this.status) this.status.textContent = 'Audio-System wird neu gestartet...';
+            setTimeout(() => {
+                restartAudioSystemAndClearState();
+            }, 100);
+        });
+    } else {
+        console.warn("[UI-MGR] Restart Audio System button (#restartAudioSysBtn) not found by ui-manager during setupEventListeners.");
+    }
+
     // Debug button
-    debugBtn.addEventListener('click', () => {
-      debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
-      debugBtn.textContent = debugPanel.style.display === 'none' ? 'Debug-Modus' : 'Debug ausblenden';
-      
-      // Hide optimization panel if showing debug panel
-      if (debugPanel.style.display !== 'none') {
-        optimizationPanel.style.display = 'none';
-        optimizationBtn.textContent = 'Optimierungen';
+    if (this.debugBtn && this.debugPanel && this.optimizationPanel && this.optimizationBtn) {
+      this.debugBtn.addEventListener('click', () => {
+        this.debugPanel.style.display = this.debugPanel.style.display === 'none' ? 'block' : 'none';
+        this.debugBtn.textContent = this.debugPanel.style.display === 'none' ? 'Debug-Modus' : 'Debug ausblenden';
         
-        // Reset noise statistics when enabling debug panel
-        noiseValues = [];
-        maxNoiseLevel = 0;
-        averageNoiseLevel = 0;
-      }
-    });
+        if (this.debugPanel.style.display !== 'none') {
+          this.optimizationPanel.style.display = 'none';
+          this.optimizationBtn.textContent = 'Optimierungen';
+        }
+      });
+    } else {
+        console.warn("[UI-MGR] Debug button or its associated panels not found during setupEventListeners.");
+    }
     
     // Optimization button
-    optimizationBtn.addEventListener('click', () => {
-      optimizationPanel.style.display = optimizationPanel.style.display === 'none' ? 'block' : 'none';
-      optimizationBtn.textContent = optimizationPanel.style.display === 'none' ? 'Optimierungen' : 'Optimierungen ausblenden';
-      
-      // Hide debug panel if showing optimization panel
-      if (optimizationPanel.style.display !== 'none') {
-        debugPanel.style.display = 'none';
-        debugBtn.textContent = 'Debug-Modus';
+    if (this.optimizationBtn && this.optimizationPanel && this.debugPanel && this.debugBtn) {
+      this.optimizationBtn.addEventListener('click', () => {
+        this.optimizationPanel.style.display = this.optimizationPanel.style.display === 'none' ? 'block' : 'none';
+        this.optimizationBtn.textContent = this.optimizationPanel.style.display === 'none' ? 'Optimierungen' : 'Optimierungen ausblenden';
         
-        // Update UI with current settings
-        optimizationManager.updateOptimizationUIFromSettings();
-      }
-    });
+        if (this.optimizationPanel.style.display !== 'none') {
+          this.debugPanel.style.display = 'none';
+          this.debugBtn.textContent = 'Debug-Modus';
+          
+          // Assuming optimizationManager is globally available or imported and initialized
+          if (window.optimizationManager && typeof window.optimizationManager.updateOptimizationUIFromSettings === 'function') {
+            window.optimizationManager.updateOptimizationUIFromSettings();
+          }
+        }
+      });
+    } else {
+        console.warn("[UI-MGR] Optimization button or its associated panels not found during setupEventListeners.");
+    }
   },
 
   createBotMessage: function(text, model, voice) {
     const chatLog = document.getElementById('chatLog');
     if (!chatLog) {
-        console.error("Chat log element not found!");
+        console.error("[UI-MGR] Chat log element not found for createBotMessage!");
         return null;
     }
 
@@ -174,7 +225,7 @@ const uiManager = {
   createUserMessage: function(text) {
     const chatLog = document.getElementById('chatLog');
     if (!chatLog) {
-        console.error("Chat log element not found!");
+        console.error("[UI-MGR] Chat log element not found for createUserMessage!");
         return null;
     }
 
@@ -204,22 +255,24 @@ const uiManager = {
   },
 
   scrollToBottom: function() {
-    const chatLog = document.getElementById('chatLog');
-    if (chatLog) {
-        chatLog.scrollTop = chatLog.scrollHeight;
+    if (this.chatLog) { // Check if chatLog was found during init
+        this.chatLog.scrollTop = this.chatLog.scrollHeight;
     }
   },
   
   refreshUIElements: function() {
-    console.log("UI elements refreshed (if applicable).");
+    // This function might need to re-select elements if they can be dynamically replaced,
+    // but for now, it's mostly a placeholder.
+    // If chatLog is replaced (e.g., in clearChat), it's already updated in this.chatLog.
+    console.log("[UI-MGR] UI elements refreshed (if applicable).");
   },
   
   // Function for updating recognized text (interim speech recognition results)
   updateRecognizedText: function(text, isFinal = false) {
     if (!isFinal) {
       // For interim results, update status instead of creating messages
-      if (window.status) {
-        window.status.textContent = `Erkannt: ${text}`;
+      if (this.status) {
+        this.status.textContent = `Erkannt: ${text}`;
       }
     } else {
       // For final results, create a user message
@@ -229,6 +282,7 @@ const uiManager = {
   
   // Function for updating latency information in bot messages
   updateMessageLatency: function(latencyInfo) {
+    if (!this.chatLog) return; // Check if chatLog was found
     // Find the most recent bot message and update its latency span
     const botMessages = document.querySelectorAll('.bot-message');
     if (botMessages.length > 0) {
@@ -257,28 +311,134 @@ const uiManager = {
     }
   },
   
-  // Function for updating bot message content
+  // This function is called by audio-system.js to update button states
+  updateButtonStates: function(isRecording) {
+    if (this.stopBtn) {
+        this.stopBtn.textContent = isRecording ? 'Aufnahme stoppen' : 'Aufnahme starten';
+        this.stopBtn.disabled = false; // Always enable after an attempt
+    } else {
+        console.warn("Main recording button (e.g., #stopBtn) not found for UI update.");
+    }
+    // You might want to disable/enable other buttons based on recording state here
+  },
+
+  showStatus: function(message, isError = false) {
+    if (this.status) {
+        this.status.textContent = message;
+        this.status.className = isError ? 'status-error' : 'status-info';
+        this.status.style.display = 'block';
+    } else {
+        console.warn("Status element not found for showing message:", message);
+    }
+  },
+
+  hideStatus: function() {
+    if (this.status) {
+        this.status.style.display = 'none';
+    } else {
+        console.warn("Status element not found for hiding.");
+    }
+  },
+
+  updateAudioVisualization: function(rmsValue) {
+    const currentAudioLevel = document.getElementById('currentAudioLevel');
+    const currentAudioValue = document.getElementById('currentAudioValue');
+    if (currentAudioLevel && currentAudioValue) {
+        const percentage = Math.min(100, (rmsValue * 700)); // Adjusted multiplier for sensitivity
+        currentAudioLevel.style.width = percentage + '%';
+        currentAudioValue.textContent = rmsValue.toFixed(4);
+    }
+  },
+
+  // Functions for handling messages, tokens, latency - called by audio-system.js
+  // These should largely remain the same as they are UI manipulation logic.
+  // Ensure currentBotMessageElement is handled correctly if it was a window global.
+  // Let's assume currentBotMessageElement is a property of uiManager if it needs to persist across calls.
+  // currentBotMessageElement: null, // Add to uiManager properties if needed
+
+  appendTokenToBotMessage: function(token) {
+    if (!this.currentBotMessageDiv) {
+        // Model and voice might need to be passed or retrieved from optimizationManager/global state
+        const currentModel = window.optimizationSettings?.chatModel || this.modelSel?.value || 'default';
+        const currentVoice = window.optimizationSettings?.ttsVoice || this.voiceSel?.value || 'default';
+        this.currentBotMessageDiv = this.createBotMessage('', currentModel, currentVoice);
+    }
+    const contentElement = this.currentBotMessageDiv.querySelector('.message-content');
+    if (contentElement) {
+        contentElement.textContent += token;
+        this.scrollToBottom();
+    }
+  },
+
+  // Call this when the LLM reply is complete (e.g., on 'llm_reply' or 'done' event from WebSocket)
+  finalizeBotMessage: function(fullText) {
+    if (this.currentBotMessageDiv) {
+        if (fullText) { // If full text is provided, update it
+             const contentElement = this.currentBotMessageDiv.querySelector('.message-content');
+             if (contentElement) contentElement.textContent = fullText;
+        }
+        // Update latency if available with the final message
+    }
+    this.currentBotMessageDiv = null; // Reset for the next message
+    this.scrollToBottom();
+  },
+
+  // Original updateBotMessage might be for non-streaming updates or final updates.
+  // Let's keep it if it serves a different purpose or is called by other parts of the old system.
+  // If it's purely for streaming, appendTokenToBotMessage and finalizeBotMessage are better.
   updateBotMessage: function(text, isFinal = false) {
-    // Find or create the current bot message
-    let botMessageElement = window.currentBotMessageElement;
-    if (!botMessageElement) {
-      // Create a new bot message and store the DOM element directly
-      botMessageElement = this.createBotMessage('');
-      window.currentBotMessageElement = botMessageElement;
+    // This function might be redundant now with appendTokenToBotMessage and finalizeBotMessage
+    // Consider if it's still needed or if its calls should be migrated.
+    // For now, let's assume it might be used for a complete, non-streamed message.
+    let botMessageElement = this.currentBotMessageDiv; // Or find the last one if not streaming
+    if (!botMessageElement && isFinal) { // If final and no current streaming message, create one
+        const currentModel = window.optimizationSettings?.chatModel || this.modelSel?.value || 'default';
+        const currentVoice = window.optimizationSettings?.ttsVoice || this.voiceSel?.value || 'default';
+        botMessageElement = this.createBotMessage(text, currentModel, currentVoice);
+        this.currentBotMessageDiv = null; // As it's final
+        return;
+    }
+    if (!botMessageElement) { // If not final and no current message, start one for streaming
+        const currentModel = window.optimizationSettings?.chatModel || this.modelSel?.value || 'default';
+        const currentVoice = window.optimizationSettings?.ttsVoice || this.voiceSel?.value || 'default';
+        this.currentBotMessageDiv = this.createBotMessage('', currentModel, currentVoice);
+        botMessageElement = this.currentBotMessageDiv;
     }
     
-    // Update the content - botMessageElement is now a DOM element
     const contentElement = botMessageElement.querySelector('.message-content');
     if (contentElement) {
       if (isFinal) {
         contentElement.textContent = text;
-        window.currentBotMessageElement = null; // Reset for next message
+        this.currentBotMessageDiv = null; // Reset for next message
       } else {
-        contentElement.textContent = text;
+        // If called with isFinal=false, it implies an update to the existing stream
+        contentElement.textContent = text; // Or append: += text, depending on desired behavior
       }
     }
   }
 };
 
-// Ensure uiManager is globally accessible
+// Make uiManager globally accessible if not an ES6 module itself yet.
+// If main.js imports it as a module, this line is not strictly necessary for main.js
+// but other non-module scripts might rely on it.
 window.uiManager = uiManager;
+
+// Expose methods for audio-system.js to call (if ui-manager is not a module that audio-system imports from)
+// This is an alternative to audio-system directly calling window.uiManager.method()
+// if we want to make ui-manager.js an ES6 module later and have explicit interface.
+/*
+export const updateButtonStates = uiManager.updateButtonStates.bind(uiManager);
+export const showStatus = uiManager.showStatus.bind(uiManager);
+export const hideStatus = uiManager.hideStatus.bind(uiManager);
+export const updateAudioVisualization = uiManager.updateAudioVisualization.bind(uiManager);
+export const appendTokenToBotMessage = uiManager.appendTokenToBotMessage.bind(uiManager);
+export const finalizeBotMessage = uiManager.finalizeBotMessage.bind(uiManager);
+export const updateRecognizedText = uiManager.updateRecognizedText.bind(uiManager);
+export const updateLatencyDisplay = uiManager.updateLatencyDisplay.bind(uiManager);
+*/
+// Make sure loadModels and populateVoices are defined, possibly globally or imported
+// For example, if they are in utils.js:
+// import { loadModels, populateVoices } from './utils.js'; 
+// Or if they are still global from a non-module script.
+
+export { uiManager };

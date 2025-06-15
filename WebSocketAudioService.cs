@@ -92,8 +92,8 @@ namespace VoiceAssistant
                 _settings.PreSpeechDurationSec, _settings.HangoverDurationSec, _settings.EnableSpikeDetection,
                 _settings.VadSpikeThreshold, _settings.EnableThirdPartyVad, _settings.MinNoiseFloor, _settings.NoiseFloorAlpha, _settings.NoiseThresholdFactor, _settings.SilenceAdaptationTimeSec, _settings.MinSegmentDurationSec);
 
-            _logger.LogInformation("Current Pipeline Options: DisableVad={DisableVad}, DisableTts={DisableTts}, DisableProgressiveTts={DisableProgressiveTts}, TtsVoice={TtsVoice}, MinFirstChunk={MinFirst}, MaxFirst={MaxFirst}, SubsequentChunk={Subsequent}, DisableTokenStreaming={DisableTokenStreaming}",
-                _pipelineOptions.DisableVad, _pipelineOptions.DisableTts, _pipelineOptions.DisableProgressiveTts, _pipelineOptions.TtsVoice,
+            _logger.LogInformation("Current Pipeline Options: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}, DisableVad={DisableVad}, DisableTts={DisableTts}, DisableProgressiveTts={DisableProgressiveTts}, MinFirstChunk={MinFirst}, MaxFirst={MaxFirst}, SubsequentChunk={Subsequent}, DisableTokenStreaming={DisableTokenStreaming}",
+                _pipelineOptions.ChatModel, _pipelineOptions.TtsVoice, _pipelineOptions.Language, _pipelineOptions.DisableVad, _pipelineOptions.DisableTts, _pipelineOptions.DisableProgressiveTts,
                 _pipelineOptions.TtsMinFirstChunkLength, _pipelineOptions.TtsMaxFirstChunkLength, _pipelineOptions.TtsSubsequentChunkLength, _pipelineOptions.DisableTokenStreaming);
         }
 
@@ -108,25 +108,27 @@ namespace VoiceAssistant
         public async Task HandleAsync(WebSocket webSocket)
         {
             _logger.LogInformation("WebSocket /ws/audio connected. Initializing session.");
-            // Initial settings already logged by constructor after potential query param processing.
 
-            var rawAudio = new List<byte>();
-            var audioFrameBuffer = new byte[_frameBytes]; // For binary audio frames from WebSocket
-            var messageReceiveBuffer = new byte[8192]; // Buffer for receiving all WebSocket messages
+            var rawAudioCollector = new List<byte>(); // Collects all raw audio if VAD is disabled or for debugging
+            var audioFrameBuffer = new byte[_frameBytes];
+            var messageReceiveBuffer = new byte[8192];
 
-            // VAD parameters, calculated based on current _settings
-            // These will be effectively up-to-date if _settings changes, as they are read per loop or re-evaluated.
+            // Initialize VAD context
+            var vadContext = new VadContext
+            {
+                NoiseFloor = _noiseFloor, // Initial noise floor from MeasureInitialNoiseFloor
+                SilenceDurationSec = 0,
+                // Other properties default to false/0/empty
+            };
+
+            // VAD timing parameters (recalculated if settings change)
             int preFrames = (int)(_settings.PreSpeechDurationSec * 1000 / FrameDurationMs);
             int startFrames = (int)(_settings.MinSpeechDurationSec * 1000 / FrameDurationMs);
             int endFrames = (int)(_settings.HangoverDurationSec * 1000 / FrameDurationMs);
+            
+            // Local variable for potential spike, as it's per-frame and influences speechPrimedBySpike
+            bool currentFramePotentialSpike = false;
 
-            var preBuffer = new Queue<byte[]>();
-            var segmentBuffer = new List<byte>();
-            bool inSpeech = false;
-            int consecSpeech = 0;
-            int consecSilence = 0;
-            bool potentialSpikeDetected = false;
-            bool speechPrimedBySpike = false;
 
             while (webSocket.State == WebSocketState.Open)
             {
@@ -147,26 +149,24 @@ namespace VoiceAssistant
                     break;
                 }
 
-
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     if (_pipelineOptions.DisableVad)
                     {
-                        if (rawAudio.Count > 0)
+                        if (rawAudioCollector.Count > 0)
                         {
-                            _logger.LogInformation("VAD disabled, processing all received audio ({Bytes} bytes) on close.", rawAudio.Count);
-                            await ProcessSegmentAsync(rawAudio.ToArray(), webSocket);
+                            _logger.LogInformation("VAD disabled, processing all received audio ({Bytes} bytes) on close.", rawAudioCollector.Count);
+                            await ProcessSegmentAsync(rawAudioCollector.ToArray(), webSocket);
                         }
                     }
                     else
                     {
-                        if (segmentBuffer.Count > 0)
+                        if (vadContext.SegmentBuffer.Count > 0)
                         {
-                            _logger.LogInformation("WebSocket closing, processing final VAD segment ({Bytes} bytes).", segmentBuffer.Count);
-                            await ProcessSegmentAsync(segmentBuffer.ToArray(), webSocket);
+                            _logger.LogInformation("WebSocket closing, processing final VAD segment ({Bytes} bytes).", vadContext.SegmentBuffer.Count);
+                            await ProcessSegmentAsync(vadContext.SegmentBuffer.ToArray(), webSocket);
                         }
                     }
-                    // CloseAsync might throw if client already closed abruptly.
                     try { await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None); }
                     catch (WebSocketException ex) { _logger.LogWarning(ex, "WebSocketException during CloseAsync, client might have already disconnected."); }
                     _logger.LogInformation("WebSocket /ws/audio connection closed.");
@@ -194,11 +194,12 @@ namespace VoiceAssistant
                                     switch (messageType?.ToLowerInvariant())
                                     {
                                         case "updatevadsettings":
-                                            await HandleUpdateVadSettingsAsync(payloadElement, webSocket);
+                                            // Pass vadContext to allow updating its NoiseFloor
+                                            await HandleUpdateVadSettingsAsync(payloadElement, webSocket, vadContext);
                                             break;
                                         case "initialvadsettings": // Handle initial VAD settings
                                             _logger.LogInformation("Processing 'initialVadSettings' message type.");
-                                            await HandleUpdateVadSettingsAsync(payloadElement, webSocket);
+                                            await HandleUpdateVadSettingsAsync(payloadElement, webSocket, vadContext);
                                             break;
                                         case "updatepipelineoptions":
                                             await HandleUpdatePipelineOptionsAsync(payloadElement, webSocket);
@@ -228,180 +229,217 @@ namespace VoiceAssistant
                     Array.Copy(messageReceiveBuffer, 0, audioFrameBuffer, 0, _frameBytes);
 
                     // Copy frame for processing
-                    var frame = new byte[_frameBytes];
-                    Array.Copy(audioFrameBuffer, frame, _frameBytes); // Use audioFrameBuffer as source
-                    rawAudio.AddRange(frame);
+                    var currentFrameBytes = new byte[_frameBytes];
+                    Array.Copy(audioFrameBuffer, currentFrameBytes, _frameBytes);
+                    
+                    rawAudioCollector.AddRange(currentFrameBytes); // Collect all audio
 
                     if (_pipelineOptions.DisableVad)
                     {
-                        continue;
+                        continue; // VAD disabled, collect audio and process on close
                     }
 
-                    // Pre-amplify
-                    ApplyPreAmplification(frame);
+                    // Process the frame for VAD
+                    ProcessedFrameData frameAnalysisResult = ProcessAudioFrameForVad(currentFrameBytes, vadContext.NoiseFloor, vadContext.SilenceDurationSec);
+                    
+                    // Update context from analysis
+                    vadContext.NoiseFloor = frameAnalysisResult.UpdatedNoiseFloor;
+                    vadContext.SilenceDurationSec = frameAnalysisResult.UpdatedSilenceDurationSec;
+                    currentFramePotentialSpike = frameAnalysisResult.PotentialSpikeDetectedThisFrame; // Store for UpdateVadState
 
-                    // Calculate per-frame RMS
-                    double frameRms = CalculateRms(frame);
-                    _logger.LogDebug("VAD Frame: RMS={FrameRms:F4}, NoiseFloor={NoiseFloor:F4}, SilenceDur={SilenceDur:F2}s", frameRms, _noiseFloor, _silenceDurationSec);
+                    // Update VAD state and process segments if speech ends
+                    await UpdateVadStateAndProcessSegmentsAsync(
+                        frameAnalysisResult.ActiveSpeechSignal,
+                        currentFramePotentialSpike, // Pass the spike status for this frame
+                        frameAnalysisResult.AudioFrame, // Pass the (potentially pre-amplified) frame
+                        vadContext,
+                        webSocket,
+                        preFrames, startFrames, endFrames,
+                        frameAnalysisResult.Rms, // Pass RMS for logging
+                        frameAnalysisResult.IsThirdPartyVadSpeech // Pass WebRTC VAD result for logging
+                        );
+                }
+            }
+        }
 
-                    // --- BEGIN Spike Detection Logic ---
-                    potentialSpikeDetected = false; // Reset at the beginning of each frame processing
-                    if (_settings.EnableSpikeDetection)
+        private ProcessedFrameData ProcessAudioFrameForVad(byte[] rawFrame, double currentNoiseFloor, double currentSilenceDurationSec)
+        {
+            var frameForProcessing = new byte[rawFrame.Length];
+            Array.Copy(rawFrame, frameForProcessing, rawFrame.Length);
+
+            ApplyPreAmplification(frameForProcessing);
+            double frameRms = CalculateRms(frameForProcessing);
+
+            _logger.LogDebug("VAD Frame: RMS={FrameRms:F4}, NoiseFloor={NoiseFloor:F4}, SilenceDur={SilenceDur:F2}s", 
+                           frameRms, currentNoiseFloor, currentSilenceDurationSec);
+
+            bool potentialSpike = false;
+            if (_settings.EnableSpikeDetection)
+            {
+                // Spike detection logic (simplified: assumes not in speech for spike priming)
+                // The original logic had `!inSpeech` condition. This method is unaware of `inSpeech`.
+                // For modularity, we detect a spike based on frame properties.
+                // The `UpdateVadState` will use this considering `inSpeech`.
+                if (frameRms > _settings.VadSpikeThreshold && frameRms > currentNoiseFloor * _settings.NoiseThresholdFactor * 1.5)
+                {
+                    potentialSpike = true;
+                    _logger.LogInformation("VAD: Potential spike detected this frame. RMS: {FrameRms:F4} > SpikeThreshold: {SpikeThreshold:F4} && RMS > NoiseFloorFactor*1.5: {NoiseFloorFactorThreshold:F4}",
+                                         frameRms, _settings.VadSpikeThreshold, currentNoiseFloor * _settings.NoiseThresholdFactor * 1.5);
+                }
+            }
+
+            bool thirdPartyVadSpeech = false;
+            if (_settings.EnableThirdPartyVad)
+            {
+                if (frameForProcessing.Length == _frameBytes) // _frameBytes is class member
+                {
+                    thirdPartyVadSpeech = _vad.HasSpeech(frameForProcessing);
+                    _logger.LogDebug("VAD Frame: WebRTC VAD HasSpeech={HasSpeech}", thirdPartyVadSpeech);
+                }
+                else
+                {
+                    _logger.LogWarning("VAD Frame: Invalid frame length for WebRTC VAD. Expected {ExpectedBytes}, Got {ActualBytes}. Assuming no speech.", _frameBytes, frameForProcessing.Length);
+                }
+            }
+            else
+            {
+                _logger.LogDebug("VAD Frame: WebRTC VAD disabled via EnableThirdPartyVad setting.");
+            }
+
+            double updatedSilenceDuration = currentSilenceDurationSec;
+            if (!thirdPartyVadSpeech) // Or use a combined signal if preferred for silence tracking
+                updatedSilenceDuration += FrameDurationMs / 1000.0;
+            else
+                updatedSilenceDuration = 0;
+
+            double updatedNoiseFloor = currentNoiseFloor;
+            if (!thirdPartyVadSpeech && updatedSilenceDuration >= _settings.SilenceAdaptationTimeSec)
+            {
+                updatedNoiseFloor = Math.Max(_settings.MinNoiseFloor,
+                    _settings.NoiseFloorAlpha * currentNoiseFloor + (1 - _settings.NoiseFloorAlpha) * frameRms);
+                if (Math.Abs(currentNoiseFloor - updatedNoiseFloor) > 0.0001)
+                {
+                    _logger.LogInformation("VAD: Noise floor updated from {OldNoiseFloor:F4} to {NewNoiseFloor:F4} after {SilenceDurationSec:F2}s silence (Frame RMS: {FrameRms:F4})",
+                                     currentNoiseFloor, updatedNoiseFloor, updatedSilenceDuration, frameRms);
+                }
+            }
+
+            double dynamicThreshold = Math.Max(_settings.MinNoiseFloor, updatedNoiseFloor * _settings.NoiseThresholdFactor);
+            bool isRmsAboveThreshold = frameRms >= dynamicThreshold;
+            _logger.LogDebug("VAD Frame: isWebRtcSpeech={IsWebRtcSpeech}, isRmsAboveThreshold={IsRmsAboveThreshold} (RMS: {FrameRms:F4}, DynThr: {DynamicThreshold:F4})",
+                           thirdPartyVadSpeech, isRmsAboveThreshold, frameRms, dynamicThreshold);
+            
+            bool activeSignal = false;
+            if (_settings.EnableThirdPartyVad && _settings.EnableSpikeDetection)
+            {
+                activeSignal = (thirdPartyVadSpeech && isRmsAboveThreshold) || (potentialSpike && isRmsAboveThreshold);
+            }
+            else if (_settings.EnableThirdPartyVad)
+            {
+                activeSignal = thirdPartyVadSpeech && isRmsAboveThreshold;
+            }
+            else if (_settings.EnableSpikeDetection)
+            {
+                activeSignal = potentialSpike && isRmsAboveThreshold;
+            }
+            
+            return new ProcessedFrameData(frameForProcessing, frameRms, potentialSpike, thirdPartyVadSpeech, activeSignal, updatedNoiseFloor, updatedSilenceDuration);
+        }
+
+        private async Task UpdateVadStateAndProcessSegmentsAsync(
+            bool activeSpeechSignalThisFrame, 
+            bool potentialSpikeDetectedThisFrame,
+            byte[] processedFrame,
+            VadContext vadContext, 
+            WebSocket webSocket,
+            int preFrames, int startFrames, int endFrames,
+            double frameRms, bool isThirdPartyVadSpeech // For logging
+            )
+        {
+            vadContext.PreBuffer.Enqueue(processedFrame);
+            if (vadContext.PreBuffer.Count > preFrames) vadContext.PreBuffer.Dequeue();
+
+            if (!vadContext.InSpeech)
+            {
+                if (activeSpeechSignalThisFrame)
+                {
+                    vadContext.ConsecSpeech++;
+                    if (potentialSpikeDetectedThisFrame) // A spike in this frame contributes to priming
                     {
-                        // A spike is a strong, sudden increase in energy.
-                        // It can prime the VAD to start speech even if WebRTC VAD is momentarily negative.
-                        if (!inSpeech && frameRms > _settings.VadSpikeThreshold && frameRms > _noiseFloor * _settings.NoiseThresholdFactor * 1.5) // Spike must also be significantly above noise floor
+                        vadContext.SpeechPrimedBySpike = true;
+                    }
+
+                    bool meetsStartCriteria = (vadContext.SpeechPrimedBySpike && vadContext.ConsecSpeech >= MinSpikeConfirmFrames) || 
+                                              (!vadContext.SpeechPrimedBySpike && vadContext.ConsecSpeech >= startFrames);
+
+                    if (meetsStartCriteria)
+                    {
+                        vadContext.InSpeech = true;
+                        vadContext.ConsecSpeech = vadContext.SpeechPrimedBySpike ? Math.Max(vadContext.ConsecSpeech, MinSpikeConfirmFrames) : vadContext.ConsecSpeech;
+                        vadContext.ConsecSilence = 0;
+                        vadContext.SegmentBuffer.Clear();
+                        foreach (var buf in vadContext.PreBuffer) vadContext.SegmentBuffer.AddRange(buf);
+                        // The current 'processedFrame' is already in PreBuffer if preFrames > 0. 
+                        // If preFrames is 0, PreBuffer might be empty or not contain current frame.
+                        // The original logic added current frame if not in preBuffer.
+                        // Enqueueing first ensures it's there if preFrames allows.
+                        // If preFrames = 0, preBuffer.Enqueue(frame) then preBuffer.Dequeue() means it's empty.
+                        // Let's ensure the current frame is added if not captured by preBuffer logic.
+                        // The original check was: if (!preBuffer.Contains(frame)) segmentBuffer.AddRange(frame);
+                        // If preFrames == 0, the segmentBuffer is empty after the loop, so we must add the current frame.
+                        if (preFrames == 0)
                         {
-                            potentialSpikeDetected = true;
-                            _logger.LogInformation("VAD: Potential spike detected. RMS: {FrameRms:F4} > SpikeThreshold: {SpikeThreshold:F4} && RMS > NoiseFloorFactor*1.5: {NoiseFloorFactorThreshold:F4}",
-                                                 frameRms, _settings.VadSpikeThreshold, _noiseFloor * _settings.NoiseThresholdFactor * 1.5);
+                            vadContext.SegmentBuffer.AddRange(processedFrame);
                         }
-                    }
-                    // --- END Spike Detection Logic ---
-
-                    // Run VAD
-                    bool hasSpeech = false; // Initialize to false
-                    if (_settings.EnableThirdPartyVad) // Check if WebRTC VAD should be used
-                    {
-                        // Ensure frame is valid for VAD (e.g. correct length for 20ms at 16kHz mono 16-bit)
-                        if (frame.Length == _frameBytes)
-                        {
-                            hasSpeech = _vad.HasSpeech(frame);
-                            _logger.LogDebug("VAD Frame: WebRTC VAD HasSpeech={HasSpeech}", hasSpeech);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("VAD Frame: Invalid frame length for WebRTC VAD. Expected {ExpectedBytes}, Got {ActualBytes}. Assuming no speech.", _frameBytes, frame.Length);
-                            hasSpeech = false; // Treat as no speech if frame is invalid
-                        }
-                    }
-                    else
-                    {
-                        // If EnableThirdPartyVad is false, we rely solely on RMS/Spike if EnableSpikeDetection is true,
-                        // or effectively no VAD if both are off (though DisableVad pipeline option is the main control for that).
-                        // For the purpose of `activeSpeechSignal` calculation below, if WebRTC VAD is disabled,
-                        // `isWebRtcSpeech` should be considered false or its contribution nullified.
-                        _logger.LogDebug("VAD Frame: WebRTC VAD disabled via EnableThirdPartyVad setting.");
-                    }
 
 
-                    // Track silence duration
-                    if (!hasSpeech)
-                        _silenceDurationSec += FrameDurationMs / 1000.0;
-                    else
-                        _silenceDurationSec = 0;
-
-                    // Update noise floor only after sustained silence
-                    if (!hasSpeech && _silenceDurationSec >= _settings.SilenceAdaptationTimeSec)
-                    {
-                        double oldNoiseFloor = _noiseFloor;
-                        _noiseFloor = Math.Max(_settings.MinNoiseFloor,
-                            _settings.NoiseFloorAlpha * _noiseFloor + (1 - _settings.NoiseFloorAlpha) * frameRms);
-                        if (Math.Abs(oldNoiseFloor - _noiseFloor) > 0.0001) // Log only if changed significantly
-                        {
-                            _logger.LogInformation("VAD: Noise floor updated from {OldNoiseFloor:F4} to {NewNoiseFloor:F4} after {SilenceDurationSec:F2}s silence (Frame RMS: {FrameRms:F4})",
-                                             oldNoiseFloor, _noiseFloor, _silenceDurationSec, frameRms);
-                        }
-                    }
-
-                    // Compute dynamic threshold
-                    double dynamicThreshold = Math.Max(_settings.MinNoiseFloor,
-                        _noiseFloor * _settings.NoiseThresholdFactor);
-
-                    // Combined decision - incorporating spike detection
-                    // A spike can trigger 'isSpeech' even if WebRTC VAD is momentarily negative,
-                    // but still require RMS to be above the dynamic threshold to avoid noise spikes.
-                    bool isWebRtcSpeech = hasSpeech; // Store original WebRTC VAD result (or result from EnableThirdPartyVad flag)
-                    bool isRmsAboveThreshold = frameRms >= dynamicThreshold;
-                    _logger.LogDebug("VAD Frame: isWebRtcSpeech={IsWebRtcSpeech}, isRmsAboveThreshold={IsRmsAboveThreshold} (RMS: {FrameRms:F4}, DynThr: {DynamicThreshold:F4})",
-                                   isWebRtcSpeech, isRmsAboveThreshold, frameRms, dynamicThreshold);
-
-                    // Core speech detection: 
-                    // Considers enabled VAD components. If both disabled, activeSpeechSignal will be false.
-                    bool activeSpeechSignal = false;
-                    if (_settings.EnableThirdPartyVad && _settings.EnableSpikeDetection)
-                    {
-                        activeSpeechSignal = (isWebRtcSpeech && isRmsAboveThreshold) || (potentialSpikeDetected && isRmsAboveThreshold);
-                    }
-                    else if (_settings.EnableThirdPartyVad)
-                    {
-                        activeSpeechSignal = isWebRtcSpeech && isRmsAboveThreshold;
-                    }
-                    else if (_settings.EnableSpikeDetection)
-                    {
-                        activeSpeechSignal = potentialSpikeDetected && isRmsAboveThreshold;
-                    }
-
-                    // Pre-roll
-                    preBuffer.Enqueue(frame);
-                    if (preBuffer.Count > preFrames) preBuffer.Dequeue();
-
-                    if (!inSpeech)
-                    {
-                        // Incorporate potentialSpikeDetected into the start condition
-                        if (activeSpeechSignal)
-                        {
-                            consecSpeech++;
-                            if (potentialSpikeDetected) speechPrimedBySpike = true; // Mark that a spike contributed
-
-                            // If primed by spike, require MinSpikeConfirmFrames, otherwise full startFrames
-                            bool meetsStartCriteria = (speechPrimedBySpike && consecSpeech >= MinSpikeConfirmFrames) || (!speechPrimedBySpike && consecSpeech >= startFrames);
-
-                            if (meetsStartCriteria)
-                            {
-                                inSpeech = true;
-                                // If started by spike, ensure min speech duration is met by effectively setting consecSpeech high.
-                                // Otherwise, use the actual consecutive speech frames.
-                                consecSpeech = speechPrimedBySpike ? Math.Max(consecSpeech, MinSpikeConfirmFrames) : consecSpeech;
-                                consecSilence = 0;
-                                segmentBuffer.Clear();
-                                foreach (var buf in preBuffer) segmentBuffer.AddRange(buf);
-                                // Add current frame that triggered speech, as preBuffer might not have it if preFrames is 0
-                                if (!preBuffer.Contains(frame)) segmentBuffer.AddRange(frame);
-
-                                _logger.LogInformation("VAD: Speech started (PrimedBySpike: {IsSpikeTriggered}, ConsecSpeechFrames: {ConsecSpeech}, RMS: {FrameRms:F4}, DynThr: {DynThr:F4}, WebRTC: {WebRtcSpeech})",
-                                                     speechPrimedBySpike, consecSpeech, frameRms, dynamicThreshold, isWebRtcSpeech);
-                                potentialSpikeDetected = false;
-                                speechPrimedBySpike = false; // Reset spike priming flag
-                            }
-                        }
-                        else
-                        {
-                            consecSpeech = 0;
-                            potentialSpikeDetected = false; // Reset if no qualifying speech signal follows spike
-                            speechPrimedBySpike = false;
-                        }
-                    }
-                    else // inSpeech == true
-                    {
-                        segmentBuffer.AddRange(frame);
-                        // Use activeSpeechSignal for hangover logic as well
-                        if (!activeSpeechSignal && ++consecSilence >= endFrames)
-                        {
-                            inSpeech = false;
-                            _logger.LogInformation("VAD: Speech ended ({Bytes} bytes, ConsecSilenceFrames: {ConsecSilence}, RMS: {FrameRms:F4}, DynThr: {DynThr:F4}, WebRTC: {WebRtcSpeech})",
-                                                 segmentBuffer.Count, consecSilence, frameRms, dynamicThreshold, isWebRtcSpeech);
-                            await ProcessSegmentAsync(segmentBuffer.ToArray(), webSocket);
-                            segmentBuffer.Clear();
-                            consecSpeech = consecSilence = 0;
-                            potentialSpikeDetected = false;
-                            speechPrimedBySpike = false;
-                        }
-                        else if (activeSpeechSignal)
-                        {
-                            consecSilence = 0;
-                            // Reset potentialSpikeDetected if speech continues, as it's no longer a "potential" start spike.
-                            potentialSpikeDetected = false;
-                            speechPrimedBySpike = false;
-                        }
+                        _logger.LogInformation("VAD: Speech started (PrimedBySpike: {IsSpikeTriggered}, ConsecSpeechFrames: {ConsecSpeech}, RMS: {FrameRms:F4}, DynThrRelevantToFrame: {DynThr:F4}, WebRTC: {WebRtcSpeech})",
+                                             vadContext.SpeechPrimedBySpike, vadContext.ConsecSpeech, frameRms, 
+                                             Math.Max(_settings.MinNoiseFloor, vadContext.NoiseFloor * _settings.NoiseThresholdFactor), // Recalculate for log
+                                             isThirdPartyVadSpeech);
+                        
+                        // Reset spike priming flag once speech has officially started
+                        vadContext.SpeechPrimedBySpike = false; 
                     }
                 }
-            } // This is line 388, closing the while loop: while (webSocket.State == WebSocketState.Open)
-        } // Closing brace for HandleAsync method
+                else // No active speech signal
+                {
+                    vadContext.ConsecSpeech = 0;
+                    vadContext.SpeechPrimedBySpike = false; // Reset if no qualifying speech signal follows spike
+                }
+            }
+            else // vadContext.InSpeech == true
+            {
+                vadContext.SegmentBuffer.AddRange(processedFrame);
+                if (!activeSpeechSignalThisFrame)
+                {
+                    vadContext.ConsecSilence++;
+                    if (vadContext.ConsecSilence >= endFrames)
+                    {
+                        vadContext.InSpeech = false;
+                        _logger.LogInformation("VAD: Speech ended ({Bytes} bytes, ConsecSilenceFrames: {ConsecSilence}, RMS: {FrameRms:F4}, DynThrRelevantToFrame: {DynThr:F4}, WebRTC: {WebRtcSpeech})",
+                                             vadContext.SegmentBuffer.Count, vadContext.ConsecSilence, frameRms,
+                                             Math.Max(_settings.MinNoiseFloor, vadContext.NoiseFloor * _settings.NoiseThresholdFactor), // Recalculate for log
+                                             isThirdPartyVadSpeech);
+                        
+                        await ProcessSegmentAsync(vadContext.SegmentBuffer.ToArray(), webSocket);
+                        vadContext.SegmentBuffer.Clear();
+                        vadContext.ConsecSpeech = 0;
+                        vadContext.ConsecSilence = 0;
+                        vadContext.SpeechPrimedBySpike = false; // Reset for next segment
+                    }
+                }
+                else // Active speech signal continues
+                {
+                    vadContext.ConsecSilence = 0;
+                    vadContext.SpeechPrimedBySpike = false; // If speech continues, any prior priming is resolved.
+                }
+            }
+        }
 
         private void ApplyPreAmplification(byte[] frame)
         {
-            if (Math.Abs(_settings.PreAmplification - 1.0f) < 0.001f) return; // More robust float comparison
+            if (Math.Abs(_settings.PreAmplification - 1.0f) < 0.001f) return; 
             for (int i = 0; i < frame.Length; i += 2)
             {
                 short sample = BitConverter.ToInt16(frame, i);
@@ -417,7 +455,7 @@ namespace VoiceAssistant
         {
             double sum = 0;
             int count = frame.Length / 2;
-            if (count == 0) return 0.0; // Avoid division by zero for empty or malformed frames
+            if (count == 0) return 0.0; 
             for (int i = 0; i < frame.Length; i += 2)
             {
                 short sample = BitConverter.ToInt16(frame, i);
@@ -431,7 +469,7 @@ namespace VoiceAssistant
             int byteRate = SampleRate * Channels * BitsPerSample / 8;
             short blockAlign = (short)(Channels * BitsPerSample / 8);
             using var ms = new MemoryStream();
-            using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true); // leaveOpen is fine
+            using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true); 
             writer.Write(Encoding.ASCII.GetBytes("RIFF"));
             writer.Write(36 + dataLength);
             writer.Write(Encoding.ASCII.GetBytes("WAVE"));
@@ -445,35 +483,38 @@ namespace VoiceAssistant
             writer.Write((short)BitsPerSample);
             writer.Write(Encoding.ASCII.GetBytes("data"));
             writer.Write(dataLength);
-            // writer.Flush(); // Not strictly necessary here as ToArray() will get the bytes.
             return ms.ToArray();
         }
 
-        // New handler methods for WebSocket messages
-        private async Task HandleUpdateVadSettingsAsync(JsonElement payload, WebSocket webSocket)
+        // Modify HandleUpdateVadSettingsAsync to accept and update VadContext
+        private async Task HandleUpdateVadSettingsAsync(JsonElement payload, WebSocket webSocket, VadContext vadContextToUpdate)
         {
             _logger.LogInformation("Attempting to update VAD settings from payload: {Payload}", payload.GetRawText());
             try
             {
-                // It's better to deserialize into the existing _settings object if possible,
-                // or create a new one and assign. For simplicity, creating a new one.
                 var updatedSettings = JsonSerializer.Deserialize<VadSettings>(payload.GetRawText(),
                     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
                 if (updatedSettings != null)
                 {
-                    _settings = updatedSettings;
-                    ConfigureVad();
+                    _settings = updatedSettings; // Update the class's _settings field
+                    ConfigureVad(); // Reconfigure _vad instance
 
-                    double oldNoiseFloor = _noiseFloor;
-                    _noiseFloor = MeasureInitialNoiseFloor();
-                    if (Math.Abs(oldNoiseFloor - _noiseFloor) > 0.0001)
+                    // Re-evaluate noise floor based on new settings and update the context
+                    // This mirrors the logic from the constructor and initial setup.
+                    double oldNoiseFloor = vadContextToUpdate.NoiseFloor;
+                    vadContextToUpdate.NoiseFloor = MeasureInitialNoiseFloor(); // Uses new _settings.MinNoiseFloor
+                    
+                    if (Math.Abs(oldNoiseFloor - vadContextToUpdate.NoiseFloor) > 0.0001)
                     {
-                        _logger.LogInformation("Noise floor re-evaluated from {OldNoiseFloor:F4} to {NewNoiseFloor:F4} due to VAD settings update.", oldNoiseFloor, _noiseFloor);
+                        _logger.LogInformation("Noise floor re-evaluated from {OldNoiseFloor:F4} to {NewNoiseFloor:F4} due to VAD settings update.", oldNoiseFloor, vadContextToUpdate.NoiseFloor);
                     }
+                    // Reset silence duration as settings changed, affecting thresholds
+                    vadContextToUpdate.SilenceDurationSec = 0;
+
 
                     _logger.LogInformation("VAD settings updated successfully.");
-                    LogCurrentSettings();
+                    LogCurrentSettings(); // Logs the new _settings and _pipelineOptions
                     await SendEventAsync(webSocket, "vad_settings_updated", _settings);
                 }
                 else { _logger.LogWarning("Failed to deserialize VAD settings payload into a non-null object."); }
@@ -555,7 +596,7 @@ namespace VoiceAssistant
                 }
                 else // Non-streaming path
                 {
-                    reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages());
+                    reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages(), _pipelineOptions.ChatModel);
                     _chatLogManager.AddMessage(ChatRole.Bot, reply); // Log bot's reply
 
                     // Handle non-streaming TTS
@@ -601,14 +642,29 @@ namespace VoiceAssistant
 
         private async Task<string> GetTranscriptionAsync(MemoryStream audioMemoryStream)
         {
-            string prompt = await _recognizer.RecognizeAsync(audioMemoryStream, "audio/wav", "segment.wav");
-            _logger.LogInformation("Transcription: '{Prompt}' (Length: {Length})", prompt, prompt.Length);
+            // Correctly pass parameters: audioStream, language, contentType, fileName
+            string languageCode = _pipelineOptions.Language; // e.g., "de-DE"
+            // Whisper API expects ISO-639-1 (e.g., "de"), so we might need to extract it.
+            if (!string.IsNullOrEmpty(languageCode) && languageCode.Contains("-"))
+            {
+                languageCode = languageCode.Split('-')[0]; // Get "de" from "de-DE"
+            }
+
+            string effectiveFileName = !string.IsNullOrEmpty(_pipelineOptions.Language) ? $"{_pipelineOptions.Language}.wav" : "audio.wav";
+
+            string prompt = await _recognizer.RecognizeAsync(
+                audioStream: audioMemoryStream, 
+                language: languageCode,                  // Pass the extracted ISO-639-1 language code
+                contentType: "audio/wav",              // Explicitly set content type
+                fileName: effectiveFileName             // Construct a filename
+            );
+            _logger.LogInformation("Transcription: '{Prompt}' (Length: {Length}), Language from options: {LanguageOption}, Sent to API: {LanguageApi}", prompt, prompt.Length, _pipelineOptions.Language, languageCode);
             return prompt;
         }
 
         private async Task<string> HandleStreamingChatResponseAsync(WebSocket webSocket, StreamingOpenAIChatService streamingChatService, string prompt, string modelName)
         {
-            var voice = _pipelineOptions.TtsVoice;
+            var voice = _pipelineOptions.TtsVoice; // Ensure TtsVoice is used from _pipelineOptions
             var accumulatedTextForTts = new StringBuilder();
             string fullReply = string.Empty;
             int ttsChunkIndex = 0;
@@ -694,14 +750,14 @@ namespace VoiceAssistant
         {
             // The prompt is already added to ChatLogManager by ProcessSegmentAsync before this method is called.
             // So, GetMessages() will include the current user prompt.
-            string reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages()); // Use GenerateResponseAsync
+            string reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages(), _pipelineOptions.ChatModel); // Use _pipelineOptions.ChatModel
             _chatLogManager.AddMessage(ChatRole.Bot, reply); // ChatRole.Bot
-            _logger.LogInformation("Non-streaming chat response: '{Reply}'", reply);
+            _logger.LogInformation("Non-streaming chat response: '{Reply}'", reply); // Corrected logging format
 
             if (!_pipelineOptions.DisableTts)
             {
                 _logger.LogInformation("TTS (Non-Progressive): Synthesizing full reply (Length {Length}): \"{ReplyText}...\"", reply.Length, reply.Substring(0, Math.Min(50, reply.Length)));
-                var ttsAudioBytes = await _synthesizer.SynthesizeAsync(reply, _pipelineOptions.TtsVoice); // Returns byte[]
+                var ttsAudioBytes = await _synthesizer.SynthesizeAsync(reply, _pipelineOptions.TtsVoice); // Use _pipelineOptions.TtsVoice
                 if (ttsAudioBytes != null && ttsAudioBytes.Length > 0)
                 {
                     await SendAudioChunkAsync(webSocket, ttsAudioBytes, 0); // Pass byte[], Single chunk, index 0
@@ -768,6 +824,43 @@ namespace VoiceAssistant
                 {
                     _logger.LogError(ex, "Error sending event: {EventName}", eventName);
                 }
+            }
+        }
+
+        // Helper class to hold VAD state
+        private class VadContext
+        {
+            public bool InSpeech { get; set; }
+            public int ConsecSpeech { get; set; }
+            public int ConsecSilence { get; set; }
+            public bool SpeechPrimedBySpike { get; set; }
+            public double NoiseFloor { get; set; }
+            public double SilenceDurationSec { get; set; }
+            public Queue<byte[]> PreBuffer { get; } = new Queue<byte[]>();
+            public List<byte> SegmentBuffer { get; } = new List<byte>();
+            // PotentialSpikeDetected is more of a per-frame result, will be handled by ProcessedFrameData
+        }
+
+        // Helper struct for per-frame VAD analysis results
+        private readonly struct ProcessedFrameData
+        {
+            public byte[] AudioFrame { get; } // The raw or pre-amplified frame
+            public double Rms { get; }
+            public bool PotentialSpikeDetectedThisFrame { get; }
+            public bool IsThirdPartyVadSpeech { get; }
+            public bool ActiveSpeechSignal { get; }
+            public double UpdatedNoiseFloor { get; }
+            public double UpdatedSilenceDurationSec { get; }
+
+            public ProcessedFrameData(byte[] audioFrame, double rms, bool potentialSpike, bool thirdPartyVadSpeech, bool activeSignal, double noiseFloor, double silenceDuration)
+            {
+                AudioFrame = audioFrame;
+                Rms = rms;
+                PotentialSpikeDetectedThisFrame = potentialSpike;
+                IsThirdPartyVadSpeech = thirdPartyVadSpeech;
+                ActiveSpeechSignal = activeSignal;
+                UpdatedNoiseFloor = noiseFloor;
+                UpdatedSilenceDurationSec = silenceDuration;
             }
         }
     }

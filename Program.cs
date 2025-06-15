@@ -78,16 +78,48 @@ app.Map("/ws/audio", async context =>
     if (context.WebSockets.IsWebSocketRequest)
     {
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        var service = context.RequestServices.GetRequiredService<WebSocketAudioService>();
-        // Read desired chat model from query, default gpt-3.5-turbo
-        /*
-        var model = context.Request.Query["model"].ToString();
-        service.ChatModel = string.IsNullOrEmpty(model) ? "gpt-3.5-turbo" : model;
-        // Read desired TTS voice from query, default nova
-        var voice = context.Request.Query["voice"].ToString();
-        service.TtsVoice = string.IsNullOrEmpty(voice) ? "nova" : voice;
-        */
-        await service.HandleAsync(webSocket);
+        
+        // Create a new instance of PipelineOptions for this specific WebSocket session
+        // Start with the global/default options
+        var sessionPipelineOptions = new PipelineOptions();
+        context.RequestServices.GetRequiredService<IConfiguration>().GetSection("PipelineOptions").Bind(sessionPipelineOptions);
+
+        // Override with query parameters
+        var modelQuery = context.Request.Query["model"].ToString();
+        if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
+
+        var voiceQuery = context.Request.Query["voice"].ToString();
+        if (!string.IsNullOrEmpty(voiceQuery)) sessionPipelineOptions.TtsVoice = voiceQuery;
+
+        var languageQuery = context.Request.Query["language"].ToString();
+        if (!string.IsNullOrEmpty(languageQuery)) sessionPipelineOptions.Language = languageQuery;
+        
+        // Log the effective pipeline options for this session
+        var tempLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        tempLogger.LogInformation("WebSocket session starting with PipelineOptions: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}", 
+                                sessionPipelineOptions.ChatModel, sessionPipelineOptions.TtsVoice, sessionPipelineOptions.Language);
+
+        // Get a VadSettings instance (it's a singleton, but its properties can be updated per session via WebSocket messages)
+        var vadSettings = context.RequestServices.GetRequiredService<VadSettings>();
+
+        // Manually create WebSocketAudioService with session-specific options
+        var recognizer = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Interfaces.IRecognizer>();
+        var chatService = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Interfaces.IChatService>();
+        var chatLogManager = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Services.ChatLogManager>();
+        var synthesizer = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Interfaces.ISynthesizer>();
+        var serviceLogger = context.RequestServices.GetRequiredService<ILogger<WebSocketAudioService>>();
+        
+        var audioService = new WebSocketAudioService(
+            recognizer,
+            chatService,
+            chatLogManager,
+            synthesizer,
+            serviceLogger,
+            vadSettings, // Pass the singleton VadSettings, it will be updated by messages if needed
+            sessionPipelineOptions // Pass the session-specific pipeline options
+        );
+
+        await audioService.HandleAsync(webSocket);
     }
     else
     {

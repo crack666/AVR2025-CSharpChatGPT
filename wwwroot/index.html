@@ -104,6 +104,8 @@
       <button id="clearBtn" class="secondary">Chat leeren</button>
       <button id="optimizationBtn" class="secondary">Optimierungen</button>
       <button id="debugBtn" class="secondary">Debug-Modus</button>
+      <button id="stopAudioPlaybackBtn" class="secondary" style="display: none;">Stop Playback</button> <!-- Added -->
+      <button id="restartAudioSysBtn" class="secondary" style="display: none;">Restart Audio</button> <!-- Added -->
     </div>
   </div>
   
@@ -212,9 +214,9 @@
   </div>
   <!-- Load scripts -->
   <script src="js/utils.js?v=20250521a"></script>
-  <script src="js/audio-system.js?v=20250521a"></script>
-  <script src="js/ui-manager.js?v=20250521a"></script>
-  <script src="js/optimization-manager.js?v=20250521a"></script>
-  <script src="js/main.js?v=20250521a"></script>
+  <script type="module" src="js/audio-system.js?v=20250521a"></script>
+  <script type="module" src="js/ui-manager.js?v=20250521a"></script>
+  <script type="module" src="js/optimization-manager.js?v=20250521a"></script>
+  <script type="module" src="js/main.js?v=20250521a"></script>
 </body>
 </html>

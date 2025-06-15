@@ -20,6 +20,9 @@ namespace VoiceAssistant.Core.Models
         /// <summary>TTS voice identifier (e.g., "nova").</summary>
         public string TtsVoice { get; set; } = "nova";
 
+        /// <summary>Language for speech recognition (e.g., "en").</summary>
+        public string Language { get; set; } = "en";
+
         /// <summary>Minimum length for the first TTS chunk to trigger synthesis.</summary>
         public int TtsMinFirstChunkLength { get; set; } = 50; // Default value, can be tuned
 

@@ -10,10 +10,11 @@ namespace VoiceAssistant.Core.Interfaces
     public interface IChatService
     {
         /// <summary>
-        /// Generates a response based on the given chat history.
+        /// Generates a response based on the given chat history and model.
         /// </summary>
         /// <param name="chatHistory">Ordered list of chat messages (user  bot).</param>
+        /// <param name="chatModel">The chat model to use (e.g., "gpt-3.5-turbo", "gpt-4o").</param>
         /// <returns>Generated response text.</returns>
-        Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory);
+        Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory, string chatModel);
     }
 }

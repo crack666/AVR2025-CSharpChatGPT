@@ -23,7 +23,7 @@ namespace VoiceAssistant.Plugins.OpenAI
             _httpClient = httpClient;
         }
 
-        public async Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory)
+        public async Task<string> GenerateResponseAsync(IEnumerable<ChatMessage> chatHistory, string chatModel)
         {
             // Map internal ChatMessage to OpenAI message format
             var messages = chatHistory.Select(msg => new {
@@ -31,7 +31,7 @@ namespace VoiceAssistant.Plugins.OpenAI
                 content = msg.Content
             });
             var payload = new {
-                model = "gpt-3.5-turbo",
+                model = chatModel, // Use the provided chatModel parameter
                 messages = messages.ToArray(),
                 stream = false
             };

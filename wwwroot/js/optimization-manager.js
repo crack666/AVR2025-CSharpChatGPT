@@ -1,287 +1,430 @@
 // Optimization Manager
+// No direct imports from audio-system.js needed here, as audio-system.js will call getters from this manager.
+
 const optimizationManager = {
-  // Optimization settings references
-  useProgressiveTTSCheckbox: null,
-  useTokenStreamingCheckbox: null,
-  disableVadCheckbox: null,
-  disableTtsCheckbox: null, // Added
-  useLegacyHttpCheckbox: null,
-  ttsMinFirstChunkLengthInput: null, // Added
-  ttsMaxFirstChunkLengthInput: null, // Added
-  ttsSubsequentChunkLengthInput: null, // Added
-  vadSpikeThresholdInput: null, // Added
-  enableSpikeDetectionCheckbox: null, // Added
-  enableThirdPartyVadCheckbox: null, // Added
-  applyVadSettingsBtn: null, // Added
-  // vadSampleInput: null, // Kept for now, might be removed if not used
-  // calibrateVadBtn: null, // Kept for now
-  applyOptimizationSettingsBtn: null,
-  resetOptimizationSettingsBtn: null,
-  resetLatencyStatsBtn: null,
-  
+  // UI References (initialized in init)
+  // ... (keep all existing UI element references like useProgressiveTTSCheckbox, etc.)
+
+  // Default settings
+  defaultSettings: {
+    useProgressiveTTS: true,
+    useTokenStreaming: true,
+    disableVad: false,
+    disableTts: false,
+    useLegacyHttp: false, // This should probably be phased out or always false
+    ttsMinFirstChunkLength: 50,
+    ttsMaxFirstChunkLength: 100,
+    ttsSubsequentChunkLength: 150,
+    chatModel: "gpt-3.5-turbo", // Default model
+    ttsVoice: "nova",           // Default voice
+
+    // VAD Settings (can also be part of a nested object if preferred)
+    threshold: 0.5, // Main VAD threshold
+    silenceTimeoutSec: 1.0,
+    minSpeechDurationSec: 0.2,
+    startThreshold: 0.5, // Separate start/end thresholds if used by backend VAD
+    endThreshold: 0.3,
+    rmsSmoothingWindowSec: 0.1,
+    hangoverDurationSec: 0.5,
+    vadSpikeThreshold: 0.15,
+    enableSpikeDetection: true,
+    enableThirdPartyVad: true, // If this refers to a specific VAD implementation
+    
+    // WebRTC VAD specific (if used, otherwise can be removed or kept for future)
+    useWebRTCVAD: false, 
+    webRTCVADMode: 1, // Example: 0-3 for aggressiveness
+    vadThreshold: 0.5, // This might be redundant with 'threshold' above, clarify which one is primary
+    vadSilenceTimeout: 1.0, // Redundant with 'silenceTimeoutSec'
+    vadStartThreshold: 0.5, // Redundant
+    vadEndThreshold: 0.3,   // Redundant
+    vadRmsSmoothingWindow: 0.1, // Redundant
+    vadSpikeDetectionEnabled: true, // Redundant
+    vadSpikeThresholdFactor: 1.5,
+    vadSpikeMinDurationMs: 60,
+    vadConsecutiveSpikeThreshold: 3,
+    vadUseDynamicThreshold: false,
+    vadDynamicThresholdFactor: 1.2,
+    vadDynamicThresholdDecay: 0.995,
+    vadMinRMSForDynamicThreshold: 0.01,
+
+
+    latencyStats: { // Keep latencyStats structure
+      recordingStart: 0,
+      transcriptionReceived: 0,
+      llmResponseStart: 0,
+      ttsStart: 0,
+      ttsEnd: 0,
+      recordingToTranscriptLatency: [],
+      transcriptToLLMLatency: [],
+      llmToTTSLatency: [],
+      textLatency: [],
+      audioLatency: [],
+      totalLatency: []
+    }
+  },
+
+  currentSettings: {}, // Holds the current operational settings
+
   init: function() {
     // Initialize UI references
     this.useProgressiveTTSCheckbox = document.getElementById('useProgressiveTTS');
     this.useTokenStreamingCheckbox = document.getElementById('useTokenStreaming');
     this.disableVadCheckbox = document.getElementById('disableVad');
-    this.disableTtsCheckbox = document.getElementById('disableTts'); // Added
-    this.useLegacyHttpCheckbox = document.getElementById('useLegacyHttp');
-    this.ttsMinFirstChunkLengthInput = document.getElementById('ttsMinFirstChunkLength'); // Added
-    this.ttsMaxFirstChunkLengthInput = document.getElementById('ttsMaxFirstChunkLength'); // Added
-    this.ttsSubsequentChunkLengthInput = document.getElementById('ttsSubsequentChunkLength'); // Added
+    this.disableTtsCheckbox = document.getElementById('disableTts');
+    this.useLegacyHttpCheckbox = document.getElementById('useLegacyHttp'); // Should be hidden/removed if legacy HTTP is gone
+    this.ttsMinFirstChunkLengthInput = document.getElementById('ttsMinFirstChunkLength');
+    this.ttsMaxFirstChunkLengthInput = document.getElementById('ttsMaxFirstChunkLength');
+    this.ttsSubsequentChunkLengthInput = document.getElementById('ttsSubsequentChunkLength');
 
     this.applyOptimizationSettingsBtn = document.getElementById('applyOptimizationSettings');
     this.resetOptimizationSettingsBtn = document.getElementById('resetOptimizationSettings');
     this.resetLatencyStatsBtn = document.getElementById('resetLatencyStats');
     
-    // VAD specific UI elements from debugPanel
-    this.vadSpikeThresholdInput = document.getElementById('vadSpikeThreshold');
+    // VAD specific UI elements from debugPanel (or wherever they are now)
+    // These are the VAD settings that were previously in audio-system.js init
+    this.thresholdSlider = document.getElementById('thresholdSlider');
+    this.thresholdValueDisplay = document.getElementById('thresholdValue');
+    this.silenceTimeoutSlider = document.getElementById('silenceTimeoutSlider');
+    this.silenceTimeoutValueDisplay = document.getElementById('silenceTimeoutValue');
+    this.minSpeechDurationSlider = document.getElementById('minSpeechDurationSlider');
+    this.minSpeechDurationValueDisplay = document.getElementById('minSpeechDurationValue');
+    this.startThresholdSlider = document.getElementById('startThresholdSlider');
+    this.startThresholdValueDisplay = document.getElementById('startThresholdValue');
+    this.endThresholdSlider = document.getElementById('endThresholdSlider');
+    this.endThresholdValueDisplay = document.getElementById('endThresholdValue');
+    this.smoothingWindowSlider = document.getElementById('smoothingWindowSlider');
+    this.smoothingWindowValueDisplay = document.getElementById('smoothingWindowValue');
+    this.hangoverSlider = document.getElementById('hangoverSlider');
+    this.hangoverValueDisplay = document.getElementById('hangoverValue');
+    
+    // VAD settings from the original optimization panel (if different from above)
+    this.vadSpikeThresholdInput = document.getElementById('vadSpikeThreshold'); // This was in optimizationManager before
+    this.vadSpikeThresholdValueDisplay = document.getElementById('vadSpikeThresholdValue');
     this.enableSpikeDetectionCheckbox = document.getElementById('enableSpikeDetection');
     this.enableThirdPartyVadCheckbox = document.getElementById('enableThirdPartyVad');
-    this.applyVadSettingsBtn = document.getElementById('applyVadSettings');
-
-    // VAD calibration input and button (still here, review if needed)
-    this.vadSampleInput = document.getElementById('vadSampleInput');
-    this.calibrateVadBtn = document.getElementById('calibrateVadBtn');
     
-    // Create optimization settings object
-    window.optimizationSettings = {
-      // Pipeline Options (controlled by optimizationPanel)
-      useProgressiveTTS: true,
-      useTokenStreaming: true,
-      disableVad: false,
-      disableTts: false, // Added
-      useLegacyHttp: false,
-      ttsMinFirstChunkLength: 50, // Added
-      ttsMaxFirstChunkLength: 100, // Added
-      ttsSubsequentChunkLength: 150, // Added
-      
-      // VAD Settings (controlled by debugPanel, but stored here for consistency)
-      vadSpikeThreshold: 0.15, // Added
-      enableSpikeDetection: true, // Added
-      enableThirdPartyVad: true, // Added
+    this.applyVadSettingsBtn = document.getElementById('applyVadSettings'); // Button to apply VAD settings from debug panel
 
-      latencyStats: {
-        recordingStart: 0,
-        transcriptionReceived: 0,
-        llmResponseStart: 0,
-        ttsStart: 0,
-        ttsEnd: 0,
-        
-        recordingToTranscriptLatency: [],
-        transcriptToLLMLatency: [],
-        llmToTTSLatency: [],
-        textLatency: [],
-        audioLatency: [],
-        totalLatency: []
-      }
-    };
-    
-    // Load optimization settings from server or localStorage
+    // Load settings from localStorage or use defaults
+    this.loadSettings(); 
+    this.updateAllUIToReflectCurrentSettings();
+    this.setupEventListeners();
+    console.log("[OPTIMIZATION-MGR] Initialized with settings:", JSON.parse(JSON.stringify(this.currentSettings)));
+  },
+  
+  loadSettings: function() {
+    let storedSettings = null;
     try {
-      const storedSettings = localStorage.getItem('optimizationSettings');
+      storedSettings = localStorage.getItem('optimizationSettings');
       if (storedSettings) {
         const parsed = JSON.parse(storedSettings);
-        // Merge carefully to avoid breaking with new/old properties
-        for (const key in window.optimizationSettings) {
-          if (parsed.hasOwnProperty(key) && key !== 'latencyStats') { // Don't overwrite latencyStats structure directly
-            if (typeof window.optimizationSettings[key] === 'object' && window.optimizationSettings[key] !== null) {
-              // For nested objects like latencyStats, merge their properties
-              for (const subKey in window.optimizationSettings[key]) {
-                if (parsed[key].hasOwnProperty(subKey)) {
-                  window.optimizationSettings[key][subKey] = parsed[key][subKey];
-                }
-              }
-            } else {
-              window.optimizationSettings[key] = parsed[key];
-            }
-          }
-        }
+        // Deep merge parsed settings with defaults to ensure all keys exist
+        this.currentSettings = this.deepMerge(JSON.parse(JSON.stringify(this.defaultSettings)), parsed);
+      } else {
+        this.currentSettings = JSON.parse(JSON.stringify(this.defaultSettings)); // Deep copy
       }
     } catch (e) {
-      console.error('Error loading optimization settings from localStorage:', e);
+      console.error('[OPTIMIZATION-MGR] Error loading settings from localStorage, using defaults:', e);
+      this.currentSettings = JSON.parse(JSON.stringify(this.defaultSettings)); // Deep copy
     }
-    this.updateOptimizationUIFromSettings(); // Ensure UI reflects loaded or default settings
-    this.updateVadSettingsUIFromState(); // Ensure VAD UI reflects loaded or default settings
-
-    this.setupEventListeners();
-  },
-  
-  // Helper function to reset/initialize all latency stats
-  resetLatencyStats: function() {
-    if (!window.optimizationSettings.latencyStats) {
-      window.optimizationSettings.latencyStats = {};
+    // Ensure latencyStats is always an object
+    if (!this.currentSettings.latencyStats || typeof this.currentSettings.latencyStats !== 'object') {
+        this.currentSettings.latencyStats = JSON.parse(JSON.stringify(this.defaultSettings.latencyStats));
     }
-    
-    window.optimizationSettings.latencyStats.recordingToTranscriptLatency = [];
-    window.optimizationSettings.latencyStats.transcriptToLLMLatency = [];
-    window.optimizationSettings.latencyStats.llmToTTSLatency = [];
-    window.optimizationSettings.latencyStats.textLatency = [];
-    window.optimizationSettings.latencyStats.audioLatency = [];
-    window.optimizationSettings.latencyStats.totalLatency = [];
-    
-    window.optimizationSettings.latencyStats.recordingStart = 0;
-    window.optimizationSettings.latencyStats.transcriptionReceived = 0;
-    window.optimizationSettings.latencyStats.llmResponseStart = 0;
-    window.optimizationSettings.latencyStats.ttsStart = 0;
-    window.optimizationSettings.latencyStats.ttsEnd = 0;
-  },
-  
-  setupEventListeners: function() {
-    // VAD calibration button handler
-    if (this.calibrateVadBtn) { // Check if element exists
-        this.calibrateVadBtn.addEventListener('click', async () => { console.warn('VAD Calibration button clicked - no backend endpoint defined yet.'); });
-    }
-
-    // Apply VAD Settings Button
-    if (this.applyVadSettingsBtn) { // Check if element exists
-        this.applyVadSettingsBtn.addEventListener('click', () => {
-            this.updateVadStateFromUI();
-            this.saveSettings(); // Save to localStorage
-            if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
-                const vadSettingsPayload = {
-                    VadSpikeThreshold: window.optimizationSettings.vadSpikeThreshold,
-                    EnableSpikeDetection: window.optimizationSettings.enableSpikeDetection,
-                    EnableThirdPartyVad: window.optimizationSettings.enableThirdPartyVad
-                    // Include other VAD settings from the UI if they are meant to be sent here
-                };
-                // Corrected: Changed 'data' to 'payload' to match backend expectation
-                window.wsAudioSocket.send(JSON.stringify({ type: 'updateVadSettings', payload: vadSettingsPayload }));
-                debugLog('Sent VAD settings update to backend.');
-            } else {
-                debugLog('WebSocket not connected. VAD settings saved locally, will be applied on next connection/segment.');
-            }
-        });
-    }
-
-    // Apply Pipeline/Optimization Settings Button
-    if (this.applyOptimizationSettingsBtn) { // Check if element exists
-        this.applyOptimizationSettingsBtn.addEventListener('click', () => {
-            this.updatePipelineStateFromUI();
-            this.saveSettings(); // Save to localStorage
-            if (window.wsAudioSocket && window.wsAudioSocket.readyState === WebSocket.OPEN) {
-                const pipelineOptionsPayload = {
-                    DisableVad: window.optimizationSettings.disableVad,
-                    DisableTts: window.optimizationSettings.disableTts,
-                    DisableProgressiveTts: !window.optimizationSettings.useProgressiveTTS, 
-                    TtsMinFirstChunkLength: window.optimizationSettings.ttsMinFirstChunkLength,
-                    TtsMaxFirstChunkLength: window.optimizationSettings.ttsMaxFirstChunkLength,
-                    TtsSubsequentChunkLength: window.optimizationSettings.ttsSubsequentChunkLength,
-                    ChatModel: document.getElementById('model') ? document.getElementById('model').value : "gpt-3.5-turbo",
-                    TtsVoice: document.getElementById('voice') ? document.getElementById('voice').value : "nova"
-                };
-                // Corrected: Changed 'data' to 'payload' to match backend expectation
-                window.wsAudioSocket.send(JSON.stringify({ type: 'updatePipelineOptions', payload: pipelineOptionsPayload }));
-                debugLog('Sent Pipeline options update to backend.');
-            } else {
-                debugLog('WebSocket not connected. Pipeline settings saved locally.');
-            }
-        });
-    }
-
-    // Reset Optimization/Pipeline Settings Button
-    if (this.resetOptimizationSettingsBtn) { // Check if element exists
-        this.resetOptimizationSettingsBtn.addEventListener('click', () => {
-            // Reset to default values (hardcoded or from a default config object)
-            window.optimizationSettings.useProgressiveTTS = true;
-            window.optimizationSettings.useTokenStreaming = true;
-            window.optimizationSettings.disableVad = false;
-            window.optimizationSettings.disableTts = false;
-            window.optimizationSettings.useLegacyHttp = false;
-            window.optimizationSettings.ttsMinFirstChunkLength = 50;
-            window.optimizationSettings.ttsMaxFirstChunkLength = 100;
-            window.optimizationSettings.ttsSubsequentChunkLength = 150;
-            this.updateOptimizationUIFromSettings();
-            this.saveSettings();
-            debugLog('Pipeline settings reset to defaults.');
-        });
-    }
-
-    // Reset Latency Stats Button
-    if (this.resetLatencyStatsBtn) { // Check if element exists
-        this.resetLatencyStatsBtn.addEventListener('click', () => {
-            this.resetLatencyStats();
-            this.updateLatencyStatsUI();
-            this.saveSettings(); // Save reset stats state
-            debugLog('Latency stats reset.');
-        });
-    }
-
-    // Add listeners for individual controls to update window.optimizationSettings dynamically (optional, good for real-time reflection)
-    // Example for one checkbox:
-    if (this.useProgressiveTTSCheckbox) {
-        this.useProgressiveTTSCheckbox.addEventListener('change', (e) => {
-            window.optimizationSettings.useProgressiveTTS = e.target.checked;
-            // this.saveSettings(); // Optionally save on every individual change
-        });
-    }
-    // Repeat for other checkboxes and inputs in optimizationPanel
-    if (this.useTokenStreamingCheckbox) this.useTokenStreamingCheckbox.addEventListener('change', (e) => window.optimizationSettings.useTokenStreaming = e.target.checked);
-    if (this.disableVadCheckbox) this.disableVadCheckbox.addEventListener('change', (e) => window.optimizationSettings.disableVad = e.target.checked);
-    if (this.disableTtsCheckbox) this.disableTtsCheckbox.addEventListener('change', (e) => window.optimizationSettings.disableTts = e.target.checked);
-    if (this.useLegacyHttpCheckbox) this.useLegacyHttpCheckbox.addEventListener('change', (e) => window.optimizationSettings.useLegacyHttp = e.target.checked);
-    if (this.ttsMinFirstChunkLengthInput) this.ttsMinFirstChunkLengthInput.addEventListener('input', (e) => window.optimizationSettings.ttsMinFirstChunkLength = parseInt(e.target.value, 10) || 0);
-    if (this.ttsMaxFirstChunkLengthInput) this.ttsMaxFirstChunkLengthInput.addEventListener('input', (e) => window.optimizationSettings.ttsMaxFirstChunkLength = parseInt(e.target.value, 10) || 0);
-    if (this.ttsSubsequentChunkLengthInput) this.ttsSubsequentChunkLengthInput.addEventListener('input', (e) => window.optimizationSettings.ttsSubsequentChunkLength = parseInt(e.target.value, 10) || 0);
-
-    // Listeners for VAD settings in debugPanel
-    if (this.vadSpikeThresholdInput) {
-        this.vadSpikeThresholdInput.addEventListener('input', (e) => {
-            window.optimizationSettings.vadSpikeThreshold = parseFloat(e.target.value) || 0;
-            const span = document.getElementById('vadSpikeThresholdValue');
-            if(span) span.textContent = e.target.value;
-        });
-    }
-    if (this.enableSpikeDetectionCheckbox) this.enableSpikeDetectionCheckbox.addEventListener('change', (e) => window.optimizationSettings.enableSpikeDetection = e.target.checked);
-    if (this.enableThirdPartyVadCheckbox) this.enableThirdPartyVadCheckbox.addEventListener('change', (e) => window.optimizationSettings.enableThirdPartyVad = e.target.checked);
-
-  },
-  updateOptimizationUIFromSettings: function() {
-    if (this.useProgressiveTTSCheckbox) this.useProgressiveTTSCheckbox.checked = window.optimizationSettings.useProgressiveTTS;
-    if (this.useTokenStreamingCheckbox) this.useTokenStreamingCheckbox.checked = window.optimizationSettings.useTokenStreaming;
-    if (this.disableVadCheckbox) this.disableVadCheckbox.checked = window.optimizationSettings.disableVad;
-    if (this.disableTtsCheckbox) this.disableTtsCheckbox.checked = window.optimizationSettings.disableTts;
-    if (this.useLegacyHttpCheckbox) this.useLegacyHttpCheckbox.checked = window.optimizationSettings.useLegacyHttp;
-    if (this.ttsMinFirstChunkLengthInput) this.ttsMinFirstChunkLengthInput.value = window.optimizationSettings.ttsMinFirstChunkLength;
-    if (this.ttsMaxFirstChunkLengthInput) this.ttsMaxFirstChunkLengthInput.value = window.optimizationSettings.ttsMaxFirstChunkLength;
-    if (this.ttsSubsequentChunkLengthInput) this.ttsSubsequentChunkLengthInput.value = window.optimizationSettings.ttsSubsequentChunkLength;
-  },
-
-  updateVadSettingsUIFromState: function() { // New function for VAD panel
-    if (this.vadSpikeThresholdInput) {
-        this.vadSpikeThresholdInput.value = window.optimizationSettings.vadSpikeThreshold;
-        const span = document.getElementById('vadSpikeThresholdValue');
-        if(span) span.textContent = window.optimizationSettings.vadSpikeThreshold;
-    }
-    if (this.enableSpikeDetectionCheckbox) this.enableSpikeDetectionCheckbox.checked = window.optimizationSettings.enableSpikeDetection;
-    if (this.enableThirdPartyVadCheckbox) this.enableThirdPartyVadCheckbox.checked = window.optimizationSettings.enableThirdPartyVad;
-  },
-
-  updatePipelineStateFromUI: function() { // Reads from Optimization Panel
-    if (this.useProgressiveTTSCheckbox) window.optimizationSettings.useProgressiveTTS = this.useProgressiveTTSCheckbox.checked;
-    if (this.useTokenStreamingCheckbox) window.optimizationSettings.useTokenStreaming = this.useTokenStreamingCheckbox.checked;
-    if (this.disableVadCheckbox) window.optimizationSettings.disableVad = this.disableVadCheckbox.checked;
-    if (this.disableTtsCheckbox) window.optimizationSettings.disableTts = this.disableTtsCheckbox.checked;
-    if (this.useLegacyHttpCheckbox) window.optimizationSettings.useLegacyHttp = this.useLegacyHttpCheckbox.checked;
-    if (this.ttsMinFirstChunkLengthInput) window.optimizationSettings.ttsMinFirstChunkLength = parseInt(this.ttsMinFirstChunkLengthInput.value, 10) || 0;
-    if (this.ttsMaxFirstChunkLengthInput) window.optimizationSettings.ttsMaxFirstChunkLength = parseInt(this.ttsMaxFirstChunkLengthInput.value, 10) || 0;
-    if (this.ttsSubsequentChunkLengthInput) window.optimizationSettings.ttsSubsequentChunkLength = parseInt(this.ttsSubsequentChunkLengthInput.value, 10) || 0;
-  },
-
-  updateVadStateFromUI: function() { // Reads from VAD Debug Panel
-    if (this.vadSpikeThresholdInput) window.optimizationSettings.vadSpikeThreshold = parseFloat(this.vadSpikeThresholdInput.value) || 0;
-    if (this.enableSpikeDetectionCheckbox) window.optimizationSettings.enableSpikeDetection = this.enableSpikeDetectionCheckbox.checked;
-    if (this.enableThirdPartyVadCheckbox) window.optimizationSettings.enableThirdPartyVad = this.enableThirdPartyVadCheckbox.checked;
   },
 
   saveSettings: function() {
     try {
-      localStorage.setItem('optimizationSettings', JSON.stringify(window.optimizationSettings));
+      localStorage.setItem('optimizationSettings', JSON.stringify(this.currentSettings));
+      console.log("[OPTIMIZATION-MGR] Settings saved to localStorage.");
     } catch (e) {
-      console.error('Error saving optimization settings to localStorage:', e);
+      console.error('[OPTIMIZATION-MGR] Error saving settings to localStorage:', e);
     }
+  },
+
+  deepMerge: function(target, source) {
+    for (const key in source) {
+        if (source.hasOwnProperty(key)) {
+            if (source[key] instanceof Object && source[key] !== null && !Array.isArray(source[key])) {
+                if (!target[key]) Object.assign(target, { [key]: {} });
+                this.deepMerge(target[key], source[key]);
+            } else {
+                Object.assign(target, { [key]: source[key] });
+            }
+        }
+    }
+    return target;
+  },
+  
+  setupEventListeners: function() {
+    // --- Event Listeners for Pipeline Optimization Panel ---
+    if (this.applyOptimizationSettingsBtn) {
+        this.applyOptimizationSettingsBtn.addEventListener('click', () => {
+            console.log("[OPTIMIZATION-MGR] Apply Pipeline Settings button clicked.");
+            this.updateCurrentSettingsFromPipelineUI();
+            this.saveSettings();
+            // Notify audio system to re-evaluate connection if necessary (e.g., if model/voice changed)
+            // This could be via a custom event or a direct call if audio-system exposes a method
+            if (window.audioSystem && typeof window.audioSystem.handleSettingsChange === 'function') {
+                window.audioSystem.handleSettingsChange({ type: 'pipeline' });
+            }
+            alert("Pipeline settings applied and saved. May require audio restart if WebSocket parameters changed.");
+        });
+    }
+
+    if (this.resetOptimizationSettingsBtn) {
+        this.resetOptimizationSettingsBtn.addEventListener('click', () => {
+            console.log("[OPTIMIZATION-MGR] Reset Pipeline Settings button clicked.");
+            // Reset only the pipeline part of currentSettings to defaults
+            const pipelineDefaults = (({ useProgressiveTTS, useTokenStreaming, disableVad, disableTts, useLegacyHttp, ttsMinFirstChunkLength, ttsMaxFirstChunkLength, ttsSubsequentChunkLength, chatModel, ttsVoice }) => 
+                                    ({ useProgressiveTTS, useTokenStreaming, disableVad, disableTts, useLegacyHttp, ttsMinFirstChunkLength, ttsMaxFirstChunkLength, ttsSubsequentChunkLength, chatModel, ttsVoice }))(this.defaultSettings);
+            for (const key in pipelineDefaults) {
+                this.currentSettings[key] = pipelineDefaults[key];
+            }
+            this.updatePipelineOptimizationUI();
+            this.saveSettings();
+            alert("Pipeline settings reset to defaults. Saved.");
+        });
+    }
+
+    // Individual pipeline controls update currentSettings directly (no save until "Apply")
+    const pipelineControls = [
+        { el: this.useProgressiveTTSCheckbox, key: 'useProgressiveTTS', type: 'checked' },
+        { el: this.useTokenStreamingCheckbox, key: 'useTokenStreaming', type: 'checked' },
+        { el: this.disableVadCheckbox, key: 'disableVad', type: 'checked' },
+        { el: this.disableTtsCheckbox, key: 'disableTts', type: 'checked' },
+        { el: this.useLegacyHttpCheckbox, key: 'useLegacyHttp', type: 'checked' },
+        { el: this.ttsMinFirstChunkLengthInput, key: 'ttsMinFirstChunkLength', type: 'valueInt' },
+        { el: this.ttsMaxFirstChunkLengthInput, key: 'ttsMaxFirstChunkLength', type: 'valueInt' },
+        { el: this.ttsSubsequentChunkLengthInput, key: 'ttsSubsequentChunkLength', type: 'valueInt' }
+    ];
+    pipelineControls.forEach(ctrl => {
+        if (ctrl.el) {
+            ctrl.el.addEventListener('input', (e) => { // 'input' for text, 'change' for checkbox
+                this.currentSettings[ctrl.key] = ctrl.type === 'checked' ? e.target.checked : parseInt(e.target.value, 10);
+                // No save here, only on "Apply"
+            });
+        }
+    });
+
+    // --- Event Listeners for VAD Settings Panel (formerly in audio-system.js) ---
+    const vadSliders = [
+        { slider: this.thresholdSlider, valueDisplay: this.thresholdValueDisplay, key: 'threshold', type: 'float' },
+        { slider: this.silenceTimeoutSlider, valueDisplay: this.silenceTimeoutValueDisplay, key: 'silenceTimeoutSec', type: 'float' },
+        { slider: this.minSpeechDurationSlider, valueDisplay: this.minSpeechDurationValueDisplay, key: 'minSpeechDurationSec', type: 'float' },
+        { slider: this.startThresholdSlider, valueDisplay: this.startThresholdValueDisplay, key: 'startThreshold', type: 'float' },
+        { slider: this.endThresholdSlider, valueDisplay: this.endThresholdValueDisplay, key: 'endThreshold', type: 'float' },
+        { slider: this.smoothingWindowSlider, valueDisplay: this.smoothingWindowValueDisplay, key: 'rmsSmoothingWindowSec', type: 'float' },
+        { slider: this.hangoverSlider, valueDisplay: this.hangoverValueDisplay, key: 'hangoverDurationSec', type: 'float' },
+        { slider: this.vadSpikeThresholdInput, valueDisplay: this.vadSpikeThresholdValueDisplay, key: 'vadSpikeThreshold', type: 'float' } // This was an input, not slider
+    ];
+
+    vadSliders.forEach(item => {
+        if (item.slider) {
+            item.slider.addEventListener('input', (e) => {
+                const value = item.type === 'float' ? parseFloat(e.target.value) : parseInt(e.target.value, 10);
+                this.currentSettings[item.key] = value;
+                if (item.valueDisplay) item.valueDisplay.textContent = value.toFixed(item.type === 'float' ? (item.key === 'vadSpikeThreshold' ? 2 : 1) : 0);
+                 // No save here, only on "Apply VAD Settings"
+            });
+        }
+    });
+    
+    // VAD Checkboxes
+    const vadCheckboxes = [
+        { el: this.enableSpikeDetectionCheckbox, key: 'enableSpikeDetection' },
+        { el: this.enableThirdPartyVadCheckbox, key: 'enableThirdPartyVad' }
+    ];
+    vadCheckboxes.forEach(ctrl => {
+        if (ctrl.el) {
+            ctrl.el.addEventListener('change', (e) => {
+                this.currentSettings[ctrl.key] = e.target.checked;
+                 // No save here, only on "Apply VAD Settings"
+            });
+        }
+    });
+
+    if (this.applyVadSettingsBtn) {
+        this.applyVadSettingsBtn.addEventListener('click', () => {
+            console.log("[OPTIMIZATION-MGR] Apply VAD Settings button clicked.");
+            // No need to call updateCurrentSettingsFromVadUI if individual listeners are already updating currentSettings
+            this.saveSettings();
+            // Notify audio system that VAD settings have changed
+            if (window.audioSystem && typeof window.audioSystem.handleSettingsChange === 'function') {
+                window.audioSystem.handleSettingsChange({ type: 'vad' });
+            }
+            alert("VAD settings applied and saved. Will be used on next audio segment or WebSocket (re)connection.");
+        });
+    }
+    
+    // Latency Stats Reset Button
+    if (this.resetLatencyStatsBtn) {
+        this.resetLatencyStatsBtn.addEventListener('click', () => {
+            console.log("[OPTIMIZATION-MGR] Reset Latency Stats button clicked.");
+            this.currentSettings.latencyStats = JSON.parse(JSON.stringify(this.defaultSettings.latencyStats));
+            this.updateLatencyStatsUI(); // This function would update the debugPanel latency display
+            this.saveSettings();
+            alert("Latency stats reset and saved.");
+        });
+    }
+  },
+
+  // --- UI Update Functions ---
+  updateAllUIToReflectCurrentSettings: function() {
+    this.updatePipelineOptimizationUI();
+    this.updateVadSettingsUI();
+    this.updateLatencyStatsUI();
+  },
+
+  updatePipelineOptimizationUI: function() {
+    if (this.useProgressiveTTSCheckbox) this.useProgressiveTTSCheckbox.checked = this.currentSettings.useProgressiveTTS;
+    if (this.useTokenStreamingCheckbox) this.useTokenStreamingCheckbox.checked = this.currentSettings.useTokenStreaming;
+    if (this.disableVadCheckbox) this.disableVadCheckbox.checked = this.currentSettings.disableVad;
+    if (this.disableTtsCheckbox) this.disableTtsCheckbox.checked = this.currentSettings.disableTts;
+    if (this.useLegacyHttpCheckbox) this.useLegacyHttpCheckbox.checked = this.currentSettings.useLegacyHttp;
+    if (this.ttsMinFirstChunkLengthInput) this.ttsMinFirstChunkLengthInput.value = this.currentSettings.ttsMinFirstChunkLength;
+    if (this.ttsMaxFirstChunkLengthInput) this.ttsMaxFirstChunkLengthInput.value = this.currentSettings.ttsMaxFirstChunkLength;
+    if (this.ttsSubsequentChunkLengthInput) this.ttsSubsequentChunkLengthInput.value = this.currentSettings.ttsSubsequentChunkLength;
+    // Update model and voice dropdowns if they are part of this panel
+    const modelSel = document.getElementById('model');
+    if (modelSel) modelSel.value = this.currentSettings.chatModel;
+    const voiceSel = document.getElementById('voice');
+    if (voiceSel) voiceSel.value = this.currentSettings.ttsVoice;
+  },
+
+  updateVadSettingsUI: function() {
+    const vadSlidersMap = [
+        { slider: this.thresholdSlider, valueDisplay: this.thresholdValueDisplay, key: 'threshold', type: 'float' },
+        { slider: this.silenceTimeoutSlider, valueDisplay: this.silenceTimeoutValueDisplay, key: 'silenceTimeoutSec', type: 'float' },
+        { slider: this.minSpeechDurationSlider, valueDisplay: this.minSpeechDurationValueDisplay, key: 'minSpeechDurationSec', type: 'float' },
+        { slider: this.startThresholdSlider, valueDisplay: this.startThresholdValueDisplay, key: 'startThreshold', type: 'float' },
+        { slider: this.endThresholdSlider, valueDisplay: this.endThresholdValueDisplay, key: 'endThreshold', type: 'float' },
+        { slider: this.smoothingWindowSlider, valueDisplay: this.smoothingWindowValueDisplay, key: 'rmsSmoothingWindowSec', type: 'float' },
+        { slider: this.hangoverSlider, valueDisplay: this.hangoverValueDisplay, key: 'hangoverDurationSec', type: 'float' },
+        { slider: this.vadSpikeThresholdInput, valueDisplay: this.vadSpikeThresholdValueDisplay, key: 'vadSpikeThreshold', type: 'float' }
+    ];
+    vadSlidersMap.forEach(item => {
+        if (item.slider) item.slider.value = this.currentSettings[item.key];
+        if (item.valueDisplay) item.valueDisplay.textContent = parseFloat(this.currentSettings[item.key]).toFixed(item.key === 'vadSpikeThreshold' ? 2 : 1);
+    });
+
+    if (this.enableSpikeDetectionCheckbox) this.enableSpikeDetectionCheckbox.checked = this.currentSettings.enableSpikeDetection;
+    if (this.enableThirdPartyVadCheckbox) this.enableThirdPartyVadCheckbox.checked = this.currentSettings.enableThirdPartyVad;
+  },
+  
+  updateLatencyStatsUI: function() {
+    // This function would populate the latency statistics in the debugPanel
+    // Example:
+    // const avgTextLatencyEl = document.getElementById('avgTextLatency');
+    // if (avgTextLatencyEl && this.currentSettings.latencyStats.textLatency.length > 0) {
+    //   const avg = this.currentSettings.latencyStats.textLatency.reduce((a, b) => a + b, 0) / this.currentSettings.latencyStats.textLatency.length;
+    //   avgTextLatencyEl.textContent = `${avg.toFixed(0)} ms`;
+    // }
+    console.log("[OPTIMIZATION-MGR] Latency stats UI update requested (implementation pending).");
+  },
+
+  // --- Settings Update from UI (called by "Apply" buttons) ---
+  updateCurrentSettingsFromPipelineUI: function() {
+    if (this.useProgressiveTTSCheckbox) this.currentSettings.useProgressiveTTS = this.useProgressiveTTSCheckbox.checked;
+    if (this.useTokenStreamingCheckbox) this.currentSettings.useTokenStreaming = this.useTokenStreamingCheckbox.checked;
+    if (this.disableVadCheckbox) this.currentSettings.disableVad = this.disableVadCheckbox.checked;
+    if (this.disableTtsCheckbox) this.currentSettings.disableTts = this.disableTtsCheckbox.checked;
+    if (this.useLegacyHttpCheckbox) this.currentSettings.useLegacyHttp = this.useLegacyHttpCheckbox.checked;
+    if (this.ttsMinFirstChunkLengthInput) this.currentSettings.ttsMinFirstChunkLength = parseInt(this.ttsMinFirstChunkLengthInput.value, 10) || this.defaultSettings.ttsMinFirstChunkLength;
+    if (this.ttsMaxFirstChunkLengthInput) this.currentSettings.ttsMaxFirstChunkLength = parseInt(this.ttsMaxFirstChunkLengthInput.value, 10) || this.defaultSettings.ttsMaxFirstChunkLength;
+    if (this.ttsSubsequentChunkLengthInput) this.currentSettings.ttsSubsequentChunkLength = parseInt(this.ttsSubsequentChunkLengthInput.value, 10) || this.defaultSettings.ttsSubsequentChunkLength;
+    
+    const modelSel = document.getElementById('model');
+    if (modelSel) this.currentSettings.chatModel = modelSel.value;
+    const voiceSel = document.getElementById('voice');
+    if (voiceSel) this.currentSettings.ttsVoice = voiceSel.value;
+  },
+
+  // updateCurrentSettingsFromVadUI: function() { // Not strictly needed if individual listeners update currentSettings
+  //   // This would read all VAD sliders/checkboxes and update currentSettings
+  //   // Example:
+  //   // if (this.thresholdSlider) this.currentSettings.threshold = parseFloat(this.thresholdSlider.value);
+  //   // ... for all VAD controls
+  // },
+
+  // --- Getters for audio-system.js ---
+  getCurrentPipelineOptions: function() {
+    // These are the options relevant for the WebSocket query string or initial setup messages
+    return {
+      Language: document.getElementById('language')?.value || 'en', // Assuming language is still a top-level selector
+      ChatModel: this.currentSettings.chatModel,
+      TtsVoice: this.currentSettings.ttsVoice,
+      DisableVad: this.currentSettings.disableVad,
+      DisableTts: this.currentSettings.disableTts,
+      DisableProgressiveTts: !this.currentSettings.useProgressiveTTS,
+      TtsMinFirstChunkLength: this.currentSettings.ttsMinFirstChunkLength,
+      TtsMaxFirstChunkLength: this.currentSettings.ttsMaxFirstChunkLength,
+      TtsSubsequentChunkLength: this.currentSettings.ttsSubsequentChunkLength,
+      // Add any other pipeline-related settings the server expects
+    };
+  },
+
+  getCurrentVadSettings: function() {
+    // These are the VAD settings the server/audio-system might need
+    // Consolidate VAD settings here. Choose primary names if there were redundancies.
+    return {
+      Threshold: this.currentSettings.threshold,
+      SilenceTimeoutSec: this.currentSettings.silenceTimeoutSec,
+      MinSpeechDurationSec: this.currentSettings.minSpeechDurationSec,
+      StartThreshold: this.currentSettings.startThreshold,
+      EndThreshold: this.currentSettings.endThreshold,
+      RmsSmoothingWindowSec: this.currentSettings.rmsSmoothingWindowSec,
+      HangoverDurationSec: this.currentSettings.hangoverDurationSec,
+      
+      VadSpikeThreshold: this.currentSettings.vadSpikeThreshold, // From original optimization panel
+      EnableSpikeDetection: this.currentSettings.enableSpikeDetection, // From original optimization panel
+      EnableThirdPartyVad: this.currentSettings.enableThirdPartyVad, // From original optimization panel
+
+      // Include WebRTC VAD specific settings if they are actively used and sent to server
+      UseWebRTCVAD: this.currentSettings.useWebRTCVAD,
+      WebRTCVADMode: this.currentSettings.webRTCVADMode,
+      // ... other WebRTC VAD params if needed by backend
+    };
+  },
+  
+  // --- Latency Tracking (if still managed here) ---
+  trackLatency: function(point) {
+    if (!this.currentSettings.latencyStats) this.resetLatencyStats(); // Ensure structure exists
+    this.currentSettings.latencyStats[point] = Date.now();
+
+    // Example calculations (can be expanded)
+    if (point === 'transcriptionReceived' && this.currentSettings.latencyStats.recordingStart) {
+        const lat = this.currentSettings.latencyStats.transcriptionReceived - this.currentSettings.latencyStats.recordingStart;
+        this.currentSettings.latencyStats.recordingToTranscriptLatency.push(lat);
+    }
+    // Add other latency calculations as points are hit
+    this.updateLatencyStatsUI(); // Update display
+    // this.saveSettings(); // Optionally save stats frequently, or only with other settings
+  },
+  
+  updateSettingsFromServer: function(serverSettings) {
+    console.log("[OPTIMIZATION-MGR] Received settings update from server:", serverSettings);
+    // Carefully merge server settings into currentSettings
+    // This is important if the server can override client-side preferences
+    for (const key in serverSettings) {
+        if (this.currentSettings.hasOwnProperty(key) && typeof this.currentSettings[key] !== 'object') { // Avoid overwriting nested objects like latencyStats directly
+            this.currentSettings[key] = serverSettings[key];
+        } else if (this.currentSettings.hasOwnProperty(key) && typeof this.currentSettings[key] === 'object' && this.currentSettings[key] !== null) {
+            // For nested objects, merge them (e.g., if server sends partial VAD settings)
+            this.deepMerge(this.currentSettings[key], serverSettings[key]);
+        }
+    }
+    this.updateAllUIToReflectCurrentSettings();
+    this.saveSettings(); // Save the server-updated settings
+    console.log("[OPTIMIZATION-MGR] Applied and saved server settings. Current settings:", JSON.parse(JSON.stringify(this.currentSettings)));
   }
 };
 
-// Ensure optimizationManager is globally accessible
+// Make optimizationManager globally accessible
+// If main.js imports it as a module, this line is not strictly necessary for main.js
+// but audio-system.js might rely on it if it doesn't import optimizationManager.
 window.optimizationManager = optimizationManager;
+
+// Example of how audio-system.js would get settings:
+// const pipelineOpts = window.optimizationManager.getCurrentPipelineOptions();
+// const vadSettings = window.optimizationManager.getCurrentVadSettings();
