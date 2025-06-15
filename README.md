@@ -192,3 +192,36 @@ Das Projekt enthält Tests, darunter:
 *   Ein spezifischer Test `ElefantenAudio_ReturnsExpectedPrompt` (erwähnt im alten README) verwendet eine Testdatei, um den `/api/processAudio`-Endpunkt zu validieren. Es ist wichtig, solche Tests aktuell zu halten und zu erweitern.
 
 Diese detaillierte Beschreibung sollte einen umfassenden Einblick in die Funktionsweise der Anwendung geben und als Grundlage für zukünftige Entwicklungen und Einarbeitungen dienen.
+
+## 7. Web-Frontend (`wwwroot/`)
+
+Das mitgelieferte Web-Frontend dient als Referenzimplementierung und als Testumgebung für die Backend-Funktionalitäten. Es ist eine Single-Page-Application (SPA), die mit HTML, CSS und reinem JavaScript implementiert ist.
+
+### 7.1. Struktur und Komponenten
+
+*   **`index.html`**: Definiert die Hauptstruktur der Benutzeroberfläche. Enthält Steuerelemente für die Modellauswahl (Chat, Sprache, TTS-Stimme), Buttons zur Interaktionssteuerung (Aufnahme starten/stoppen, Chat leeren) und Bereiche zur Anzeige des Chatverlaufs sowie detaillierte Panels für Debugging und Performance-Optimierung.
+*   **`js/main.js`**: Der Einstiegspunkt der Frontend-Anwendung. Initialisiert die verschiedenen JavaScript-Module und lädt anfängliche Daten wie Chat-Modelle, TTS-Stimmen und die bestehende Chat-Historie vom Backend.
+*   **`js/audio-system.js`**: Diese Komponente ist zentral für die gesamte Audiointeraktion:
+    *   **Audioaufnahme**: Greift über `navigator.mediaDevices.getUserMedia` auf das Mikrofon zu.
+    *   **WebSocket-Kommunikation**: Stellt eine Verbindung zum `/ws/audio` Endpunkt des Backends her. Über diese Verbindung werden kontinuierlich Audio-Frames (PCM, 16kHz, 1-Kanal, 20ms) an den Server gesendet. Es werden ebenfalls JSON-Nachrichten für Steuerungszwecke (z.B. `updateVadSettings`, `updatePipelineOptions`) gesendet und Server-Events (`prompt`, `token`, `audioChunk`, `done`, `error`) empfangen.
+    *   **Audio-Wiedergabe**: Verarbeitet die vom Server als `audioChunk` gesendeten TTS-Daten. Nutzt die Web Audio API, um diese Chunks (typischerweise Base64-kodierte MP3-Segmente) zu dekodieren und sequenziell abzuspielen, was Progressive TTS ermöglicht.
+    *   **Legacy HTTP Pipeline**: Beinhaltet eine alternative Methode zur Audioverarbeitung, bei der die gesamte Aufnahme an `/api/processAudio` gesendet und die Sprachausgabe von `/api/speech` abgerufen wird. Dies dient als Fallback oder für Tests.
+*   **`js/ui-manager.js`**: Verantwortlich für die dynamische Manipulation des Document Object Model (DOM). Dies umfasst das Anzeigen von Benutzer- und Bot-Nachrichten im Chat-Protokoll, das Aktualisieren von Statusanzeigen und Latenzinformationen sowie das Management der Sichtbarkeit der Debug- und Optimierungs-Panels.
+*   **`js/optimization-manager.js`**: Verwaltet die Logik hinter den Einstellungs-Panels:
+    *   **Pipeline-Optionen**: Ermöglicht das Umschalten von Funktionen wie Progressive TTS, Token Streaming, VAD-Nutzung und TTS-Nutzung.
+    *   **VAD-Einstellungen**: Bietet detaillierte Kontrolle über serverseitige VAD-Parameter (Spike Detection, Schwellenwerte etc.).
+    *   **Persistenz**: Speichert die vom Benutzer vorgenommenen Einstellungen im `localStorage` des Browsers.
+    *   **Backend-Synchronisation**: Sendet die geänderten Einstellungen über WebSocket-Nachrichten (`updateVadSettings`, `updatePipelineOptions`) an das Backend, um dessen Verhalten zur Laufzeit anzupassen.
+
+### 7.2. Kernfunktionalitäten und Überlegungen für andere Clients (z.B. Unity)
+
+Das Web-Frontend demonstriert die Kerninteraktion mit dem Backend. Für einen alternativen Client, wie eine VR-Anwendung in Unity, sind folgende Aspekte zentral:
+
+*   **Audio-Ein-/Ausgabe**: Der Client muss Audio vom Mikrofon aufnehmen und im vom Server erwarteten Format (16kHz PCM, 20ms Frames) bereitstellen können. Ebenso muss er die empfangenen Audio-Chunks (TTS-Antworten) dekodieren und abspielen können.
+*   **WebSocket-Verbindung**: Eine stabile WebSocket-Implementierung ist notwendig, um:
+    *   Audio-Daten kontinuierlich an den `/ws/audio` Endpunkt zu streamen.
+    *   JSON-basierte Nachrichten vom Server zu empfangen und zu parsen (für Transkripte, LLM-Tokens, Audio-Daten, Status-Updates).
+    *   Optional: JSON-basierte Nachrichten an den Server zu senden, um `PipelineOptions` oder `VadSettings` dynamisch anzupassen. Dies ist nützlich, um das Verhalten an unterschiedliche Nutzer oder Umgebungen anzupassen, ohne das Backend neu starten zu müssen.
+*   **Minimale Client-Logik**: Die Kernlogik (VAD, STT, LLM, TTS) verbleibt auf dem Server. Der Client ist primär für die Audio-Interaktion und die Darstellung der Ergebnisse zuständig. Die umfangreichen Debug- und Konfigurations-UI-Elemente des Web-Frontends sind für einen Endanwender-Client (wie in VR) nicht zwingend erforderlich und können für eine schlankere Implementierung weggelassen werden.
+
+Das Ziel ist es, den Client so einfach wie möglich zu halten, während die volle Funktionalität durch die serverseitige Verarbeitung gewährleistet wird. Die im Web-Frontend vorhandenen Debug-Panels sind wertvoll für Testzwecke, zeigen aber auch die Flexibilität der Backend-Konfiguration über die WebSocket-Schnittstelle.
