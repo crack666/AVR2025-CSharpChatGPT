@@ -278,19 +278,30 @@ async function attemptAutomaticAudioStart() {
             updateUIAfterAudioInitAttempt(false, 'AudioContext blocked'); // Inform UI, but don't mark as critical error yet
             return;
         }
-        // Don't request microphone automatically here, wait for startRecording or specific user action
-        // If we wanted to auto-start mic:
-        // if (!microphoneStream) {
-        //     microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
-        // }
-        // await connectAudioPipeline(); // This would also connect WebSocket
-        // isRecordingActive = true;
-        // updateUIAfterAudioInitAttempt(true);
-        debugLog("AudioContext is running. Ready for user to start recording.");
+        
+        // Automatically request microphone and start recording like the master branch did
+        debugLog("Requesting microphone access automatically on page load...");
+        if (!microphoneStream) {
+            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
+            debugLog("Microphone access granted automatically.");
+        }
+        
+        await connectAudioPipeline(); // This will also connect WebSocket
+        isRecordingActive = true;
+        updateUIAfterAudioInitAttempt(true);
+        debugLog("Automatic audio start completed successfully. Recording is now active.");
 
     } catch (error) {
         console.warn("Automatic audio start failed:", error);
-        updateUIAfterAudioInitAttempt(false, 'Automatic start failed');
+        let reason = 'Automatic start failed';
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            reason = 'Microphone access denied';
+        } else if (error.message.includes('AudioContext')) {
+            reason = 'AudioContext issue';
+        } else if (error.message.includes('WebSocket')) {
+            reason = 'WebSocket connection error: ' + error.message;
+        }
+        updateUIAfterAudioInitAttempt(false, reason);
     }
 }
 

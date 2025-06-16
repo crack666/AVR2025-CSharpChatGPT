@@ -1,10 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
+<Project Sdk="Microsoft.NET.Sdk.Web">  <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>11.0</LangVersion>
     <Platforms>AnyCPU;x64</Platforms>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <!-- Static files (HTML/JS) served from wwwroot -->
   <!-- Only compile explicit code files in this project; exclude all others (e.g., tests) -->
@@ -25,7 +26,7 @@
     <ProjectReference Include="VoiceAssistant.Core/VoiceAssistant.Core.csproj" />
     <ProjectReference Include="VoiceAssistant.Plugins.OpenAI/VoiceAssistant.Plugins.OpenAI.csproj" />
     <!-- VAD: WebRTC Voice Activity Detection for backend streaming service -->
-    <PackageReference Include="WebRtcVadSharp" Version="1.0.6" />
+    <PackageReference Include="WebRtcVadSharp" Version="1.1.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Serilog logging -->
