@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Debug Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .debug-log { 
+            background: #f0f0f0; 
+            padding: 10px; 
+            margin: 10px 0; 
+            height: 400px; 
+            overflow-y: scroll; 
+            border: 1px solid #ccc;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .button { 
+            padding: 10px 20px; 
+            margin: 5px; 
+            font-size: 16px; 
+            background: #007cba; 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+        }
+        .button:disabled { background: #ccc; }
+        .status { 
+            padding: 10px; 
+            margin: 10px 0; 
+            background: #e8f4f8; 
+            border-left: 4px solid #007cba;
+        }
+        .error { background: #ffeaea; border-left-color: #d63384; }
+    </style>
+</head>
+<body>
+    <h1>Voice Assistant Audio Debug</h1>
+    
+    <div class="status" id="status">Loading...</div>
+    
+    <button class="button" id="startBtn" onclick="startRecording()">Start Recording</button>
+    <button class="button" id="stopBtn" onclick="stopRecording()">Stop Recording</button>
+    <button class="button" onclick="clearLog()">Clear Log</button>
+    
+    <h3>Audio Level:</h3>
+    <div style="background: #f0f0f0; padding: 10px; border: 1px solid #ccc;">
+        <div id="audioLevel" style="background: #007cba; height: 20px; width: 0%; transition: width 0.1s;"></div>
+        <span id="audioLevelText">0.000000</span>
+    </div>
+    
+    <h3>Debug Log:</h3>
+    <div class="debug-log" id="debugLog"></div>
+
+    <script type="module">
+        import { startRecording as audioStartRecording, stopRecording as audioStopRecording, initAudioSystem } from './js/audio-system.js';
+        
+        let logElement = document.getElementById('debugLog');
+        let statusElement = document.getElementById('status');
+        let audioLevelElement = document.getElementById('audioLevel');
+        let audioLevelTextElement = document.getElementById('audioLevelText');
+        let startBtn = document.getElementById('startBtn');
+        let stopBtn = document.getElementById('stopBtn');
+        
+        // Override console.log to capture debug messages
+        const originalConsoleLog = console.log;
+        console.log = function(...args) {
+            originalConsoleLog.apply(console, args);
+            
+            // Check if this is an audio system debug message
+            if (args.length > 0 && typeof args[0] === 'string' && args[0].includes('[AUDIO-SYSTEM]')) {
+                addToLog('LOG: ' + args.join(' '));
+            }
+        };
+        
+        // Override console.error to capture errors
+        const originalConsoleError = console.error;
+        console.error = function(...args) {
+            originalConsoleError.apply(console, args);
+            addToLog('ERROR: ' + args.join(' '), true);
+        };
+        
+        function addToLog(message, isError = false) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.style.color = isError ? 'red' : 'black';
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logElement.appendChild(logEntry);
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+        
+        function updateStatus(message, isError = false) {
+            statusElement.textContent = message;
+            statusElement.className = isError ? 'status error' : 'status';
+        }
+        
+        // Mock UI Manager for audio visualization
+        window.uiManager = {
+            updateAudioVisualization: function(rms) {
+                const percentage = Math.min(100, rms * 1000); // Scale RMS for visualization
+                audioLevelElement.style.width = percentage + '%';
+                audioLevelTextElement.textContent = rms.toFixed(6);
+                
+                if (rms > 0.001) {
+                    addToLog(`Audio detected: RMS=${rms.toFixed(6)}`);
+                }
+            },
+            showStatus: function(message, isError = false) {
+                updateStatus(message, isError);
+            },
+            hideStatus: function() {
+                updateStatus('Ready');
+            },
+            updateButtonStates: function(isRecording) {
+                startBtn.disabled = isRecording;
+                stopBtn.disabled = !isRecording;
+                updateStatus(isRecording ? 'Recording...' : 'Ready');
+            }
+        };
+        
+        // Mock Optimization Manager
+        window.optimizationManager = {
+            getCurrentPipelineOptions: function() {
+                return {
+                    ChatModel: 'gpt-3.5-turbo',
+                    TtsVoice: 'nova',
+                    Language: 'de-DE',
+                    DisableVad: false,
+                    DisableTts: false,
+                    DisableProgressiveTts: false
+                };
+            },
+            getCurrentVadSettings: function() {
+                return {
+                    Threshold: 0.5,
+                    SilenceTimeoutSec: 1,
+                    MinSpeechDurationSec: 0.2,
+                    StartThreshold: 0.5,
+                    EndThreshold: 0.3,
+                    RmsSmoothingWindowSec: 0.1,
+                    HangoverDurationSec: 0.5,
+                    VadSpikeThreshold: 0.15,
+                    EnableSpikeDetection: true,
+                    EnableThirdPartyVad: true,
+                    UseWebRTCVAD: false,
+                    WebRTCVADMode: 1
+                };
+            }
+        };
+        
+        // Global functions for buttons
+        window.startRecording = async function() {
+            addToLog('User clicked Start Recording');
+            try {
+                await audioStartRecording();
+            } catch (error) {
+                addToLog('Error in startRecording: ' + error.message, true);
+            }
+        };
+        
+        window.stopRecording = async function() {
+            addToLog('User clicked Stop Recording');
+            try {
+                await audioStopRecording();
+            } catch (error) {
+                addToLog('Error in stopRecording: ' + error.message, true);
+            }
+        };
+        
+        window.clearLog = function() {
+            logElement.innerHTML = '';
+        };
+        
+        // Initialize
+        addToLog('Debug page loaded. Initializing audio system...');
+        initAudioSystem().then(() => {
+            addToLog('Audio system initialized');
+        }).catch(error => {
+            addToLog('Error initializing audio system: ' + error.message, true);
+        });
+    </script>
+</body>
+</html>

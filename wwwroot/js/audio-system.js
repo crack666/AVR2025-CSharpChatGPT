@@ -165,6 +165,7 @@ export async function startRecording() {
         return;
     }
     debugLog("Attempting to start recording...");
+    debugLog("TEMP DEBUG: startRecording() called");
     if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
         window.uiManager.showStatus("Verbinde Audio-Pipeline...");
     }
@@ -176,24 +177,29 @@ export async function startRecording() {
     }
 
     try {
+        debugLog("TEMP DEBUG: About to resume AudioContext");
         const contextRunning = await resumeAudioContext();
+        debugLog(`TEMP DEBUG: AudioContext resume result: ${contextRunning}`);
         if (!contextRunning) {
             updateUIAfterAudioInitAttempt(false, 'AudioContext not running after resume attempt.');
             return;
         }
 
         if (!microphoneStream) {
-            debugLog("Requesting microphone access...");
+            debugLog("TEMP DEBUG: Requesting microphone access...");
             microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
-            debugLog("Microphone access granted.");
+            debugLog("TEMP DEBUG: Microphone access granted.");
         }
 
+        debugLog("TEMP DEBUG: About to connect audio pipeline");
         await connectAudioPipeline(); // This will also connect WebSocket with new params
         isRecordingActive = true;
+        debugLog("TEMP DEBUG: Recording is now active, updating UI");
         updateUIAfterAudioInitAttempt(true);
 
     } catch (error) {
         console.error("Failed to start recording:", error);
+        debugLog("TEMP DEBUG: Error in startRecording:", error.message);
         let reason = 'Unknown error during startRecording';
         if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
             reason = 'Microphone access denied';
@@ -313,14 +319,30 @@ async function connectAudioPipeline() {
 
     debugLog('Connecting audio pipeline...');
     if (mediaStreamSource) mediaStreamSource.disconnect();
-    if (scriptProcessorNode) scriptProcessorNode.disconnect();
-
-    mediaStreamSource = ac.createMediaStreamSource(microphoneStream);
+    if (scriptProcessorNode) scriptProcessorNode.disconnect();    mediaStreamSource = ac.createMediaStreamSource(microphoneStream);
+    debugLog('TEMP DEBUG: MediaStreamSource created');
+    
     const bufferSize = 4096;
     scriptProcessorNode = ac.createScriptProcessor(bufferSize, 1, 1);
-
+    debugLog(`TEMP DEBUG: ScriptProcessorNode created with buffer size: ${bufferSize}`);
+    
+    let audioProcessCallCount = 0;
+    
     scriptProcessorNode.onaudioprocess = (audioProcessingEvent) => {
-        if (!isRecordingActive) return; // Only gate on isRecordingActive
+        audioProcessCallCount++;
+        
+        // TEMPORARY DEBUG: Log the first few calls and periodically
+        if (audioProcessCallCount === 1) {
+            debugLog("TEMP DEBUG: FIRST onaudioprocess callback executed!");
+        }
+        if (audioProcessCallCount <= 5 || audioProcessCallCount % 100 === 0) {
+            debugLog(`TEMP DEBUG: onaudioprocess callback #${audioProcessCallCount} executing`);
+        }
+        
+        if (!isRecordingActive) {
+            // Reduced logging - only warn if this happens frequently
+            return;
+        }
         
         // Check if TTS is speaking *only if* progressive TTS is enabled and active
         // For non-progressive, or if TTS is disabled, we should not pause mic input based on isTTSSpeaking
@@ -328,39 +350,73 @@ async function connectAudioPipeline() {
         if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
             pipelineOptions = window.optimizationManager.getCurrentPipelineOptions();
         }
-        const progressiveTTSEnabled = !pipelineOptions.DisableProgressiveTts;
-
-        if (progressiveTTSEnabled && isTTSSpeaking) {
-            // debugLog("Microphone processing paused due to active progressive TTS.");
+        const progressiveTTSEnabled = !pipelineOptions.DisableProgressiveTts;        if (progressiveTTSEnabled && isTTSSpeaking) {
+            // Reduced logging for TTS pause
             return; // Pause sending mic data if progressive TTS is active and speaking
         }
 
+        // Removed periodic debug logging to reduce console spam
+        
         const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
         const currentServerBuffer = audioBufferForServer;
         const combinedBuffer = new Float32Array(currentServerBuffer.length + inputData.length);
         combinedBuffer.set(currentServerBuffer);
         combinedBuffer.set(inputData, currentServerBuffer.length);
         audioBufferForServer = combinedBuffer;
-
+        
+        // DEBUG: Log buffer sizes
+        if (audioProcessCallCount % 100 === 1) {
+            debugLog(`[DEBUG] Buffer accumulation - current: ${currentServerBuffer.length}, input: ${inputData.length}, combined: ${combinedBuffer.length}, SAMPLES_PER_CHUNK: ${SAMPLES_PER_CHUNK}`);
+        }
+        
         while (audioBufferForServer.length >= SAMPLES_PER_CHUNK) {
             const chunkToProcess = audioBufferForServer.slice(0, SAMPLES_PER_CHUNK);
             audioBufferForServer = audioBufferForServer.slice(SAMPLES_PER_CHUNK);
+            // DEBUG: Log when chunks are sent
+            if (audioProcessCallCount % 50 === 1) { // Increased frequency from 100 to 50
+                debugLog(`[DEBUG] Sending audio chunk to server, length: ${chunkToProcess.length}, SAMPLES_PER_CHUNK: ${SAMPLES_PER_CHUNK}`);
+            }
             sendAudioChunkToServer(chunkToProcess);
         }
         
         let sumSquares = 0.0;
         for (const sample of inputData) sumSquares += sample * sample;
         const rms = Math.sqrt(sumSquares / inputData.length);
+        
+        // TEMPORARY DEBUG: Log RMS values to see if audio is being processed
+        if (Math.random() < 0.05) { // Log ~5% of frames
+            const maxSample = Math.max(...inputData.map(Math.abs));
+            debugLog(`TEMP DEBUG: RMS calculated: ${rms.toFixed(6)}, Max sample: ${maxSample.toFixed(6)}, inputData.length: ${inputData.length}`);
+        }
+        
+        // TEMPORARY DEBUG: Alert on significant audio
+        if (rms > 0.001) {
+            debugLog(`TEMP DEBUG: SIGNIFICANT AUDIO DETECTED! RMS: ${rms.toFixed(6)}`);
+        }
+        
         if (window.uiManager && typeof window.uiManager.updateAudioVisualization === 'function') {
             window.uiManager.updateAudioVisualization(rms);
+            // TEMPORARY DEBUG: Verify this is being called
+            if (Math.random() < 0.01) {
+                debugLog(`TEMP DEBUG: updateAudioVisualization called with RMS: ${rms.toFixed(6)}`);
+            }
+        } else {
+            // TEMPORARY DEBUG: Check if uiManager is missing
+            if (Math.random() < 0.01) {
+                debugLog("TEMP DEBUG: uiManager.updateAudioVisualization not available");
+            }
         }
     };
 
     mediaStreamSource.connect(scriptProcessorNode);
+    debugLog('TEMP DEBUG: MediaStreamSource connected to ScriptProcessorNode');
+    
     scriptProcessorNode.connect(ac.destination);
+    debugLog('TEMP DEBUG: ScriptProcessorNode connected to AudioContext destination');
 
-    debugLog('Audio pipeline connected to ScriptProcessor.');
+    debugLog('TEMP DEBUG: Audio pipeline fully connected. Calling connectWebSocket...');
     await connectWebSocket();
+    debugLog('TEMP DEBUG: connectAudioPipeline completed successfully');
 }
 
 async function cleanUpAudioResources(sendEndOfStream = true) {
@@ -550,12 +606,17 @@ function sendAudioChunkToServer(float32ArrayChunk) {
             pcmData[i] = Math.max(-32768, Math.min(32767, float32ArrayChunk[i] * 32768));
         }
         try {
-            webSocket.send(pcmData.buffer); // Send as ArrayBuffer
+            webSocket.send(pcmData.buffer); // Send as ArrayBuffer            
+            // DEBUG: Log successful sends
+            if (Math.random() < 0.05) { // Increased from 0.01 to 0.05 (5% of sends)
+                debugLog(`[DEBUG] Successfully sent audio chunk to server, length: ${pcmData.length}, buffer size: ${pcmData.buffer.byteLength} bytes`);
+                debugLog(`[DEBUG] WebSocket state: ${webSocket.readyState}, Binary type: ${webSocket.binaryType}`);
+            }
         } catch (e) {
             console.error("Error sending audio chunk via WebSocket:", e);
         }
     } else {
-        // console.warn('[WebSocket] Attempted to send audio chunk but WebSocket is not open.');
+        console.warn('[WebSocket] Attempted to send audio chunk but WebSocket is not open. ReadyState:', webSocket?.readyState);
     }
 }
 
