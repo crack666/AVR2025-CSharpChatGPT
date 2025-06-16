@@ -1,3 +1,6 @@
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.IO;
 using System.Linq;
@@ -6,9 +9,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.TestHost;
-using Microsoft.Extensions.DependencyInjection;
 using VoiceAssistant.Core.Interfaces;
 using Xunit;
 
@@ -91,11 +91,11 @@ namespace VoiceAssistant.Tests
             Assert.Contains("elefanten", promptEvent!, StringComparison.InvariantCultureIgnoreCase);
             Assert.Contains("wie", promptEvent!, StringComparison.InvariantCultureIgnoreCase);
         }
-        
+
         // stub recognizer returns the expected prompt synchronously
         private class StubRecognizer : IRecognizer
         {
-            public Task<string> RecognizeAsync(Stream audioStream, string contentType, string fileName)
+            public Task<string> RecognizeAsync(Stream audioStream, string language, string contentType, string fileName)
             {
                 // simulate correct transcript for Elefanten.wav
                 return Task.FromResult("Wie groß werden Elefanten?");

@@ -63,23 +63,17 @@ namespace VoiceAssistant.Tests
             _output.WriteLine($"User input: {userText}");
 
             // 2. Add to chat log
-            chatLogManager.AddMessage(ChatRole.User, userText);
-
-            // 3. Get bot response
-            // Use default model and language for this test
-            string botResponse = await chatService.GenerateResponseAsync(chatLogManager.GetMessages(), "gpt-3.5-turbo", "en");
+            chatLogManager.AddMessage(ChatRole.User, userText);            // 3. Get bot response
+            // Use default model for this test
+            string botResponse = await chatService.GenerateResponseAsync(chatLogManager.GetMessages(), "gpt-3.5-turbo");
 
             // 4. Add to chat log
-            chatLogManager.AddMessage(ChatRole.Bot, botResponse);
-
-            // 5. Generate speech
-            byte[] audio = null;
-            Exception ttsException = null;
-
-            try
+            chatLogManager.AddMessage(ChatRole.Bot, botResponse);            // 5. Generate speech
+            byte[]? audio = null;
+            Exception? ttsException = null;try
             {
-                // Use default voice and language for this test
-                audio = await synthesizer.SynthesizeAsync(botResponse, "alloy", "en");
+                // Use default voice for this test
+                audio = await synthesizer.SynthesizeAsync(botResponse, "alloy");
             }
             catch (Exception ex)
             {
@@ -97,12 +91,10 @@ namespace VoiceAssistant.Tests
 
             // Verify bot response is not empty
             Assert.False(string.IsNullOrWhiteSpace(botResponse));
-            _output.WriteLine($"Bot response: {botResponse}");
-
-            // Verify TTS generated audio
+            _output.WriteLine($"Bot response: {botResponse}");            // Verify TTS generated audio
             Assert.Null(ttsException);
             Assert.NotNull(audio);
-            Assert.True(audio.Length > 0);
+            Assert.True(audio!.Length > 0);
             _output.WriteLine($"TTS audio size: {audio.Length} bytes");
         }
 
@@ -123,18 +115,15 @@ namespace VoiceAssistant.Tests
                 new ChatMessage(Guid.NewGuid(), ChatRole.User, "Write one sentence about the weather.", DateTime.UtcNow)
             };
 
-            var tokens = new List<string>();
-
-            // ACT
+            var tokens = new List<string>();            // ACT
             string response = await chatService.GenerateStreamingResponseAsync(
                 chatHistory,
+                "gpt-3.5-turbo", // Model parameter
                 token =>
                 {
                     tokens.Add(token);
                     _output.WriteLine($"Token: {token}");
-                },
-                "gpt-3.5-turbo", // Default model
-                "en" // Default language
+                }
             );
 
             // ASSERT
@@ -191,38 +180,31 @@ namespace VoiceAssistant.Tests
             _output.WriteLine($"User input (mocked for language {chatLanguage}): {userText}");
 
             // 2. Add to chat log
-            chatLogManager.AddMessage(ChatRole.User, userText);
-
-            // 3. Get bot response with dynamic parameters
-            string botResponse = await chatService.GenerateResponseAsync(chatLogManager.GetMessages(), chatModel, chatLanguage);
+            chatLogManager.AddMessage(ChatRole.User, userText);            // 3. Get bot response with dynamic parameters
+            string botResponse = await chatService.GenerateResponseAsync(chatLogManager.GetMessages(), chatModel);
 
             // 4. Add to chat log
-            chatLogManager.AddMessage(ChatRole.Bot, botResponse);
-
-            // 5. Generate speech with dynamic parameters
-            byte[] audio = null;
-            Exception ttsException = null;
-            try
+            chatLogManager.AddMessage(ChatRole.Bot, botResponse);            // 5. Generate speech with dynamic parameters
+            byte[]? audio = null;
+            Exception? ttsException = null;try
             {
-                audio = await synthesizer.SynthesizeAsync(botResponse, ttsVoice, ttsLanguage);
+                audio = await synthesizer.SynthesizeAsync(botResponse, ttsVoice);
             }
             catch (Exception ex)
             {
                 ttsException = ex;
                 _output.WriteLine($"TTS Exception: {ex}");
-            }
-
-            // ASSERT
+            }            // ASSERT
             var messages = chatLogManager.GetMessages();
             Assert.Equal(2, messages.Count);
             Assert.Equal(ChatRole.User, messages[0].Role);
             Assert.Equal(userText, messages[0].Content);
             Assert.Equal(ChatRole.Bot, messages[1].Role);
             Assert.False(string.IsNullOrWhiteSpace(botResponse));
-            _output.WriteLine($"Bot response (model {chatModel}, lang {chatLanguage}): {botResponse}");
+            _output.WriteLine($"Bot response (model {chatModel}): {botResponse}");
             Assert.Null(ttsException); // Ensure no TTS error
             Assert.NotNull(audio);
-            Assert.True(audio.Length > 0);
+            Assert.True(audio!.Length > 0);
             _output.WriteLine($"TTS audio (voice {ttsVoice}, lang {ttsLanguage}) size: {audio.Length} bytes");
         }
     }

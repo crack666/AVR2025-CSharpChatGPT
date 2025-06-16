@@ -52,11 +52,10 @@ namespace VoiceAssistant.Tests
 
             // Collect tokens
             var tokens = new List<string>();
-            int tokenCount = 0;
-
-            // Act
+            int tokenCount = 0;            // Act
             string fullResponse = await chatService.GenerateStreamingResponseAsync(
                 chatHistory,
+                "gpt-3.5-turbo", // model name parameter
                 token =>
                 {
                     tokens.Add(token);
