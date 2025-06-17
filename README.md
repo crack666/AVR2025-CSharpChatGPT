@@ -33,83 +33,46 @@ Der Einstiegspunkt der Anwendung ist die `Program.cs`-Datei. Hier werden wesentl
     *   `UseDefaultFiles()` und `UseStaticFiles()`: Ermöglichen das Ausliefern von statischen Dateien aus dem `wwwroot`-Verzeichnis (z.B. die Frontend-Anwendung).
     *   `MapControllers()`: Mappt die Routen für die API-Controller.
 
-### 2.2. WebSocket-Audioverarbeitung (`WebSocketAudioService.cs`)
+### 2.2. WebSocket-Audioverarbeitung (moderne Architektur ab 2025)
 
-Der `WebSocketAudioService` ist die komplexeste und zentralste Komponente der Anwendung. Er ist verantwortlich für den Empfang von Audio-Daten über WebSockets, die Durchführung der Voice Activity Detection (VAD), die Koordination von Spracherkennung (STT), Chat-Interaktion und Text-zu-Sprache-Synthese (TTS) sowie das Senden von Ereignissen und Audio-Daten zurück an den Client.
+Die WebSocket-basierte Audioverarbeitung wurde im Zuge des Refactorings von einer monolithischen Klasse (`WebSocketAudioService`) in mehrere spezialisierte Services und Komponenten aufgeteilt. Dies erhöht die Wartbarkeit, Testbarkeit und Erweiterbarkeit.
 
-**Initialisierung und Konfiguration:**
+**Wichtige Komponenten:**
 
-*   Der Konstruktor nimmt verschiedene Dienste entgegen, darunter `IRecognizer`, `IChatService`, `ChatLogManager`, `ISynthesizer`, `ILogger`, sowie die initialen `VadSettings` und `PipelineOptions`.
-*   **Wichtig:** `VadSettings` und `PipelineOptions` sind im `WebSocketAudioService` als Instanzfelder gespeichert und können zur Laufzeit durch spezielle WebSocket-Nachrichten vom Client modifiziert werden (siehe Methoden `HandleUpdateVadSettingsAsync` und `HandleUpdatePipelineOptionsAsync`). Dies ermöglicht eine dynamische Anpassung des Verhaltens ohne Neustart.
-*   Ein `WebRtcVad`-Objekt (`WebRtcVadSharp`-Bibliothek) wird initialisiert und über `ConfigureVad()` konfiguriert. Die Konfiguration (z.B. `OperatingMode`) basiert auf den aktuellen `_settings` (also `VadSettings`).
-*   Der initiale **Rauschpegel (`_noiseFloor`)** wird durch `MeasureInitialNoiseFloor()` für eine kurze Kalibrierungsphase gemessen. Dieser Wert dient als Basis für die VAD-Logik.
+- **WebSocketHandler** (`VoiceAssistant.Core/Services/WebSocketHandler.cs`):
+  - Orchestriert die gesamte WebSocket-Kommunikation pro Session.
+  - Verwaltet den Lebenszyklus der Verbindung, nimmt Audio-Frames entgegen und steuert die Verarbeitungskette.
+  - Reagiert auf Steuerbefehle (z.B. VAD/Pipeline-Updates) und verteilt sie an die zuständigen Services.
+  - Sorgt für Logging und Fehlerbehandlung auf Session-Ebene.
 
-**Hauptverarbeitungsschleife (`HandleAsync`):**
+- **AudioFrameProcessor** (`VoiceAssistant.Core/Services/AudioFrameProcessor.cs`):
+  - Übernimmt die Vorverarbeitung und Segmentierung der eingehenden Audio-Frames (VAD, RMS, Spike Detection etc.).
+  - Erkennt Sprachsegmente und triggert Events für die weitere Verarbeitung.
+  - Kann zur Laufzeit mit neuen VAD- und Pipeline-Settings aktualisiert werden.
 
-Die `HandleAsync`-Methode läuft, solange die WebSocket-Verbindung offen ist und verarbeitet eingehende Nachrichten:
+- **AudioSegmentProcessor** (`VoiceAssistant.Core/Services/AudioSegmentProcessor.cs`):
+  - Übernimmt die Verarbeitung kompletter Sprachsegmente (Transkription, Chat, TTS, Event-Senden).
+  - Kapselt die gesamte Logik für STT, LLM-Interaktion und TTS-Streaming.
+  - Sendet alle relevanten Events/Audioblocks über den WebSocketHandler an den Client.
 
-*   **Nachrichtentypen:**
-    *   `WebSocketMessageType.Close`: Behandelt das Schließen der Verbindung. Wenn noch Audiodaten im Puffer sind (`rawAudio` bei deaktivierter VAD oder `segmentBuffer` bei aktivierter VAD), wird versucht, diese final zu verarbeiten.
-    *   `WebSocketMessageType.Text`: Eingehende Textnachrichten werden als JSON interpretiert. Diese können Steuerbefehle enthalten, z.B. zum Aktualisieren der `VadSettings` (`updateVadSettings`) oder `PipelineOptions` (`updatePipelineOptions`). Die entsprechenden Handler (`HandleUpdateVadSettingsAsync`, `HandleUpdatePipelineOptionsAsync`) parsen das JSON-Payload und aktualisieren die internen Konfigurationsobjekte.
-    *   `WebSocketMessageType.Binary`: Dies sind die rohen Audio-Daten vom Client, erwartet im Format 16kHz, 1 Kanal, 16 Bit PCM, in Frames von `FrameDurationMs` (typischerweise 20ms).
+- **WebSocketSettingsManager** (`VoiceAssistant.Core/Services/WebSocketSettingsManager.cs`):
+  - Kapselt die Logik zur Laufzeit-Aktualisierung von VAD- und Pipeline-Settings via WebSocket.
+  - Validiert und übernimmt neue Einstellungen, sendet Bestätigungen/Fehler an den Client.
 
-*   **Audio-Frame-Verarbeitung (wenn VAD aktiviert):**
-    1.  **Vorverstärkung:** Optional wird eine Vorverstärkung (`_settings.PreAmplification`) auf den Frame angewendet (`ApplyPreAmplification`).
-    2.  **RMS-Berechnung:** Der RMS-Wert des Frames wird berechnet (`CalculateRms`) als Maß für die Energie.
-    3.  **VAD-Logik:**
-        *   **Spike Detection (`_settings.EnableSpikeDetection`):** Wenn aktiv und der Frame-RMS einen Schwellenwert (`_settings.VadSpikeThreshold`) überschreitet (und signifikant über dem Rauschpegel liegt), kann dies einen potenziellen Sprachbeginn signalisieren (`potentialSpikeDetected`).
-        *   **Third-Party VAD (`_settings.EnableThirdPartyVad`):** Wenn aktiv, wird die `_vad.HasSpeech(frame)` Methode der `WebRtcVadSharp`-Bibliothek genutzt, um zu entscheiden, ob der Frame Sprache enthält.
-        *   **Kombinierte Logik:** Die Ergebnisse aus Spike Detection und/oder Third-Party VAD werden kombiniert, um `activeSpeechSignal` zu bestimmen.
-        *   **Rauschpegelanpassung:** Wenn für eine bestimmte Zeit (`_settings.SilenceAdaptationTimeSec`) Stille erkannt wird, wird der Rauschpegel (`_noiseFloor`) neu berechnet und angepasst.
-        *   **Hysterese und Pufferung:**
-            *   `preFrames`: Anzahl der Frames, die vor einem erkannten Sprachbeginn gepuffert werden (`_settings.PreSpeechPaddingMs`).
-            *   `startFrames`: Anzahl der aufeinanderfolgenden Sprachframes, die benötigt werden, um den Zustand `inSpeech` zu aktivieren (`_settings.SpeechStartThresholdMs`).
-            *   `endFrames`: Anzahl der aufeinanderfolgenden Stille-Frames, die benötigt werden, um den Zustand `inSpeech` zu beenden (`_settings.HangOverMs`).
-            *   Wenn `inSpeech` beginnt, werden die gepufferten `preBuffer`-Frames und der aktuelle Frame dem `segmentBuffer` hinzugefügt.
-            *   Solange `inSpeech` aktiv ist, werden alle Frames dem `segmentBuffer` hinzugefügt.
-            *   Wenn `inSpeech` endet (nach `endFrames` Stille-Frames), wird der Inhalt des `segmentBuffer` an `ProcessSegmentAsync` zur weiteren Verarbeitung gesendet und der Buffer geleert.
-    4.  **Audio-Frame-Verarbeitung (wenn VAD deaktiviert - `_pipelineOptions.DisableVad`):**
-        *   Die ankommenden Audio-Frames werden direkt in `rawAudio` gesammelt.
-        *   Die Verarbeitung (`ProcessSegmentAsync`) erfolgt erst, wenn die WebSocket-Verbindung geschlossen wird oder eine spezielle Textnachricht (nicht explizit im Code ersichtlich, aber denkbar) den Abschluss signalisiert.
+- **Weitere Services:**
+  - `ChatLogManager`, `IChatService`, `ISynthesizer`, `IRecognizer` etc. werden als Abhängigkeiten injiziert und von den Prozessoren genutzt.
 
-**Segmentverarbeitung (`ProcessSegmentAsync`):**
+**Ablauf:**
+- Jede WebSocket-Session erhält eigene Instanzen der Handler/Prozessoren (Dependency Injection, Scoped).
+- Audio-Frames werden im Handler empfangen, an den FrameProcessor weitergereicht und bei Segment-Events an den SegmentProcessor übergeben.
+- Steuerbefehle (Settings-Updates) werden über den SettingsManager verarbeitet und propagiert.
+- Logging ist auf Session- und Event-Ebene sehr granular, inkl. CloseStatus, Fehlern und Performance.
 
-Diese Methode wird aufgerufen, sobald ein Sprachsegment durch die VAD (oder durch Schließen der Verbindung bei deaktivierter VAD) finalisiert wurde.
-
-1.  **Minimale Segmentdauer:** Prüft, ob das Segment die in `_settings.MinSegmentDurationSec` definierte Mindestdauer erreicht. Kürzere Segmente werden verworfen, um Rauschen oder kurze Störgeräusche nicht fälschlicherweise zu verarbeiten.
-2.  **Performance-Messung:** Ein `Stopwatch` misst die Gesamtdauer der Segmentverarbeitung.
-3.  **Audio-Vorbereitung:** Die rohen Audio-Bytes werden in einen `MemoryStream` geschrieben und mit einem WAV-Header versehen (`PrepareAudioStreamForTranscription`, `CreateWavHeader`). Dies ist notwendig, da die Spracherkennungs-API typischerweise ein vollständiges Audioformat erwartet.
-4.  **Spracherkennung (STT):**
-    *   `GetTranscriptionAsync` ruft `_recognizer.RecognizeAsync(audioMemoryStream, _pipelineOptions.Language)` auf.
-    *   Der erkannte Text (`prompt`) und die Dauer der Transkription werden erfasst.
-    *   Ein `prompt`-Event mit dem erkannten Text wird an den Client gesendet (`SendEventAsync`).
-5.  **Chat-Verarbeitung:**
-    *   Abhängig von `_pipelineOptions.DisableStreamingChat`:
-        *   **Streaming Chat (`HandleStreamingChatResponseAsync`):**
-            *   Wird verwendet, wenn `_chatService` eine Instanz von `StreamingOpenAIChatService` ist.
-            *   Ruft `streamingChatService.StreamChatAsync` auf.
-            *   Während Tokens vom Chat-Service eintreffen:
-                *   Werden sie aggregiert (`accumulatedTextForTts`, `fullReply`).
-                *   Ein `token`-Event mit dem neuen Token wird an den Client gesendet.
-                *   Wenn Progressive TTS (`!_pipelineOptions.DisableTts && !_pipelineOptions.DisableProgressiveTts`) aktiviert ist und genügend Text für ein TTS-Segment vorhanden ist, wird `_synthesizer.SynthesizeAsync` aufgerufen und das resultierende Audio-Chunk sofort an den Client gesendet (`SendAudioChunkAsync`).
-        *   **Non-Streaming Chat (`HandleNonStreamingChatResponseAsync`):**
-            *   Ruft `_chatService.SendChatAsync` auf, um die vollständige Antwort zu erhalten.
-            *   Wenn TTS aktiviert ist (`!_pipelineOptions.DisableTts`), wird die gesamte Antwort mit `_synthesizer.SynthesizeAsync` synthetisiert und als einzelne Audio-Antwort an den Client gesendet.
-6.  **Logging und finale Events:**
-    *   `LogAndSendFinalEventsAsync` protokolliert die Zeiten für Transkription, LLM-Antwort und Gesamtverarbeitung.
-    *   Ein `done`-Event wird an den Client gesendet, das die finale Antwort und die Performance-Metriken enthält.
-    *   Wenn TTS nicht deaktiviert ist, wird ein `audioFinished`-Event gesendet, nachdem das letzte Audio-Chunk übertragen wurde.
-
-**Hilfsmethoden:**
-
-*   `ApplyPreAmplification`: Wendet einen Verstärkungsfaktor auf die Audio-Samples an.
-*   `CalculateRms`: Berechnet den Root Mean Square eines Audio-Frames.
-*   `CreateWavHeader`: Erstellt einen gültigen WAV-Header für die gegebenen Audiodaten.
-*   `HandleUpdateVadSettingsAsync`, `HandleUpdatePipelineOptionsAsync`: Verarbeiten eingehende WebSocket-Textnachrichten, um `VadSettings` bzw. `PipelineOptions` zur Laufzeit zu aktualisieren. Sie parsen das JSON-Payload und wenden die neuen Werte an. `ConfigureVad()` wird nach einer `VadSettings`-Aktualisierung aufgerufen.
-*   `PrepareAudioStreamForTranscription`: Konvertiert rohe Audio-Bytes in einen `MemoryStream` mit WAV-Header.
-*   `GetTranscriptionAsync`: Führt die eigentliche Spracherkennung durch.
-*   `SendAudioChunkAsync`: Sendet ein Audio-Chunk (typischerweise MP3) als Base64-kodierten String in einer JSON-Nachricht an den Client.
-*   `SendEventAsync`: Sendet eine generische JSON-Nachricht (Event) an den Client.
+**Vorteile der neuen Architektur:**
+- Klare Trennung von Zuständigkeiten (Single Responsibility Principle).
+- Bessere Testbarkeit und Erweiterbarkeit (z.B. für alternative VAD- oder TTS-Engines).
+- Verbesserte Fehlerdiagnose durch detailliertes Logging pro Session und Event.
+- Settings-Änderungen wirken sofort und thread-sicher auf die jeweilige Session.
 
 ### 2.3. Controller (`Controllers/`)
 

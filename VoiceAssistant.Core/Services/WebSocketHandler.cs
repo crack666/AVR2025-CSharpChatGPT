@@ -61,11 +61,13 @@ namespace VoiceAssistant
         public async Task HandleAsync(WebSocket webSocket, string sessionId)
         {
             _currentWebSocket = webSocket; // Store the WebSocket for the current session
-            _logger.LogInformation("Session {SessionId}: WebSocket connected to WebSocketHandler.", sessionId);
+            _logger.LogInformation("Session {SessionId}: WebSocket connected to WebSocketHandler. State: {State}", sessionId, webSocket.State);
             var rawAudioBufferForDisabledVad = new List<byte>();
             var messageReceiveBuffer = new byte[8192];
             var binaryMessageBuffer = new List<byte>();
-
+            WebSocketCloseStatus? closeStatus = null;
+            string closeStatusDescription = null;
+            Exception finalException = null;
             try
             {
                 while (_currentWebSocket.State == WebSocketState.Open)
@@ -79,12 +81,15 @@ namespace VoiceAssistant
                     catch (WebSocketException wsex)
                     {
                         _logger.LogError(wsex, "Session {SessionId}: WebSocketException during ReceiveAsync. Ending session.", sessionId);
+                        finalException = wsex;
                         break;
                     }
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        _logger.LogInformation("Session {SessionId}: WebSocket close message received.", sessionId);
+                        closeStatus = result.CloseStatus;
+                        closeStatusDescription = result.CloseStatusDescription;
+                        _logger.LogInformation("Session {SessionId}: WebSocket close message received. CloseStatus: {CloseStatus}, Description: {Description}", sessionId, closeStatus, closeStatusDescription);
                         // Process any remaining audio
                         if (_pipelineOptions.DisableVad && rawAudioBufferForDisabledVad.Count > 0)
                         {
@@ -102,7 +107,7 @@ namespace VoiceAssistant
                             }
                         }
                         try { await _currentWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None); }
-                        catch (WebSocketException ex) { _logger.LogWarning(ex, "Session {SessionId}: WebSocketException during CloseAsync.", sessionId); }
+                        catch (WebSocketException ex) { _logger.LogWarning(ex, "Session {SessionId}: WebSocketException during CloseAsync.", sessionId); finalException = ex; }
                         break;
                     }
                     else if (result.MessageType == WebSocketMessageType.Text)
@@ -181,10 +186,20 @@ namespace VoiceAssistant
                     }
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Session {SessionId}: Unhandled exception in WebSocketHandler.HandleAsync.", sessionId);
+                finalException = ex;
+            }
             finally
             {
                 _audioFrameProcessor.SpeechSegmentDetected -= OnSpeechSegmentDetected; // Unsubscribe
-                _logger.LogInformation("Session {SessionId}: WebSocket connection closed in WebSocketHandler.", sessionId);
+                _logger.LogInformation("Session {SessionId}: WebSocket connection closed in WebSocketHandler. Final State: {State}, CloseStatus: {CloseStatus}, Description: {Description}, Exception: {Exception}",
+                    sessionId,
+                    _currentWebSocket?.State,
+                    closeStatus,
+                    closeStatusDescription,
+                    finalException?.ToString() ?? "<none>");
                 _currentWebSocket = null; // Clear the stored WebSocket instance
             }
         }

@@ -189,6 +189,20 @@ export function stopAllAudioPlayback() {
     // if (currentAudioElement) { currentAudioElement.pause(); currentAudioElement = null; }
 }
 
+// --- UI Helper for Audio Init Status ---
+function updateUIAfterAudioInitAttempt(success, reason) {
+    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+        if (success) {
+            window.uiManager.showStatus('Audio bereit.', false, 2000);
+        } else {
+            window.uiManager.showStatus('Audio-Fehler: ' + (reason || 'Unbekannt'), true);
+        }
+    }
+    if (window.uiManager && typeof window.uiManager.updateButtonStates === 'function') {
+        window.uiManager.updateButtonStates(!!success);
+    }
+}
+
 // --- Internal Core Logic ---
 async function attemptAutomaticAudioStart() {
     audioUtils.debugLog('Attempting automatic audio start on page load...');
