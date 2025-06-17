@@ -3,14 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using VoiceAssistant; // This should cover the new classes if they are in this namespace
 using VoiceAssistant.Core.Models;
-using VoiceAssistant.Core.Interfaces;
 using VoiceAssistant.Core.Services;
-using VoiceAssistant.Plugins.OpenAI;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using System.Net.WebSockets;
-using System; // For Guid
-using Microsoft.Extensions.Configuration; // For IConfiguration
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -73,7 +66,7 @@ builder.Services.AddScoped<IWebSocketSettingsManager, WebSocketSettingsManager>(
 
 // Register session-specific options as scoped services.
 // These will be configured per-request in the WebSocket endpoint mapping.
-builder.Services.AddScoped<PipelineOptions>(); 
+builder.Services.AddScoped<PipelineOptions>();
 builder.Services.AddScoped<VadSettings>();
 
 // AudioFrameProcessor needs initial VadSettings and PipelineOptions for its construction.
@@ -103,7 +96,7 @@ sp => new WebSocketHandler(
 // However, if it directly uses scoped services like IWebSocketHandler, it should also be scoped.
 // For this refactoring, WebSocketAudioService will be simplified to mostly delegate to IWebSocketHandler.
 // Let's make WebSocketAudioService scoped as well if it resolves IWebSocketHandler.
-builder.Services.AddScoped<WebSocketAudioService>();
+//builder.Services.AddScoped<WebSocketAudioService>();
 
 builder.Services.AddSingleton<VadSettings>(); // Global default VadSettings
 // PipelineOptions are already registered as a singleton for global defaults.
@@ -120,7 +113,7 @@ app.Map("/ws/audio", async context =>
 {
     if (context.WebSockets.IsWebSocketRequest)
     {
-        using (var scope = app.Services.CreateScope()) 
+        using (var scope = app.Services.CreateScope())
         {
             var serviceProvider = scope.ServiceProvider;
 
@@ -131,7 +124,7 @@ app.Map("/ws/audio", async context =>
             // Initialize sessionPipelineOptions from global defaults and query parameters
             var globalOptions = serviceProvider.GetRequiredService<PipelineOptions>(); // This resolves the singleton global
             sessionPipelineOptions.CopyFrom(globalOptions); // Start with global defaults
-            
+
             var modelQuery = context.Request.Query["model"].ToString();
             if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
             var voiceQuery = context.Request.Query["voice"].ToString();
@@ -150,7 +143,7 @@ app.Map("/ws/audio", async context =>
             var sessionId = Guid.NewGuid().ToString("N")[..8];
             var webSocketHandler = serviceProvider.GetRequiredService<IWebSocketHandler>();
             var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-            await webSocketHandler.HandleAsync(webSocket, sessionId); 
+            await webSocketHandler.HandleAsync(webSocket, sessionId);
         }
     }
     else
