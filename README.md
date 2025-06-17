@@ -147,6 +147,56 @@ Dieses Projekt enthält die konkreten Implementierungen der Kerninterfaces unter
 
 Enthält statische Dateien für die Web-Benutzeroberfläche (`index.html`, CSS, JavaScript). Die UI ermöglicht die Interaktion mit dem Backend, sendet Audio und empfängt Ereignisse sowie synthetisierte Sprache. Sie bietet vermutlich auch Steuerelemente zur dynamischen Anpassung der `VadSettings` und `PipelineOptions`.
 
+# Modularisierung des Frontends (Stand Juni 2025)
+
+## Neue Struktur der Audio-Frontend-Logik
+
+Im Rahmen eines umfangreichen Refactorings wurde das große Frontend-Modul `audio-system.js` in mehrere funktionsorientierte ES6-Module aufgeteilt. Ziel war eine bessere Wartbarkeit, Übersichtlichkeit und Testbarkeit. Die Orchestrationslogik verbleibt in `audio-system.js`.
+
+### Neue Modulstruktur (`wwwroot/js/`):
+- **audio-system.js**: Orchestrator, zentrale Steuerung, UI-Callbacks, Initialisierung aller Subsysteme.
+- **tts-playback.js**: Verwaltung der TTS-Playback-Logik (Chunk-Management, Wiedergabeschleife, State-Reset).
+- **audio-context.js**: Singleton-Management des AudioContext (get/resume/close).
+- **microphone.js**: Mikrofon- und Audioverarbeitungslogik (MediaStream, Buffering, RMS, Ressourcenfreigabe).
+- **websocket-handler.js**: WebSocket-Management (Verbindungsaufbau, Senden/Empfangen, State, Event-Handler-Registrierung).
+- **audio-utils.js**: Hilfsfunktionen (debugLog, IS_DEBUG_MODE, PCM-Konvertierung, Chunk-Indexing).
+
+### Vorteile der Modularisierung
+- Keine Datei >400 Zeilen, klar getrennte Verantwortlichkeiten.
+- Bessere Testbarkeit und Lesbarkeit.
+- Einfachere Erweiterbarkeit (z.B. für alternative Audioquellen oder neue Protokolle).
+
+### Hinweise zur Migration/Verwendung
+- Alle Importe/Exporte erfolgen als ES6-Module (z.B. `import * as ttsPlayback from './tts-playback.js'`).
+- Die Haupt-UI-Logik und alle Interaktionen mit `window.uiManager` und `window.optimizationManager` laufen weiterhin über `audio-system.js`.
+- Die Submodule sind weitgehend unabhängig und können einzeln getestet werden.
+
+### Beispiel für die Initialisierung (aus `audio-system.js`):
+```js
+import * as ttsPlayback from './tts-playback.js';
+import * as audioContextManager from './audio-context.js';
+import * as microphoneManager from './microphone.js';
+import * as webSocketHandler from './websocket-handler.js';
+import * as audioUtils from './audio-utils.js';
+
+// ...
+
+export async function initAudioSystem() {
+    audioContextManager.initAudioContextModule(...);
+    ttsPlayback.initTtsPlayback(...);
+    microphoneManager.initMicrophone(...);
+    webSocketHandler.initWebSocketHandler(...);
+    // ...
+}
+```
+
+### Funktionalität bleibt erhalten
+Alle bisherigen Features (TTS, VAD, Streaming, UI-Callbacks, Fehlerbehandlung) sind weiterhin verfügbar, aber klarer getrennt und leichter wartbar.
+
+---
+
+Die restliche README bleibt unverändert und beschreibt weiterhin Backend, API, Konfiguration und Teststruktur.
+
 ## 3. Konfigurationsoptionen
 
 Die Anwendung bietet mehrere Ebenen der Konfiguration:

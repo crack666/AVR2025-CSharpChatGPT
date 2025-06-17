@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text; // Added for StringBuilder
 using System.Threading.Tasks;
 using VoiceAssistant.Core.Interfaces; // Added for IChatService
@@ -64,14 +65,12 @@ namespace VoiceAssistant.Tests
             _output.WriteLine($"User input: {userText}");
 
             // 2. Add to chat log
-            chatLogManager.AddMessage(ChatRole.User, userText);
-            // 3. Get bot response
+            chatLogManager.AddMessage(ChatRole.User, userText);            // 3. Get bot response
             // Use default model for this test
             string botResponse = await chatService.GenerateResponseAsync(chatLogManager.GetMessages(), "gpt-3.5-turbo");
 
             // 4. Add to chat log
-            chatLogManager.AddMessage(ChatRole.Bot, botResponse);
-            // 5. Generate speech
+            chatLogManager.AddMessage(ChatRole.Bot, botResponse);            // 5. Generate speech
             byte[]? audio = null;
             Exception? ttsException = null; try
             {

@@ -2,148 +2,62 @@
 const FRAME_DURATION_MS = 20;
 const TARGET_SAMPLE_RATE = 16000;
 const SAMPLES_PER_CHUNK = TARGET_SAMPLE_RATE * (FRAME_DURATION_MS / 1000); // 320 samples
-const IS_DEBUG_MODE = true; // Enable/disable extensive logging
 
-// --- Progressive TTS Playback State & Functions ---
-const indexedAudioChunks = new Map();
-let nextPlaybackIndex = 0;
-let isCurrentlyPlayingTTS = false;
-let allAudioChunksReceived = false;
-let isTTSLoopActive = false;
-let lastReceivedAudioChunkIndex = -1; // Stores the index from 'audio-chunk-info'
-
-function debugLog(...args) {
-    if (IS_DEBUG_MODE) {
-        console.log('%c[AUDIO-SYSTEM]', 'color: cyan', ...args);
-    }
-}
-
-function scheduleTTSChunk() {
-    if (indexedAudioChunks.has(nextPlaybackIndex)) {
-        const buffer = indexedAudioChunks.get(nextPlaybackIndex);
-        indexedAudioChunks.delete(nextPlaybackIndex);
-
-        debugLog(`Playing TTS chunk #${nextPlaybackIndex}, duration=${buffer.duration.toFixed(2)}s, remaining TTS chunks=${indexedAudioChunks.size}`);
-
-        const audioContextRef = getAudioContext(); // Ensure AudioContext is available
-        if (!audioContextRef) {
-            console.error("Cannot play TTS chunk, AudioContext not available.");
-            isCurrentlyPlayingTTS = false;
-            return;
-        }
-
-        const src = audioContextRef.createBufferSource();
-        src.buffer = buffer;
-        src.connect(audioContextRef.destination);
-
-        // Manage audio sources for stopping
-        window.allAudioSources = window.allAudioSources || [];
-        window.allAudioSources.push(src);
-        if (window.currentBot && window.currentBot.audioSources) { // If per-message tracking is still used
-            window.currentBot.audioSources.push(src);
-        }
-
-        isCurrentlyPlayingTTS = true;
-        const playedChunkIndex = nextPlaybackIndex; // Capture index for onended
-        nextPlaybackIndex++;
-
-        src.onended = () => {
-            debugLog(`Finished playing TTS chunk #${playedChunkIndex}`);
-            isCurrentlyPlayingTTS = false;
-            
-            const indexInAll = window.allAudioSources.indexOf(src);
-            if (indexInAll > -1) window.allAudioSources.splice(indexInAll, 1);
-            if (window.currentBot && window.currentBot.audioSources) {
-                const indexInBot = window.currentBot.audioSources.indexOf(src);
-                if (indexInBot > -1) window.currentBot.audioSources.splice(indexInBot, 1);
-            }
-
-            ttsPlayLoop(); // Attempt to play the next chunk
-
-            if (allAudioChunksReceived && indexedAudioChunks.size === 0 && !isCurrentlyPlayingTTS) {
-                debugLog('All received TTS chunks have been played. Resetting TTS playback state.');
-                resetTTSPlaybackState();
-            }
-        };
-        src.start();
-    }
-}
-
-function ttsPlayLoop() {
-    if (!isTTSLoopActive) {
-        isTTSLoopActive = true;
-        debugLog('TTS PlayLoop started.');
-    }
-    if (isCurrentlyPlayingTTS) return;
-    if (indexedAudioChunks.has(nextPlaybackIndex)) {
-        scheduleTTSChunk();
-    } else {
-        // debugLog(`TTS PlayLoop: Next chunk #${nextPlaybackIndex} not available. Pausing loop.`);
-    }
-}
-
-function resetTTSPlaybackState() {
-    debugLog('Resetting TTS playback state.');
-    indexedAudioChunks.clear();
-    nextPlaybackIndex = 0;
-    isCurrentlyPlayingTTS = false;
-    isTTSLoopActive = false;
-    allAudioChunksReceived = false;
-    lastReceivedAudioChunkIndex = -1;
-    isTTSSpeaking = false; // Ensure this is also reset
-}
+// Import modules
+import * as ttsPlayback from './tts-playback.js';
+import * as audioContextManager from './audio-context.js';
+import * as microphoneManager from './microphone.js';
+import * as webSocketHandler from './websocket-handler.js';
+import * as audioUtils from './audio-utils.js'; // NEW IMPORT
 
 // --- Core Audio State ---
-let audioContext = null; // Singleton AudioContext
-let microphoneStream = null;
-let mediaStreamSource = null;
-let scriptProcessorNode = null;
-let isRecordingActive = false; // Is microphone actively capturing and sending data
-let isTTSSpeaking = false; // Is TTS audio currently playing (used to pause mic processing)
-let audioBufferForServer = new Float32Array(0); // Buffer for microphone audio before sending
+let microphoneStream = null; // This will now primarily hold the raw MediaStream object from getUserMedia
+// let mediaStreamSource = null; // MOVED to microphone.js
+// let scriptProcessorNode = null; // MOVED to microphone.js
+let isRecordingActive = false;
+let isTTSSpeaking = false;
+// let audioBufferForServer = new Float32Array(0); // MOVED to microphone.js
 
 // --- WebSocket State ---
-let webSocket = null;
-let currentBotModel = null; // To store the model used for the current/last bot message
-let currentBotVoice = null; // To store the voice used for the current/last bot message
-
-// --- Helper Functions ---
-function getAudioContext() {
-    if (!audioContext) {
-        const AudioContextGlobal = window.AudioContext || window.webkitAudioContext;
-        if (AudioContextGlobal) {
-            try {
-                audioContext = new AudioContextGlobal({ sampleRate: TARGET_SAMPLE_RATE });
-                debugLog(`AudioContext created (state: ${audioContext.state}). Sample rate: ${audioContext.sampleRate}`);
-            } catch (e) {
-                console.error("Failed to create AudioContext:", e);
-                return null;
-            }
-        } else {
-            console.error("Browser does not support AudioContext.");
-            return null;
-        }
-    }
-    return audioContext;
-}
-
-async function resumeAudioContext() {
-    const ac = getAudioContext();
-    if (ac && ac.state === 'suspended') {
-        try {
-            await ac.resume();
-            debugLog(`AudioContext resumed (state: ${ac.state}).`);
-        } catch (e) {
-            console.error("Error resuming AudioContext:", e);
-            throw e; // Re-throw for caller to handle
-        }
-    }
-    return ac && ac.state === 'running';
-}
+// let webSocket = null; // MOVED to websocket-handler.js
+// let currentBotModel = null; // MOVED to websocket-handler.js
+// let currentBotVoice = null; // MOVED to websocket-handler.js
 
 // --- Exported Core Functions ---
 export async function initAudioSystem() {
-    debugLog('Initializing audio system...');
+    audioUtils.debugLog('Initializing audio system...');
+
+    audioContextManager.initAudioContextModule(TARGET_SAMPLE_RATE, audioUtils.debugLog);
+
+    ttsPlayback.initTtsPlayback(
+        audioContextManager.getAudioContext,
+        audioUtils.debugLog,
+        (speaking) => { isTTSSpeaking = speaking; },
+        () => window.allAudioSources,
+        () => window.currentBot
+    );
+
+    microphoneManager.initMicrophone({
+        getAudioContext: audioContextManager.getAudioContext,
+        onAudioChunkProcessed: sendAudioChunkToServer, // Still using local sendAudioChunkToServer
+        debugLog: audioUtils.debugLog,
+        getIsRecordingActive: () => isRecordingActive,
+        getPipelineOptions: () => window.optimizationManager?.getCurrentPipelineOptions(),
+        getIsTTSSpeaking: () => isTTSSpeaking,
+        updateAudioVisualization: (rms) => window.uiManager?.updateAudioVisualization(rms),
+        samplesPerChunk: SAMPLES_PER_CHUNK
+    });
+
+    webSocketHandler.initWebSocketHandler({
+        debugLog: audioUtils.debugLog,
+        getPipelineOptions: () => window.optimizationManager?.getCurrentPipelineOptions(),
+        getVadSettings: () => window.optimizationManager?.getCurrentVadSettings(),
+        onOpen: handleWebSocketOpen,
+        onClose: handleWebSocketClose,
+        onMessage: handleWebSocketMessage,
+        onError: handleWebSocketError
+    });
+
     await attemptAutomaticAudioStart();
     // Ensure optimizationManager and uiManager are initialized by main.js before this
     if (window.optimizationManager && typeof window.optimizationManager.init === 'function') {
@@ -161,52 +75,53 @@ export async function initAudioSystem() {
 
 export async function startRecording() {
     if (isRecordingActive) {
-        debugLog("Recording is already active.");
+        audioUtils.debugLog("Recording is already active.");
         return;
     }
-    debugLog("Attempting to start recording...");
-    debugLog("TEMP DEBUG: startRecording() called");
+    audioUtils.debugLog("Attempting to start recording...");
     if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
         window.uiManager.showStatus("Verbinde Audio-Pipeline...");
     }
 
-    resetTTSPlaybackState();
+    ttsPlayback.resetTTSPlaybackState();
     // Clear any previous bot message UI that might be half-streamed
     if (window.uiManager && typeof window.uiManager.clearCurrentBotMessage === 'function') {
-        window.uiManager.clearCurrentBotMessage(); 
+        window.uiManager.clearCurrentBotMessage();
     }
 
     try {
-        debugLog("TEMP DEBUG: About to resume AudioContext");
-        const contextRunning = await resumeAudioContext();
-        debugLog(`TEMP DEBUG: AudioContext resume result: ${contextRunning}`);
+        const contextRunning = await audioContextManager.resumeAudioContext();
         if (!contextRunning) {
             updateUIAfterAudioInitAttempt(false, 'AudioContext not running after resume attempt.');
             return;
         }
 
+        // Request microphone access if not already available
         if (!microphoneStream) {
-            debugLog("TEMP DEBUG: Requesting microphone access...");
+            audioUtils.debugLog("Requesting microphone access...");
             microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
-            debugLog("TEMP DEBUG: Microphone access granted.");
+            audioUtils.debugLog("Microphone access granted.");
         }
 
-        debugLog("TEMP DEBUG: About to connect audio pipeline");
-        await connectAudioPipeline(); // This will also connect WebSocket with new params
+        await webSocketHandler.connectWebSocket(); // Use module function
+        await microphoneManager.startMicrophoneProcessing(microphoneStream);
+        
         isRecordingActive = true;
-        debugLog("TEMP DEBUG: Recording is now active, updating UI");
         updateUIAfterAudioInitAttempt(true);
 
     } catch (error) {
         console.error("Failed to start recording:", error);
-        debugLog("TEMP DEBUG: Error in startRecording:", error.message);
         let reason = 'Unknown error during startRecording';
         if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
             reason = 'Microphone access denied';
         } else if (error.message.includes('AudioContext')) {
             reason = 'AudioContext issue';
-        } else if (error.message.includes('WebSocket')) {
+        } else if (error.message.includes('WebSocket')) { // General WebSocket error
             reason = 'WebSocket connection error: ' + error.message;
+        } else if (error.message.includes('WebSocket busy')) { // Specific error from our handler
+            reason = 'WebSocket busy, please wait.';
+        } else if (error.message.includes('Microphone module')) {
+            reason = 'Microphone processing setup error: ' + error.message;
         }
         updateUIAfterAudioInitAttempt(false, reason);
         await cleanUpAudioResources(false);
@@ -215,30 +130,30 @@ export async function startRecording() {
 
 export async function stopRecording(sendEndOfStream = true) {
     if (!isRecordingActive) {
-        debugLog("Recording is not active.");
+        audioUtils.debugLog("Recording is not active.");
         return;
     }
-    debugLog(`Stopping recording. Send end of stream: ${sendEndOfStream}`);
+    audioUtils.debugLog(`Stopping recording. Send end of stream: ${sendEndOfStream}`);
     isRecordingActive = false; 
     await cleanUpAudioResources(sendEndOfStream);
     updateUIAfterStopRecording();
 }
 
 export async function restartAudioSystemAndClearState() {
-    debugLog("Restarting audio system and clearing state...");
+    audioUtils.debugLog("Restarting audio system and clearing state...");
     if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
         window.uiManager.showStatus("Audio-System wird neu gestartet...");
     }
     await stopAllAudioPlayback();
     await stopRecording(false);
-    resetTTSPlaybackState();
+    ttsPlayback.resetTTSPlaybackState();
     if (window.uiManager && typeof window.uiManager.clearCurrentBotMessage === 'function') {
         window.uiManager.clearCurrentBotMessage();
     }
     
     await new Promise(resolve => setTimeout(resolve, 100)); 
     
-    debugLog("Re-initializing audio system components...");
+    audioUtils.debugLog("Re-initializing audio system components...");
     // No need to call initAudioSystem() directly if it just does attemptAutomaticAudioStart
     // The user will typically click "start recording" which handles the full setup.
     // However, ensuring the audio context is ready is good.
@@ -252,7 +167,7 @@ export async function restartAudioSystemAndClearState() {
 }
 
 export function stopAllAudioPlayback() {
-    debugLog("Stopping all TTS audio playback.");
+    audioUtils.debugLog("Stopping all TTS audio playback.");
     if (window.allAudioSources) {
         window.allAudioSources.forEach(src => {
             try {
@@ -267,7 +182,7 @@ export function stopAllAudioPlayback() {
     if (window.currentBot && window.currentBot.audioSources) {
         window.currentBot.audioSources = [];
     }
-    resetTTSPlaybackState(); // Also resets TTS specific flags
+    ttsPlayback.resetTTSPlaybackState(); // Also resets TTS specific flags
     isTTSSpeaking = false; // General flag
     // If using the other audioQueue system, clear it too
     // audioQueue = []; 
@@ -276,26 +191,27 @@ export function stopAllAudioPlayback() {
 
 // --- Internal Core Logic ---
 async function attemptAutomaticAudioStart() {
-    debugLog('Attempting automatic audio start on page load...');
+    audioUtils.debugLog('Attempting automatic audio start on page load...');
     try {
-        const contextRunning = await resumeAudioContext();
+        const contextRunning = await audioContextManager.resumeAudioContext();
         if (!contextRunning) {
-            debugLog("Automatic AudioContext resume failed or context not running. User gesture will be required.");
-            updateUIAfterAudioInitAttempt(false, 'AudioContext blocked'); // Inform UI, but don't mark as critical error yet
+            audioUtils.debugLog("Automatic AudioContext resume failed or context not running. User gesture will be required.");
+            updateUIAfterAudioInitAttempt(false, 'AudioContext blocked');
             return;
         }
         
-        // Automatically request microphone and start recording like the master branch did
-        debugLog("Requesting microphone access automatically on page load...");
+        audioUtils.debugLog("Requesting microphone access automatically on page load...");
         if (!microphoneStream) {
             microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
-            debugLog("Microphone access granted automatically.");
+            audioUtils.debugLog("Microphone access granted automatically.");
         }
         
-        await connectAudioPipeline(); // This will also connect WebSocket
+        await webSocketHandler.connectWebSocket(); // Use module function
+        await microphoneManager.startMicrophoneProcessing(microphoneStream);
+
         isRecordingActive = true;
         updateUIAfterAudioInitAttempt(true);
-        debugLog("Automatic audio start completed successfully. Recording is now active.");
+        audioUtils.debugLog("Automatic audio start completed successfully. Recording is now active.");
 
     } catch (error) {
         console.warn("Automatic audio start failed:", error);
@@ -306,137 +222,22 @@ async function attemptAutomaticAudioStart() {
             reason = 'AudioContext issue';
         } else if (error.message.includes('WebSocket')) {
             reason = 'WebSocket connection error: ' + error.message;
+        } else if (error.message.includes('WebSocket busy')) {
+            reason = 'WebSocket busy, please wait.';
+        } else if (error.message.includes('Microphone module')) {
+            reason = 'Microphone processing setup error: ' + error.message;
         }
         updateUIAfterAudioInitAttempt(false, reason);
     }
 }
 
-async function connectAudioPipeline() {
-    const ac = getAudioContext();
-    if (!microphoneStream || !ac || ac.state !== 'running') {
-        throw new Error("Cannot connect audio pipeline: Stream or AudioContext not ready or not running.");
-    }
-
-    debugLog('Connecting audio pipeline...');
-    if (mediaStreamSource) mediaStreamSource.disconnect();
-    if (scriptProcessorNode) scriptProcessorNode.disconnect();    mediaStreamSource = ac.createMediaStreamSource(microphoneStream);
-    debugLog('TEMP DEBUG: MediaStreamSource created');
-    
-    const bufferSize = 4096;
-    scriptProcessorNode = ac.createScriptProcessor(bufferSize, 1, 1);
-    debugLog(`TEMP DEBUG: ScriptProcessorNode created with buffer size: ${bufferSize}`);
-    
-    let audioProcessCallCount = 0;
-    
-    scriptProcessorNode.onaudioprocess = (audioProcessingEvent) => {
-        audioProcessCallCount++;
-        
-        // TEMPORARY DEBUG: Log the first few calls and periodically
-        if (audioProcessCallCount === 1) {
-            debugLog("TEMP DEBUG: FIRST onaudioprocess callback executed!");
-        }
-        if (audioProcessCallCount <= 5 || audioProcessCallCount % 100 === 0) {
-            debugLog(`TEMP DEBUG: onaudioprocess callback #${audioProcessCallCount} executing`);
-        }
-        
-        if (!isRecordingActive) {
-            // Reduced logging - only warn if this happens frequently
-            return;
-        }
-        
-        // Check if TTS is speaking *only if* progressive TTS is enabled and active
-        // For non-progressive, or if TTS is disabled, we should not pause mic input based on isTTSSpeaking
-        let pipelineOptions = {};
-        if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
-            pipelineOptions = window.optimizationManager.getCurrentPipelineOptions();
-        }
-        const progressiveTTSEnabled = !pipelineOptions.DisableProgressiveTts;        if (progressiveTTSEnabled && isTTSSpeaking) {
-            // Reduced logging for TTS pause
-            return; // Pause sending mic data if progressive TTS is active and speaking
-        }
-
-        // Removed periodic debug logging to reduce console spam
-        
-        const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-        const currentServerBuffer = audioBufferForServer;
-        const combinedBuffer = new Float32Array(currentServerBuffer.length + inputData.length);
-        combinedBuffer.set(currentServerBuffer);
-        combinedBuffer.set(inputData, currentServerBuffer.length);
-        audioBufferForServer = combinedBuffer;
-        
-        // DEBUG: Log buffer sizes
-        if (audioProcessCallCount % 100 === 1) {
-            debugLog(`[DEBUG] Buffer accumulation - current: ${currentServerBuffer.length}, input: ${inputData.length}, combined: ${combinedBuffer.length}, SAMPLES_PER_CHUNK: ${SAMPLES_PER_CHUNK}`);
-        }
-        
-        while (audioBufferForServer.length >= SAMPLES_PER_CHUNK) {
-            const chunkToProcess = audioBufferForServer.slice(0, SAMPLES_PER_CHUNK);
-            audioBufferForServer = audioBufferForServer.slice(SAMPLES_PER_CHUNK);            // DEBUG: Log when chunks are sent
-            if (audioProcessCallCount % 50 === 1) { // Increased frequency from 100 to 50
-                debugLog(`[DEBUG] Sending audio chunk to server, length: ${chunkToProcess.length}, SAMPLES_PER_CHUNK: ${SAMPLES_PER_CHUNK}`);
-            }sendAudioChunkToServer(chunkToProcess);
-        }
-        
-        let sumSquares = 0.0;
-        for (const sample of inputData) sumSquares += sample * sample;
-        const rms = Math.sqrt(sumSquares / inputData.length);
-        
-        // TEMPORARY DEBUG: Log RMS values to see if audio is being processed
-        if (Math.random() < 0.05) { // Log ~5% of frames
-            const maxSample = Math.max(...inputData.map(Math.abs));
-            debugLog(`TEMP DEBUG: RMS calculated: ${rms.toFixed(6)}, Max sample: ${maxSample.toFixed(6)}, inputData.length: ${inputData.length}`);
-        }
-        
-        // TEMPORARY DEBUG: Alert on significant audio
-        if (rms > 0.001) {
-            debugLog(`TEMP DEBUG: SIGNIFICANT AUDIO DETECTED! RMS: ${rms.toFixed(6)}`);
-        }
-        
-        if (window.uiManager && typeof window.uiManager.updateAudioVisualization === 'function') {
-            window.uiManager.updateAudioVisualization(rms);
-            // TEMPORARY DEBUG: Verify this is being called
-            if (Math.random() < 0.01) {
-                debugLog(`TEMP DEBUG: updateAudioVisualization called with RMS: ${rms.toFixed(6)}`);
-            }
-        } else {
-            // TEMPORARY DEBUG: Check if uiManager is missing
-            if (Math.random() < 0.01) {
-                debugLog("TEMP DEBUG: uiManager.updateAudioVisualization not available");
-            }        }
-    };
-
-    mediaStreamSource.connect(scriptProcessorNode);
-    debugLog('TEMP DEBUG: MediaStreamSource connected to ScriptProcessorNode');
-    
-    scriptProcessorNode.connect(ac.destination);
-    debugLog('TEMP DEBUG: ScriptProcessorNode connected to AudioContext destination');
-
-    debugLog('TEMP DEBUG: Audio pipeline fully connected. Calling connectWebSocket...');
-    await connectWebSocket();
-    debugLog('TEMP DEBUG: connectAudioPipeline completed successfully');
-}
-
 async function cleanUpAudioResources(sendEndOfStream = true) {
-    debugLog("Cleaning up audio resources...");
-    if (scriptProcessorNode) {
-        scriptProcessorNode.disconnect();
-        scriptProcessorNode.onaudioprocess = null; 
-        // scriptProcessorNode = null; // Can be reused if context is the same
-    }
-    if (mediaStreamSource) {
-        mediaStreamSource.disconnect();
-        // mediaStreamSource = null;
-    }
-    if (microphoneStream) {
-        microphoneStream.getTracks().forEach(track => track.stop());
-        microphoneStream = null;
-        debugLog('Microphone stream stopped.');
-    }
-    // Don't close/nullify audioContext here as it can be reused.
-    // It's closed by user action or if page unloads.
+    audioUtils.debugLog("Cleaning up audio resources...");
+    microphoneManager.stopMicrophoneProcessing(); // This now also stops the tracks of its internally held stream
+    microphoneStream = null; // Nullify the main microphoneStream variable in audio-system.js
 
-    audioBufferForServer = new Float32Array(0); // Clear buffer
-    await closeWebSocket(sendEndOfStream);
+    // audioBufferForServer is now managed within microphone.js
+    await webSocketHandler.closeWebSocket(sendEndOfStream); // Use module function
 }
 
 function getWebSocketUrlWithParams() {
@@ -449,7 +250,7 @@ function getWebSocketUrlWithParams() {
         // Store model and voice for creating bot message later
         currentBotModel = queryParams.ChatModel;
         currentBotVoice = queryParams.TtsVoice;
-        debugLog("[AUDIO-SYSTEM] Using pipeline options from optimizationManager:", queryParams);
+        audioUtils.debugLog("[AUDIO-SYSTEM] Using pipeline options from optimizationManager:", queryParams);
     } else {
         console.error("[AUDIO-SYSTEM] CRITICAL: optimizationManager.getCurrentPipelineOptions() is not available. WebSocket connection will likely fail or use incorrect parameters.");
         // Fallback to some very basic defaults, though this state should ideally not be reached.
@@ -470,9 +271,9 @@ function getWebSocketUrlWithParams() {
         // Only include VAD settings if VAD is not disabled by pipeline options
         if (!queryParams.DisableVad) {
             queryParams = {...queryParams, ...vadSettings};
-            debugLog("[AUDIO-SYSTEM] Including VAD settings from optimizationManager:", vadSettings);
+            audioUtils.debugLog("[AUDIO-SYSTEM] Including VAD settings from optimizationManager:", vadSettings);
         } else {
-            debugLog("[AUDIO-SYSTEM] VAD is disabled by pipeline options, not including VAD settings.");
+            audioUtils.debugLog("[AUDIO-SYSTEM] VAD is disabled by pipeline options, not including VAD settings.");
         }
     } else {
         console.warn("[AUDIO-SYSTEM] optimizationManager.getCurrentVadSettings() not available. VAD settings might be incorrect if VAD is enabled.");
@@ -481,396 +282,176 @@ function getWebSocketUrlWithParams() {
     const queryString = new URLSearchParams(queryParams).toString();
     const path = `/ws/audio?${queryString}`;
     const fullUrl = `${protocol}://${host}${path}`;
-    debugLog("[AUDIO-SYSTEM] Constructed WebSocket URL:", fullUrl);
+    audioUtils.debugLog("[AUDIO-SYSTEM] Constructed WebSocket URL:", fullUrl);
     return fullUrl;
 }
 
-async function connectWebSocket() {
-    if (webSocket && webSocket.readyState === WebSocket.OPEN) {
-        debugLog('WebSocket already open. Checking if VAD settings need update.');
-        if (window.optimizationManager && typeof window.optimizationManager.getCurrentVadSettings === 'function') {
-            const pipelineOptions = window.optimizationManager.getCurrentPipelineOptions ? window.optimizationManager.getCurrentPipelineOptions() : { DisableVad: false };
-            if (!pipelineOptions.DisableVad) {
-                const vadSettings = window.optimizationManager.getCurrentVadSettings();
-                if (vadSettings) sendWebSocketMessage({ type: 'vad_settings', payload: vadSettings });
-            } else {
-                 debugLog("VAD disabled, not sending VAD settings update on existing WebSocket.");
-            }
-        }
-        return;
+// --- WebSocket Event Handlers (to be passed to websocket-handler.js) ---
+function handleWebSocketOpen(event) {
+    audioUtils.debugLog('[WebSocket] Connection established.');
+    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+        window.uiManager.showStatus("Audio-Pipeline verbunden.", false, 2000);
     }
-    if (webSocket && webSocket.readyState === WebSocket.CONNECTING) {
-        debugLog("WebSocket is already connecting. Aborting new connection attempt.");
-        return Promise.reject(new Error("WebSocket connection attempt already in progress."));
-    }
-
-    const wsUrl = getWebSocketUrlWithParams();
-    debugLog(`Connecting to WebSocket: ${wsUrl}`);
-    webSocket = new WebSocket(wsUrl);
-    webSocket.binaryType = 'arraybuffer';
-
-    return new Promise((resolve, reject) => {
-        webSocket.onopen = () => {
-            debugLog('WebSocket connection established.');
-            if (window.optimizationManager && typeof window.optimizationManager.getCurrentVadSettings === 'function') {
-                const pipelineOptions = window.optimizationManager.getCurrentPipelineOptions ? window.optimizationManager.getCurrentPipelineOptions() : { DisableVad: false };
-                if (!pipelineOptions.DisableVad) {
-                    const vadSettings = window.optimizationManager.getCurrentVadSettings();
-                    if (vadSettings) {
-                        sendWebSocketMessage({ type: 'vad_settings', payload: vadSettings });
-                        debugLog('Sent initial VAD settings via WebSocket:', vadSettings);
-                    }
-                } else {
-                    debugLog("VAD disabled, not sending initial VAD settings.");
-                }
-            }
-            if (window.uiManager && typeof window.uiManager.hideStatus === 'function') {
-                window.uiManager.hideStatus();
-            }
-            resolve();
-        };
-
-        webSocket.onmessage = (event) => {
-            handleWebSocketMessage(event);
-        };
-
-        webSocket.onerror = (error) => {
-            console.error('WebSocket Error:', error);
-            if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-                window.uiManager.showStatus("WebSocket Fehler. Aufnahme gestoppt.", true);
-            }
-            // Ensure recording is marked as stopped and UI is updated
-            if (isRecordingActive) {
-                isRecordingActive = false; // Critical to set this before calling updateUIAfterStopRecording
-                updateUIAfterStopRecording(); 
-            }
-            webSocket = null; // Nullify to allow reconnect attempts
-            reject(new Error('WebSocket connection error')); // Reject promise for connectWebSocket
-        };
-
-        webSocket.onclose = (event) => {
-            debugLog(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}, WasClean: ${event.wasClean}`);
-            const wasRecording = isRecordingActive;
-            isRecordingActive = false; // Always set recording to false on close
-
-            if (wasRecording && !event.wasClean) {
-                if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-                    window.uiManager.showStatus("WebSocket unerwartet geschlossen. Aufnahme gestoppt.", true);
-                }
-            }
-            // Update UI regardless of clean close, as recording has stopped
-            updateUIAfterStopRecording(); 
-            webSocket = null; // Clear instance to allow new connections
-            // Do not reject here if onopen was already called, as the promise would have resolved.
-            // The error handling for unexpected close during active recording is handled above.
-        };
-    });
-}
-
-async function closeWebSocket(sendEndOfStream = true) {
-    if (webSocket) {
-        if (sendEndOfStream && webSocket.readyState === WebSocket.OPEN) {
-            debugLog("Sending end_of_stream to WebSocket.");
-            sendWebSocketMessage({ type: 'end_of_stream' });
-            // Wait a moment for the message to be sent before closing
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        if (webSocket.readyState === WebSocket.OPEN || webSocket.readyState === WebSocket.CONNECTING) {
-           webSocket.close(1000, "Client initiated disconnect");
-        }
-        webSocket = null; // Ensure it's nulled after calling close
-        debugLog('WebSocket connection closed or closing initiated.');
-    }
-}
-
-function sendWebSocketMessage(messageObject) {
-    if (webSocket && webSocket.readyState === WebSocket.OPEN) {
-        try {
-            webSocket.send(JSON.stringify(messageObject));
-        } catch (e) {
-            console.error("Error sending JSON message via WebSocket:", e, messageObject);
-        }
-    } else {
-        // console.warn('[WebSocket] Attempted to send JSON message but WebSocket is not open:', messageObject);
-    }
-}
-
-function sendAudioChunkToServer(float32ArrayChunk) {
-    if (webSocket && webSocket.readyState === WebSocket.OPEN) {
-        // Convert Float32Array to Int16Array (PCM16)
-        const pcmData = new Int16Array(float32ArrayChunk.length);
-        for (let i = 0; i < float32ArrayChunk.length; i++) {
-            pcmData[i] = Math.max(-32768, Math.min(32767, float32ArrayChunk[i] * 32768));
-        }
-        try {
-            webSocket.send(pcmData.buffer); // Send as ArrayBuffer            // DEBUG: Log successful sends
-            /*if (Math.random() < 0.05) { // Increased from 0.01 to 0.05 (5% of sends)
-                debugLog(`[DEBUG] Successfully sent audio chunk to server, length: ${pcmData.length}, buffer size: ${pcmData.buffer.byteLength} bytes`);
-                debugLog(`[DEBUG] WebSocket state: ${webSocket.readyState}, Binary type: ${webSocket.binaryType}`);
-            }*/
-        } catch (e) {
-            console.error("Error sending audio chunk via WebSocket:", e);
-        }
-    } else {
-        console.warn('[WebSocket] Attempted to send audio chunk but WebSocket is not open. ReadyState:', webSocket?.readyState);
-    }
+    // If VAD settings need to be sent immediately on connect (alternative to sending on already open)
+    // This is now handled by connectWebSocket in the handler if VAD is enabled.
 }
 
 async function handleWebSocketMessage(event) {
     if (typeof event.data === 'string') {
         try {
-            const msg = JSON.parse(event.data);
-            // debugLog('Received JSON from server:', msg); // Can be too verbose
+            const message = JSON.parse(event.data);
+            audioUtils.debugLog('[WebSocket] Received JSON message:', message);
+            const botDetails = webSocketHandler.getCurrentBotDetails(); // Get model/voice
 
-            switch (msg.type) {
-                case 'vad_settings_updated':
-                case 'pipeline_options_updated':
-                    debugLog(`Server confirmed ${msg.type}:`, msg.payload);
-                    if (window.optimizationManager && typeof window.optimizationManager.updateSettingsFromServer === 'function') {
-                        window.optimizationManager.updateSettingsFromServer(msg.payload);
+            switch (message.type) {
+                case 'bot_status':
+                    if (window.uiManager && typeof window.uiManager.updateBotStatusIndicator === 'function') {
+                        window.uiManager.updateBotStatusIndicator(message.payload.is_thinking, message.payload.is_speaking, message.payload.is_processing);
                     }
                     break;
-                case 'transcription_update':
-                    if (window.uiManager && typeof window.uiManager.updateRecognizedText === 'function') {
-                        window.uiManager.updateRecognizedText(msg.payload.text, msg.payload.isFinal);
+                case 'prompt':
+                    if (window.uiManager && typeof window.uiManager.addUserMessage === 'function') {
+                        window.uiManager.addUserMessage(message.payload.text);
                     }
-                    if (msg.payload.isFinal && msg.payload.text) {
-                        debugLog("Final transcription received:", msg.payload.text);
-                        // Latency tracking for transcription can happen here or in uiManager
-                        if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
-                            window.optimizationManager.trackLatency('transcriptionReceived');
-                        }
+                    if (window.uiManager && typeof window.uiManager.addBotMessage === 'function') {
+                        window.uiManager.addBotMessage('', botDetails.model, botDetails.voice);
                     }
                     break;
-                case 'final_transcription': // Deprecated if transcription_update with isFinal=true is used
-                     if (window.uiManager && typeof window.uiManager.updateRecognizedText === 'function') {
-                        window.uiManager.updateRecognizedText(msg.payload.prompt, true);
-                        debugLog("Legacy final_transcription received:", msg.payload.prompt);
-                    }
-                    break;
-                case 'llm_token':
+                case 'token':
                     if (window.uiManager && typeof window.uiManager.appendTokenToBotMessage === 'function') {
-                        // Ensure a bot message container exists, using current model/voice
-                        if (!window.uiManager.currentBotMessageDiv) {
-                             if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
-                                window.optimizationManager.trackLatency('llmResponseStart');
-                            }
-                            window.uiManager.createBotMessage("", currentBotModel, currentBotVoice);
-                        }
-                        window.uiManager.appendTokenToBotMessage(msg.payload.token);
+                        window.uiManager.appendTokenToBotMessage(message.payload.token);
                     }
                     break;
-                case 'llm_reply': // Final LLM reply (if not fully streamed or for summary)
-                    debugLog('Received final LLM reply object:', msg.payload);
+                case 'done':
+                    audioUtils.debugLog('Server signaled end of response.', message.payload);
                     if (window.uiManager && typeof window.uiManager.finalizeBotMessage === 'function') {
-                        // If streaming was not used or to confirm full text
-                        window.uiManager.finalizeBotMessage(msg.payload.reply, currentBotModel, currentBotVoice);
-                    }
-                    if (msg.payload.latency_info && window.uiManager && typeof window.uiManager.updateMessageLatency === 'function') {
-                        window.uiManager.updateMessageLatency(msg.payload.latency_info);
-                    }
-                    // Determine if TTS should play based on server hint and client settings
-                    let pipelineOpts = {};
-                    if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
-                        pipelineOpts = window.optimizationManager.getCurrentPipelineOptions();
-                    }
-                    const clientWantsTTS = !pipelineOpts.DisableTts;
-                    const serverWillSendTTS = !msg.payload.disableTts; // Server hint
-                    isTTSSpeaking = clientWantsTTS && serverWillSendTTS;
-                    if (isTTSSpeaking) {
-                        debugLog("TTS will play for this reply.");
-                         if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
-                            window.optimizationManager.trackLatency('ttsStart');
-                        }
-                    } else {
-                        debugLog("TTS is disabled for this reply (client or server).");
-                         if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
-                            window.optimizationManager.trackLatency('ttsEnd'); // No TTS, so it ends immediately
-                        }
-                    }
-                    break;
-                case 'audio_chunk_info':
-                    lastReceivedAudioChunkIndex = msg.payload.index;
-                    if (msg.payload.isFinal) {
-                        allAudioChunksReceived = true;
-                    }
-                    isTTSSpeaking = true; // Actively receiving TTS data
-                    break;
-                case 'audio_stream_end':
-                    debugLog('Server signaled audio_stream_end for current TTS.');
-                    allAudioChunksReceived = true;
-                    // isTTSSpeaking will be set to false by the ttsPlayLoop when all chunks are played
-                    // or if resetTTSPlaybackState is called.
-                    // However, if no chunks were ever played (e.g. empty TTS), reset it here.
-                    if (indexedAudioChunks.size === 0 && !isCurrentlyPlayingTTS) {
-                        debugLog('All TTS chunks played or none to play after audio_stream_end. Resetting TTS state.');
-                        resetTTSPlaybackState(); // This sets isTTSSpeaking to false
-                         if (window.optimizationManager && typeof window.optimizationManager.trackLatency === 'function') {
-                            window.optimizationManager.trackLatency('ttsEnd');
-                        }
+                        window.uiManager.finalizeBotMessage(message.payload.full_reply, message.payload.performance_metrics);
                     }
                     break;
                 case 'error':
-                    console.error('[WebSocket] Server error message:', msg.payload.message);
+                    console.error('[WebSocket] Server error message:', message.payload.message);
                     if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-                        window.uiManager.showStatus(`Server Fehler: ${msg.payload.message}`, true);
+                        window.uiManager.showStatus(`Server Fehler: ${message.payload.message}`, true);
                     }
                     break;
                 case 'ping':
-                    sendWebSocketMessage({ type: 'pong', timestamp: msg.timestamp });
+                    webSocketHandler.sendWebSocketMessage({ type: 'pong', timestamp: message.timestamp }); // Use module
+                    break;
+                case 'audio-chunk-info':
+                    audioUtils.setLastKnownAudioChunkInfoIndex(message.index); // Use util function
+                    break;
+                case 'tts-all-chunks-sent':
+                    audioUtils.debugLog('Server signaled all TTS audio chunks have been sent.');
+                    ttsPlayback.signalAllTTSAudioChunksReceived();
+                    break;
+                case 'vad_settings_updated':
+                    audioUtils.debugLog('[WebSocket] Server confirmed VAD settings update:', message.payload);
+                    if (window.optimizationManager && typeof window.optimizationManager.updateVadSettingsStateFromRemote === 'function') {
+                        window.optimizationManager.updateVadSettingsStateFromRemote(message.payload);
+                    }
+                    break;
+                case 'pipeline_options_updated':
+                    audioUtils.debugLog('[WebSocket] Server confirmed PipelineOptions update:', message.payload);
+                    if (window.optimizationManager && typeof window.optimizationManager.updatePipelineOptionsStateFromRemote === 'function') {
+                        window.optimizationManager.updatePipelineOptionsStateFromRemote(message.payload);
+                    }
                     break;
                 default:
-                    console.warn('Received unhandled JSON message type:', msg.type, msg);
+                    console.warn('Received unhandled JSON message type:', message.type, message);
             }
         } catch (e) {
             console.error("Error parsing JSON from server or handling message:", e, event.data);
         }
-    } else if (event.data instanceof ArrayBuffer) { // Binary data for Progressive TTS
-        // debugLog(`Received binary audio data (ArrayBuffer), size: ${event.data.byteLength} bytes. Expected for chunk index: ${lastReceivedAudioChunkIndex}`);
-        const ac = getAudioContext();
-        if (!ac) {
-            console.error("Cannot process binary audio, AudioContext not available.");
-            return;
-        }
-        if (lastReceivedAudioChunkIndex === -1) {
-            console.error("Received binary audio data, but lastReceivedAudioChunkIndex is not set. 'audio_chunk_info' might be missing or out of order.");
+    } else if (event.data instanceof Blob) {
+        const audioData = await event.data.arrayBuffer();
+        const audioContextRef = audioContextManager.getAudioContext();
+        if (!audioContextRef) {
+            console.error("AudioContext not available for decoding TTS chunk.");
             return;
         }
         try {
-            const audioBuffer = await ac.decodeAudioData(event.data);
-            indexedAudioChunks.set(lastReceivedAudioChunkIndex, audioBuffer);
-            // debugLog(`Queued TTS audio chunk #${lastReceivedAudioChunkIndex}. Total queued: ${indexedAudioChunks.size}`);
-            lastReceivedAudioChunkIndex = -1; // Reset for the next 'audio_chunk_info'
-            ttsPlayLoop();
-        } catch (e) {
-            console.error('Error decoding audio data for TTS:', e, event.data);
+            const audioBuffer = await audioContextRef.decodeAudioData(audioData);
+            const currentChunkIndex = audioUtils.getLastKnownAudioChunkInfoIndex(); // Use util function
+
+            if (currentChunkIndex === -1) {
+                console.warn("Received an audio chunk without a preceding valid info message/index. Discarding.");
+                return;
+            }
+
+            ttsPlayback.addTTSAudioChunk(currentChunkIndex, audioBuffer);
+            audioUtils.debugLog(`Received and decoded TTS audio chunk #${currentChunkIndex}, duration=${audioBuffer.duration.toFixed(2)}s. Total buffered: ${ttsPlayback.getIndexedAudioChunks().size}`);
+            ttsPlayback.ttsPlayLoop();
+            audioUtils.resetLastKnownAudioChunkInfoIndex(); // Use util function
+        } catch (error) {
+            console.error('Error decoding audio data:', error);
         }
+    }
+}
+
+function handleWebSocketError(error) {
+    console.error('WebSocket Error:', error);
+    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
+        window.uiManager.showStatus("WebSocket Fehler. Aufnahme gestoppt.", true);
+    }
+    // No need to call updateUIAfterStopRecording() directly, as onclose will handle it.
+}
+
+function handleWebSocketClose(event) {
+    audioUtils.debugLog(`[WebSocket] Connection closed. Code: ${event.code}, Reason: ${event.reason}, Clean: ${event.wasClean}`);
+    // webSocket = null; // Nullify the instance in websocket-handler.js if it does this itself, or manage here.
+                      // For now, websocket-handler doesn't nullify its internal `webSocket` on close, it just reports.
+    if (isRecordingActive) { // If we were recording, this is an unexpected close
+        updateUIAfterStopRecording("WebSocket unerwartet geschlossen.");
+        isRecordingActive = false; // Ensure state is updated
     } else {
-        console.warn("[WebSocket] Received unknown message type:", event.data);
+        // If not recording, it might be a deliberate close after stopRecording, or a failed connection attempt.
+        // updateUIAfterStopRecording(); // This might be redundant if stopRecording already handled UI
     }
 }
 
-
-function updateUIAfterAudioInitAttempt(success, reason = '') {
-    if (window.uiManager && typeof window.uiManager.updateButtonStates === 'function') {
-        window.uiManager.updateButtonStates(isRecordingActive); // Pass current recording state
-    }
-    if (success) {
-        if (window.uiManager && typeof window.uiManager.hideStatus === 'function') {
-            window.uiManager.hideStatus();
-        }
-        debugLog(`Audio initialization/start successful. isRecordingActive: ${isRecordingActive}. Reason: ${reason || 'N/A'}`);
+// sendAudioChunkToServer remains here as it uses convertFloat32ToPcm16 and calls websocket-handler's sendBinaryData
+function sendAudioChunkToServer(float32AudioChunk) {
+    if (webSocketHandler.getWebSocketState() === WebSocket.OPEN) {
+        const pcm16Buffer = audioUtils.convertFloat32ToPcm16(float32AudioChunk); // Use util function
+        webSocketHandler.sendBinaryData(pcm16Buffer); // Use module function
     } else {
-        if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-            let message = "Mikrofonzugriff oder Audio-Initialisierung fehlgeschlagen.";
-            if (reason === 'AudioContext blocked') {
-                message = "Audiowiedergabe blockiert. Bitte klicken Sie auf die Aufnahme-Schaltfläche.";
-            } else if (reason === 'Microphone access denied') {
-                message = "Mikrofonzugriff verweigert. Bitte Zugriff erlauben und erneut versuchen.";
-            } else if (reason && reason.toLowerCase().includes('audiocontext not running')) {
-                message = `Audio System nicht bereit. Bitte klicken Sie auf die Aufnahme-Schaltfläche. (${reason})`;
-            } else if (reason) {
-                message = `Fehler: ${reason}.`;
-            }
-            window.uiManager.showStatus(message, true);
-        }
-        console.warn(`Audio initialization/start failed: ${reason}`);
+        // debugLog("WebSocket not open, cannot send audio chunk.");
     }
 }
 
-function updateUIAfterStopRecording() {
-    if (window.uiManager && typeof window.uiManager.updateButtonStates === 'function') {
-        window.uiManager.updateButtonStates(false); // Explicitly false as recording has stopped
-    }
-    // Optionally, show a status if it wasn't an error that stopped it
-    // if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-    //     window.uiManager.showStatus("Aufnahme gestoppt.");
-    // }
-    debugLog("UI updated after stopping recording.");
+// Functions to send VAD/Pipeline settings (will use websocket-handler.sendWebSocketMessage)
+export function sendVadSettingsUpdate(settings) {
+    audioUtils.debugLog("Sending VAD settings update to server:", settings);
+    webSocketHandler.sendWebSocketMessage({ type: 'updateVadSettings', payload: settings });
 }
 
-// --- Settings Change Handler ---
-export async function handleSettingsChange({ type }) {
-    debugLog(`[AUDIO-SYSTEM] handleSettingsChange called with type: ${type}`);
-    if (!window.optimizationManager) {
-        console.error("[AUDIO-SYSTEM] optimizationManager not found. Cannot handle settings change.");
-        return;
-    }
-
-    if (type === 'pipeline') {
-        debugLog("[AUDIO-SYSTEM] Pipeline settings changed (e.g., model, voice, language, TTS mode).");
-        if (isRecordingActive) {
-            debugLog("[AUDIO-SYSTEM] Recording is active. Restarting recording with new pipeline settings.");
-            if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-                window.uiManager.showStatus("Pipeline-Einstellungen geändert. Audio wird neu gestartet...", false);
-            }
-            await stopRecording(false); // Stop current recording without sending end_of_stream
-            // Add a small delay to ensure resources are released before reconnecting
-            await new Promise(resolve => setTimeout(resolve, 250)); 
-            await startRecording(); // This will use the new settings from optimizationManager
-        } else {
-            debugLog("[AUDIO-SYSTEM] Recording not active. New pipeline settings will be used on next start.");
-            // Optionally, if WebSocket is connected but idle, could close and reopen it,
-            // but typically it's better to do it on next recording start.
-            if (webSocket && webSocket.readyState === WebSocket.OPEN) {
-                debugLog("[AUDIO-SYSTEM] Closing idle WebSocket due to pipeline settings change.");
-                await closeWebSocket(false);
-            }
-        }
-    } else if (type === 'vad') {
-        debugLog("[AUDIO-SYSTEM] VAD settings changed.");
-        const pipelineOptions = window.optimizationManager.getCurrentPipelineOptions ? window.optimizationManager.getCurrentPipelineOptions() : { DisableVad: false };
-        if (!pipelineOptions.DisableVad) {
-            if (webSocket && webSocket.readyState === WebSocket.OPEN) {
-                const vadSettings = window.optimizationManager.getCurrentVadSettings();
-                if (vadSettings) {
-                    sendWebSocketMessage({ type: 'vad_settings', payload: vadSettings });
-                    debugLog("[AUDIO-SYSTEM] Sent updated VAD settings to server.", vadSettings);
-                }
-            } else {
-                debugLog("[AUDIO-SYSTEM] WebSocket not open or VAD disabled. New VAD settings will be sent on next connection/enable.");
-            }
-        } else {
-            debugLog("[AUDIO-SYSTEM] VAD is currently disabled by pipeline options. No VAD settings sent.");
-        }
-    }
+export function sendPipelineOptionsUpdate(options) {
+    audioUtils.debugLog("Sending PipelineOptions update to server:", options);
+    webSocketHandler.sendWebSocketMessage({ type: 'updatePipelineOptions', payload: options });
 }
 
-// --- General Audio Playback (e.g., for non-progressive TTS if server sends full audio files) ---
-// This is a simpler queue for playing single audio buffers if needed.
-// Progressive TTS uses indexedAudioChunks and playLoop.
-let generalAudioQueue = [];
-let isGeneralAudioPlaying = false;
-
-export async function playGeneralAudio(arrayBuffer) {
-    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        debugLog("playGeneralAudio called with empty data.");
-        return;
-    }
-    const ac = getAudioContext();
-    if (!ac) {
-        console.error("Cannot play general audio, AudioContext not available.");
-        return;
-    }
-    try {
-        const audioBuffer = await ac.decodeAudioData(arrayBuffer.slice(0)); // Use slice(0) to copy buffer for safety
-        generalAudioQueue.push(audioBuffer);
-        if (!isGeneralAudioPlaying) {
-            processGeneralAudioQueue();
-        }
-    } catch (e) {
-        console.error("Error decoding general audio data:", e);
-    }
+// --- General Purpose Audio Playback (e.g., for UI sounds) ---
+// This section might also use audioContextManager.getAudioContext()
+// ...existing code...
+function playGeneralAudio(url) {
+    fetch(url)
+        .then(response => response.arrayBuffer())
+        .then(data => {
+            const ac = audioContextManager.getAudioContext(); // Use module function
+            if (!ac) {
+                console.error("AudioContext not available for general audio playback.");
+                return;
+            }
+            return ac.decodeAudioData(data);
+        })
+    // ...existing code...
 }
 
-async function processGeneralAudioQueue() {
-    if (generalAudioQueue.length === 0) {
-        isGeneralAudioPlaying = false;
-        return;
-    }
+function processGeneralAudioQueue() {
+    if (generalAudioQueue.length === 0 || isGeneralAudioPlaying) return;
     isGeneralAudioPlaying = true;
     const audioBuffer = generalAudioQueue.shift();
-    const ac = getAudioContext();
+    const ac = audioContextManager.getAudioContext(); // Use module function
     const sourceNode = ac.createBufferSource();
     sourceNode.buffer = audioBuffer;
     sourceNode.connect(ac.destination);
@@ -878,9 +459,8 @@ async function processGeneralAudioQueue() {
         processGeneralAudioQueue(); // Play next
     };
     sourceNode.start();
-    debugLog("Playing general audio from queue.");
+    audioUtils.debugLog("Playing general audio from queue.");
 }
-
 
 // --- DOMContentLoaded ---
 // It's generally better if main.js or another entry point explicitly calls initAudioSystem.
