@@ -3,8 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
-using System.Net.Http.Headers;
+using System.Text; // Added for StringBuilder
 using System.Threading.Tasks;
+using VoiceAssistant.Core.Interfaces; // Added for IChatService
 using VoiceAssistant.Core.Models;
 using VoiceAssistant.Core.Services;
 using VoiceAssistant.Plugins.OpenAI;
@@ -35,8 +36,8 @@ namespace VoiceAssistant.Tests
                     DefaultRequestVersion = System.Net.HttpVersion.Version20,
                     DefaultVersionPolicy = System.Net.Http.HttpVersionPolicy.RequestVersionOrHigher
                 };
-                _httpClient.DefaultRequestHeaders.Authorization =
-                    new AuthenticationHeaderValue("Bearer", _apiKey);
+                // API key is now set within StreamingOpenAIChatService using Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+                // _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
             }
         }
 
@@ -63,14 +64,16 @@ namespace VoiceAssistant.Tests
             _output.WriteLine($"User input: {userText}");
 
             // 2. Add to chat log
-            chatLogManager.AddMessage(ChatRole.User, userText);            // 3. Get bot response
+            chatLogManager.AddMessage(ChatRole.User, userText);
+            // 3. Get bot response
             // Use default model for this test
             string botResponse = await chatService.GenerateResponseAsync(chatLogManager.GetMessages(), "gpt-3.5-turbo");
 
             // 4. Add to chat log
-            chatLogManager.AddMessage(ChatRole.Bot, botResponse);            // 5. Generate speech
+            chatLogManager.AddMessage(ChatRole.Bot, botResponse);
+            // 5. Generate speech
             byte[]? audio = null;
-            Exception? ttsException = null;try
+            Exception? ttsException = null; try
             {
                 // Use default voice for this test
                 audio = await synthesizer.SynthesizeAsync(botResponse, "alloy");
@@ -109,22 +112,33 @@ namespace VoiceAssistant.Tests
             }
 
             // ARRANGE
-            var chatService = new StreamingOpenAIChatService(_httpClient);
+            IChatService chatService = new StreamingOpenAIChatService(_httpClient); // Use IChatService
             var chatHistory = new List<ChatMessage>
             {
                 new ChatMessage(Guid.NewGuid(), ChatRole.User, "Write one sentence about the weather.", DateTime.UtcNow)
             };
 
-            var tokens = new List<string>();            // ACT
-            string response = await chatService.GenerateStreamingResponseAsync(
-                chatHistory,
-                "gpt-3.5-turbo", // Model parameter
-                token =>
+            var tokens = new List<string>();
+            var fullResponseBuilder = new StringBuilder();
+            int tokenCount = 0;
+
+            // ACT
+            // Updated to use StreamResponseAsync and iterate over IAsyncEnumerable
+            await foreach (var (token, isFinalToken) in chatService.StreamResponseAsync(chatHistory, "gpt-3.5-turbo"))
+            {
+                if (!string.IsNullOrEmpty(token))
                 {
                     tokens.Add(token);
-                    _output.WriteLine($"Token: {token}");
+                    fullResponseBuilder.Append(token);
+                    tokenCount++;
+                    _output.WriteLine($"Token {tokenCount}: '{token}' (IsFinal: {isFinalToken})");
                 }
-            );
+                if (isFinalToken)
+                {
+                    _output.WriteLine("Final token received.");
+                }
+            }
+            string response = fullResponseBuilder.ToString();
 
             // ASSERT
             Assert.NotEmpty(tokens);
@@ -186,7 +200,7 @@ namespace VoiceAssistant.Tests
             // 4. Add to chat log
             chatLogManager.AddMessage(ChatRole.Bot, botResponse);            // 5. Generate speech with dynamic parameters
             byte[]? audio = null;
-            Exception? ttsException = null;try
+            Exception? ttsException = null; try
             {
                 audio = await synthesizer.SynthesizeAsync(botResponse, ttsVoice);
             }

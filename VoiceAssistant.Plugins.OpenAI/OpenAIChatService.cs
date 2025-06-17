@@ -51,5 +51,12 @@ namespace VoiceAssistant.Plugins.OpenAI
                 .GetString();
             return content ?? string.Empty;
         }
+
+        public async IAsyncEnumerable<(string token, bool isFinalToken)> StreamResponseAsync(IEnumerable<ChatMessage> chatHistory, string chatModel)
+        {
+            // Simulate non-streaming by returning the full response as a single token.
+            string fullResponse = await GenerateResponseAsync(chatHistory, chatModel);
+            yield return (fullResponse, true);
+        }
     }
 }

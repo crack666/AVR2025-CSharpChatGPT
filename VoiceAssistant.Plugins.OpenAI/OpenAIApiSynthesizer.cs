@@ -43,6 +43,15 @@ namespace VoiceAssistant.Plugins.OpenAI
             request.Headers.Accept.Clear();
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/mpeg"));
 
+            // Add Authorization header
+            var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                // Consider logging this error
+                // throw new InvalidOperationException("OPENAI_API_KEY not configured for TTS.");
+            }
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
             var payload = new { model = "tts-1", voice = voice, input = text };
             var body = JsonSerializer.Serialize(payload);
             request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");

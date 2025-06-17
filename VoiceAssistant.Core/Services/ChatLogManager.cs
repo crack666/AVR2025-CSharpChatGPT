@@ -15,12 +15,12 @@ namespace VoiceAssistant.Core.Services
         /// <summary>
         /// Invoked when a new message is added to the log.
         /// </summary>
-        public event Action<ChatMessage>? MessageAdded;
+        public event Action<ChatMessage> MessageAdded;
 
         /// <summary>
         /// Invoked when the chat history is cleared.
         /// </summary>
-        public event Action? MessagesCleared;
+        public event Action MessagesCleared;
 
         /// <summary>
         /// Adds a new message to the log and notifies subscribers.
@@ -37,7 +37,7 @@ namespace VoiceAssistant.Core.Services
         /// <summary>
         /// Adds a new message with optional model/voice metadata.
         /// </summary>
-        public ChatMessage AddMessage(ChatRole role, string content, string? model, string? voice)
+        public ChatMessage AddMessage(ChatRole role, string content, string model, string voice)
         {
             var message = new ChatMessage(Guid.NewGuid(), role, content, DateTime.UtcNow, model, voice);
             lock (_lock)

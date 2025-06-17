@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Text;
 using System.Threading.Tasks;
+using VoiceAssistant.Core.Interfaces; // Added for IChatService
 using VoiceAssistant.Core.Models;
 using VoiceAssistant.Plugins.OpenAI;
 using Xunit;
@@ -18,6 +20,7 @@ namespace VoiceAssistant.Tests
             _output = output;
         }
 
+        [Fact] // Added Fact attribute to make it discoverable by test runner
         public async Task StreamingOpenAIChatService_Should_Stream_Tokens()
         {
             // Replace with your actual OpenAI API key for testing
@@ -40,10 +43,10 @@ namespace VoiceAssistant.Tests
                 DefaultRequestVersion = System.Net.HttpVersion.Version20,
                 DefaultVersionPolicy = System.Net.Http.HttpVersionPolicy.RequestVersionOrHigher
             };
-            httpClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            // API key is now set within StreamingOpenAIChatService using Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+            // httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
 
-            var chatService = new StreamingOpenAIChatService(httpClient);
+            IChatService chatService = new StreamingOpenAIChatService(httpClient, logger: null); // Use IChatService
 
             var chatHistory = new List<ChatMessage>
             {
@@ -52,19 +55,30 @@ namespace VoiceAssistant.Tests
 
             // Collect tokens
             var tokens = new List<string>();
-            int tokenCount = 0;            // Act
-            string fullResponse = await chatService.GenerateStreamingResponseAsync(
-                chatHistory,
-                "gpt-3.5-turbo", // model name parameter
-                token =>
+            var fullResponseBuilder = new StringBuilder();
+            int tokenCount = 0;
+            
+            // Act
+            // Updated to use StreamResponseAsync and iterate over IAsyncEnumerable
+            await foreach (var (token, isFinalToken) in chatService.StreamResponseAsync(chatHistory, "gpt-3.5-turbo"))
+            {
+                if (!string.IsNullOrEmpty(token))
                 {
                     tokens.Add(token);
+                    fullResponseBuilder.Append(token);
                     tokenCount++;
-                    _output.WriteLine($"Token {tokenCount}: '{token}'");
-                });
+                    _output.WriteLine($"Token {tokenCount}: '{token}' (IsFinal: {isFinalToken})");
+                }
+                if (isFinalToken)
+                {
+                    _output.WriteLine("Final token received.");
+                }
+            }
+            string fullResponse = fullResponseBuilder.ToString();
 
             // Assert
             Assert.NotEmpty(tokens);
+            Assert.False(string.IsNullOrEmpty(fullResponse));
 
             // The full response should be the concatenation of all tokens
             string combinedTokens = string.Concat(tokens);

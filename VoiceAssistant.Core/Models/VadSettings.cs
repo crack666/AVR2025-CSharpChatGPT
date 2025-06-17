@@ -75,5 +75,67 @@ namespace VoiceAssistant.Core.Models
         /// Enables or disables the third-party VAD (e.g., WebRTC VAD).
         /// </summary>
         public bool EnableThirdPartyVad { get; set; } = true;
+
+        public void CopyFrom(VadSettings other)
+        {
+            if (other == null) return;
+
+            OperatingMode = other.OperatingMode;
+            PreAmplification = other.PreAmplification;
+            MinSpeechDurationSec = other.MinSpeechDurationSec;
+            PreSpeechDurationSec = other.PreSpeechDurationSec;
+            HangoverDurationSec = other.HangoverDurationSec;
+            MinSegmentDurationSec = other.MinSegmentDurationSec;
+            NoiseThresholdFactor = other.NoiseThresholdFactor;
+            NoiseFloorAlpha = other.NoiseFloorAlpha;
+            MinNoiseFloor = other.MinNoiseFloor;
+            SilenceAdaptationTimeSec = other.SilenceAdaptationTimeSec;
+            VadSpikeThreshold = other.VadSpikeThreshold;
+            EnableSpikeDetection = other.EnableSpikeDetection;
+            EnableThirdPartyVad = other.EnableThirdPartyVad;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null || GetType() != obj.GetType())
+            {
+                return false;
+            }
+
+            VadSettings other = (VadSettings)obj;
+            return OperatingMode == other.OperatingMode &&
+                   PreAmplification == other.PreAmplification &&
+                   MinSpeechDurationSec == other.MinSpeechDurationSec &&
+                   PreSpeechDurationSec == other.PreSpeechDurationSec &&
+                   HangoverDurationSec == other.HangoverDurationSec &&
+                   MinSegmentDurationSec == other.MinSegmentDurationSec &&
+                   NoiseThresholdFactor == other.NoiseThresholdFactor &&
+                   NoiseFloorAlpha == other.NoiseFloorAlpha &&
+                   MinNoiseFloor == other.MinNoiseFloor &&
+                   SilenceAdaptationTimeSec == other.SilenceAdaptationTimeSec &&
+                   VadSpikeThreshold == other.VadSpikeThreshold &&
+                   EnableSpikeDetection == other.EnableSpikeDetection &&
+                   EnableThirdPartyVad == other.EnableThirdPartyVad;
+        }
+
+        public override int GetHashCode()
+        {
+            // Manual implementation of GetHashCode
+            int hash = 17;
+            hash = hash * 23 + OperatingMode.GetHashCode();
+            hash = hash * 23 + PreAmplification.GetHashCode();
+            hash = hash * 23 + MinSpeechDurationSec.GetHashCode();
+            hash = hash * 23 + PreSpeechDurationSec.GetHashCode();
+            hash = hash * 23 + HangoverDurationSec.GetHashCode();
+            hash = hash * 23 + MinSegmentDurationSec.GetHashCode();
+            hash = hash * 23 + NoiseThresholdFactor.GetHashCode();
+            hash = hash * 23 + NoiseFloorAlpha.GetHashCode();
+            hash = hash * 23 + MinNoiseFloor.GetHashCode();
+            hash = hash * 23 + SilenceAdaptationTimeSec.GetHashCode();
+            hash = hash * 23 + VadSpikeThreshold.GetHashCode();
+            hash = hash * 23 + EnableSpikeDetection.GetHashCode();
+            hash = hash * 23 + EnableThirdPartyVad.GetHashCode();
+            return hash;
+        }
     }
 }

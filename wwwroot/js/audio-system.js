@@ -371,12 +371,10 @@ async function connectAudioPipeline() {
         
         while (audioBufferForServer.length >= SAMPLES_PER_CHUNK) {
             const chunkToProcess = audioBufferForServer.slice(0, SAMPLES_PER_CHUNK);
-            audioBufferForServer = audioBufferForServer.slice(SAMPLES_PER_CHUNK);
-            // DEBUG: Log when chunks are sent
+            audioBufferForServer = audioBufferForServer.slice(SAMPLES_PER_CHUNK);            // DEBUG: Log when chunks are sent
             if (audioProcessCallCount % 50 === 1) { // Increased frequency from 100 to 50
                 debugLog(`[DEBUG] Sending audio chunk to server, length: ${chunkToProcess.length}, SAMPLES_PER_CHUNK: ${SAMPLES_PER_CHUNK}`);
-            }
-            sendAudioChunkToServer(chunkToProcess);
+            }sendAudioChunkToServer(chunkToProcess);
         }
         
         let sumSquares = 0.0;
@@ -404,8 +402,7 @@ async function connectAudioPipeline() {
             // TEMPORARY DEBUG: Check if uiManager is missing
             if (Math.random() < 0.01) {
                 debugLog("TEMP DEBUG: uiManager.updateAudioVisualization not available");
-            }
-        }
+            }        }
     };
 
     mediaStreamSource.connect(scriptProcessorNode);
@@ -606,12 +603,11 @@ function sendAudioChunkToServer(float32ArrayChunk) {
             pcmData[i] = Math.max(-32768, Math.min(32767, float32ArrayChunk[i] * 32768));
         }
         try {
-            webSocket.send(pcmData.buffer); // Send as ArrayBuffer            
-            // DEBUG: Log successful sends
-            if (Math.random() < 0.05) { // Increased from 0.01 to 0.05 (5% of sends)
+            webSocket.send(pcmData.buffer); // Send as ArrayBuffer            // DEBUG: Log successful sends
+            /*if (Math.random() < 0.05) { // Increased from 0.01 to 0.05 (5% of sends)
                 debugLog(`[DEBUG] Successfully sent audio chunk to server, length: ${pcmData.length}, buffer size: ${pcmData.buffer.byteLength} bytes`);
                 debugLog(`[DEBUG] WebSocket state: ${webSocket.readyState}, Binary type: ${webSocket.binaryType}`);
-            }
+            }*/
         } catch (e) {
             console.error("Error sending audio chunk via WebSocket:", e);
         }

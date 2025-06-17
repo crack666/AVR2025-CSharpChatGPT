@@ -1,8 +1,16 @@
 using Serilog;
 using System.Net;
 using System.Net.Http.Headers;
-using VoiceAssistant;
+using VoiceAssistant; // This should cover the new classes if they are in this namespace
 using VoiceAssistant.Core.Models;
+using VoiceAssistant.Core.Interfaces;
+using VoiceAssistant.Core.Services;
+using VoiceAssistant.Plugins.OpenAI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System.Net.WebSockets;
+using System; // For Guid
+using Microsoft.Extensions.Configuration; // For IConfiguration
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -21,10 +29,15 @@ builder.Host.UseSerilog((hostingContext, services, loggerConfiguration) =>
         .Enrich.FromLogContext();
     // Note: Don't add WriteTo.Console() here - already configured in appsettings.json
 });
-// Bind and register pipeline feature flags as mutable singleton
-var pipelineOptions = new PipelineOptions();
-builder.Configuration.GetSection("PipelineOptions").Bind(pipelineOptions);
-builder.Services.AddSingleton(pipelineOptions);
+// Bind and register pipeline feature flags as mutable singleton (GLOBAL DEFAULT)
+var globalPipelineOptions = new PipelineOptions();
+builder.Configuration.GetSection("PipelineOptions").Bind(globalPipelineOptions);
+builder.Services.AddSingleton(globalPipelineOptions); // Global default
+
+// Register global default VadSettings as singleton
+var globalVadSettings = new VadSettings();
+builder.Configuration.GetSection("VadSettings").Bind(globalVadSettings);
+builder.Services.AddSingleton(globalVadSettings); // Global default
 
 // Configure shared HTTP/2 HttpClient as singleton with persistent connections
 builder.Services.AddSingleton(sp =>
@@ -52,12 +65,49 @@ builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IChatService>(sp =>
     return new VoiceAssistant.Plugins.OpenAI.StreamingOpenAIChatService(httpClient);
 });
 builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IRecognizer, VoiceAssistant.Plugins.OpenAI.OpenAIApiRecognizer>();
-// Register the new progressive TTS synthesizer for enhanced latency performance
 builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.ISynthesizer, VoiceAssistant.Plugins.OpenAI.ProgressiveTTSSynthesizer>();
-// VAD settings for voice-activity detection (threshold, silence, min speech duration)
-builder.Services.AddSingleton<VadSettings>();
-// WebSocket-based audio streaming and VAD service
-builder.Services.AddSingleton<WebSocketAudioService>();
+
+// Register new services
+// These are scoped per WebSocket connection because they hold session-specific state or dependencies.
+builder.Services.AddScoped<IWebSocketSettingsManager, WebSocketSettingsManager>();
+
+// Register session-specific options as scoped services.
+// These will be configured per-request in the WebSocket endpoint mapping.
+builder.Services.AddScoped<PipelineOptions>(); 
+builder.Services.AddScoped<VadSettings>();
+
+// AudioFrameProcessor needs initial VadSettings and PipelineOptions for its construction.
+// These will be the session-specific ones.
+builder.Services.AddScoped<IAudioFrameProcessor, AudioFrameProcessor>(
+sp => new AudioFrameProcessor(
+    sp.GetRequiredService<ILogger<AudioFrameProcessor>>(),
+    sp.GetRequiredService<VadSettings>(), // Resolves the SCOPED VadSettings
+    sp.GetRequiredService<PipelineOptions>() // Resolves the SCOPED PipelineOptions
+));
+
+builder.Services.AddScoped<IAudioSegmentProcessor, AudioSegmentProcessor>();
+
+// WebSocketHandler is also scoped as it orchestrates other scoped services and handles a single WebSocket session.
+// It will receive session-specific PipelineOptions and VadSettings upon creation.
+builder.Services.AddScoped<IWebSocketHandler, WebSocketHandler>(
+sp => new WebSocketHandler(
+    sp.GetRequiredService<ILogger<WebSocketHandler>>(),
+    sp.GetRequiredService<IAudioFrameProcessor>(),
+    sp.GetRequiredService<IAudioSegmentProcessor>(),
+    sp.GetRequiredService<IWebSocketSettingsManager>(),
+    sp.GetRequiredService<PipelineOptions>(), // Resolves the SCOPED PipelineOptions
+    sp.GetRequiredService<VadSettings>()      // Resolves the SCOPED VadSettings
+));
+
+// WebSocketAudioService might still be a singleton if it only acts as a lightweight factory or entry point.
+// However, if it directly uses scoped services like IWebSocketHandler, it should also be scoped.
+// For this refactoring, WebSocketAudioService will be simplified to mostly delegate to IWebSocketHandler.
+// Let's make WebSocketAudioService scoped as well if it resolves IWebSocketHandler.
+builder.Services.AddScoped<WebSocketAudioService>();
+
+builder.Services.AddSingleton<VadSettings>(); // Global default VadSettings
+// PipelineOptions are already registered as a singleton for global defaults.
+
 builder.Services.AddControllers();
 var app = builder.Build();
 var logger = app.Logger;
@@ -68,58 +118,40 @@ app.UseWebSockets();
 // Map WebSocket endpoint for real-time audio streaming
 app.Map("/ws/audio", async context =>
 {
-    var pipelineOptions = context.RequestServices.GetRequiredService<PipelineOptions>();
-    if (pipelineOptions.UseLegacyHttp)
-    {
-        // Legacy HTTP mode: do not accept WebSocket
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        return;
-    }
     if (context.WebSockets.IsWebSocketRequest)
     {
-        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        
-        // Create a new instance of PipelineOptions for this specific WebSocket session
-        // Start with the global/default options
-        var sessionPipelineOptions = new PipelineOptions();
-        context.RequestServices.GetRequiredService<IConfiguration>().GetSection("PipelineOptions").Bind(sessionPipelineOptions);
+        using (var scope = app.Services.CreateScope()) 
+        {
+            var serviceProvider = scope.ServiceProvider;
 
-        // Override with query parameters
-        var modelQuery = context.Request.Query["model"].ToString();
-        if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
+            // Get the scoped PipelineOptions and VadSettings instances for this session
+            var sessionPipelineOptions = serviceProvider.GetRequiredService<PipelineOptions>();
+            var sessionVadSettings = serviceProvider.GetRequiredService<VadSettings>();
 
-        var voiceQuery = context.Request.Query["voice"].ToString();
-        if (!string.IsNullOrEmpty(voiceQuery)) sessionPipelineOptions.TtsVoice = voiceQuery;
+            // Initialize sessionPipelineOptions from global defaults and query parameters
+            var globalOptions = serviceProvider.GetRequiredService<PipelineOptions>(); // This resolves the singleton global
+            sessionPipelineOptions.CopyFrom(globalOptions); // Start with global defaults
+            
+            var modelQuery = context.Request.Query["model"].ToString();
+            if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
+            var voiceQuery = context.Request.Query["voice"].ToString();
+            if (!string.IsNullOrEmpty(voiceQuery)) sessionPipelineOptions.TtsVoice = voiceQuery;
+            var languageQuery = context.Request.Query["language"].ToString();
+            if (!string.IsNullOrEmpty(languageQuery)) sessionPipelineOptions.Language = languageQuery;
 
-        var languageQuery = context.Request.Query["language"].ToString();
-        if (!string.IsNullOrEmpty(languageQuery)) sessionPipelineOptions.Language = languageQuery;
-        
-        // Log the effective pipeline options for this session
-        var tempLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-        tempLogger.LogInformation("WebSocket session starting with PipelineOptions: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}", 
-                                sessionPipelineOptions.ChatModel, sessionPipelineOptions.TtsVoice, sessionPipelineOptions.Language);
+            // Initialize sessionVadSettings from global defaults (and query params if any in future)
+            var globalVadSingleton = serviceProvider.GetRequiredService<VadSettings>(); // This resolves the singleton global
+            sessionVadSettings.CopyFrom(globalVadSingleton); // Use CopyFrom method
 
-        // Get a VadSettings instance (it's a singleton, but its properties can be updated per session via WebSocket messages)
-        var vadSettings = context.RequestServices.GetRequiredService<VadSettings>();
+            var tempLogger = serviceProvider.GetRequiredService<ILogger<Program>>();
+            tempLogger.LogInformation("WebSocket session starting with PipelineOptions: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}",
+                                    sessionPipelineOptions.ChatModel, sessionPipelineOptions.TtsVoice, sessionPipelineOptions.Language);
 
-        // Manually create WebSocketAudioService with session-specific options
-        var recognizer = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Interfaces.IRecognizer>();
-        var chatService = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Interfaces.IChatService>();
-        var chatLogManager = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Services.ChatLogManager>();
-        var synthesizer = context.RequestServices.GetRequiredService<VoiceAssistant.Core.Interfaces.ISynthesizer>();
-        var serviceLogger = context.RequestServices.GetRequiredService<ILogger<WebSocketAudioService>>();
-        
-        var audioService = new WebSocketAudioService(
-            recognizer,
-            chatService,
-            chatLogManager,
-            synthesizer,
-            serviceLogger,
-            vadSettings, // Pass the singleton VadSettings, it will be updated by messages if needed
-            sessionPipelineOptions // Pass the session-specific pipeline options
-        );
-
-        await audioService.HandleAsync(webSocket);
+            var sessionId = Guid.NewGuid().ToString("N")[..8];
+            var webSocketHandler = serviceProvider.GetRequiredService<IWebSocketHandler>();
+            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            await webSocketHandler.HandleAsync(webSocket, sessionId); 
+        }
     }
     else
     {

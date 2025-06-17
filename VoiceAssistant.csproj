@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">  <PropertyGroup>
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">  <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -17,21 +17,21 @@
     <!-- Main application source files -->
     <Compile Include="Program.cs" />
     <Compile Include="ProgramPartial.cs" />
-    <Compile Include="WebSocketAudioService.cs" />
     <Compile Include="Controllers\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- Core and plugin libraries -->
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.5" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.6" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
     <ProjectReference Include="VoiceAssistant.Core/VoiceAssistant.Core.csproj" />
     <ProjectReference Include="VoiceAssistant.Plugins.OpenAI/VoiceAssistant.Plugins.OpenAI.csproj" />
     <!-- VAD: WebRTC Voice Activity Detection for backend streaming service -->
-    <PackageReference Include="WebRtcVadSharp" Version="1.1.0" />
+    <PackageReference Include="WebRtcVadSharp" Version="1.3.2" />
   </ItemGroup>
   <ItemGroup>
     <!-- Serilog logging -->
     <PackageReference Include="Serilog.AspNetCore" Version="6.1.0" />
-    <PackageReference Include="Serilog.Settings.Configuration" Version="3.3.0" />
-    <PackageReference Include="Serilog.Sinks.Console" Version="4.1.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
   </ItemGroup>
 </Project>

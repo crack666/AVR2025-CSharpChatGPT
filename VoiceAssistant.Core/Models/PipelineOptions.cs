@@ -1,3 +1,5 @@
+using System;
+
 namespace VoiceAssistant.Core.Models
 {
     /// <summary>
@@ -31,5 +33,61 @@ namespace VoiceAssistant.Core.Models
 
         /// <summary>Target length for subsequent TTS chunks.</summary>
         public int TtsSubsequentChunkLength { get; set; } = 250; // Default value, can be tuned
+
+        public void CopyFrom(PipelineOptions other)
+        {
+            if (other == null) return;
+
+            UseLegacyHttp = other.UseLegacyHttp;
+            DisableVad = other.DisableVad;
+            DisableTokenStreaming = other.DisableTokenStreaming;
+            DisableProgressiveTts = other.DisableProgressiveTts;
+            DisableTts = other.DisableTts;
+            ChatModel = other.ChatModel;
+            TtsVoice = other.TtsVoice;
+            Language = other.Language;
+            TtsMinFirstChunkLength = other.TtsMinFirstChunkLength;
+            TtsMaxFirstChunkLength = other.TtsMaxFirstChunkLength;
+            TtsSubsequentChunkLength = other.TtsSubsequentChunkLength;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null || GetType() != obj.GetType())
+            {
+                return false;
+            }
+
+            PipelineOptions other = (PipelineOptions)obj;
+            return UseLegacyHttp == other.UseLegacyHttp &&
+                   DisableVad == other.DisableVad &&
+                   DisableTokenStreaming == other.DisableTokenStreaming &&
+                   DisableProgressiveTts == other.DisableProgressiveTts &&
+                   DisableTts == other.DisableTts &&
+                   ChatModel == other.ChatModel &&
+                   TtsVoice == other.TtsVoice &&
+                   Language == other.Language &&
+                   TtsMinFirstChunkLength == other.TtsMinFirstChunkLength &&
+                   TtsMaxFirstChunkLength == other.TtsMaxFirstChunkLength &&
+                   TtsSubsequentChunkLength == other.TtsSubsequentChunkLength;
+        }
+
+        public override int GetHashCode()
+        {
+            // Manual implementation of GetHashCode
+            int hash = 17;
+            hash = hash * 23 + UseLegacyHttp.GetHashCode();
+            hash = hash * 23 + DisableVad.GetHashCode();
+            hash = hash * 23 + DisableTokenStreaming.GetHashCode();
+            hash = hash * 23 + DisableProgressiveTts.GetHashCode();
+            hash = hash * 23 + DisableTts.GetHashCode();
+            hash = hash * 23 + (ChatModel?.GetHashCode() ?? 0);
+            hash = hash * 23 + (TtsVoice?.GetHashCode() ?? 0);
+            hash = hash * 23 + (Language?.GetHashCode() ?? 0);
+            hash = hash * 23 + TtsMinFirstChunkLength.GetHashCode();
+            hash = hash * 23 + TtsMaxFirstChunkLength.GetHashCode();
+            hash = hash * 23 + TtsSubsequentChunkLength.GetHashCode();
+            return hash;
+        }
     }
 }
