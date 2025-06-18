@@ -152,15 +152,40 @@ async function loadModels() {
 
 // Populate browser voices and OpenAI TTS voices
 function populateVoices() {
-  // Speech language dropdown
+  // Get available TTS voices from the browser
   const voices = speechSynthesis.getVoices();
+
+  // Clear previous options
   langSel.innerHTML = '';
   voiceSel.innerHTML = '';
-  const languages = [...new Set(voices.map(v => v.lang))];
-  languages.forEach(lang => {
-    const opt = document.createElement('option'); opt.value = lang; opt.textContent = lang;
+
+  // --- Language Dropdown (for ASR/Transcription) ---
+  // This is decoupled from TTS voices to ensure correct ISO-639-1 format.
+  const supportedLanguages = [
+    { code: 'de', name: 'Deutsch' },
+    { code: 'en', name: 'English' },
+    { code: 'fr', name: 'Français' },
+    { code: 'es', name: 'Español' },
+    { code: 'it', name: 'Italiano' },
+    { code: 'nl', name: 'Nederlands' },
+    { code: 'pl', name: 'Polski' },
+    { code: 'pt', name: 'Português' },
+    { code: 'ru', name: 'Русский' },
+    { code: 'ja', name: 'Japanisch' },
+    { code: 'zh', name: 'Chinesisch' }
+  ];
+
+  supportedLanguages.forEach(lang => {
+    const opt = document.createElement('option');
+    opt.value = lang.code;
+    opt.textContent = lang.name;
     langSel.appendChild(opt);
   });
+
+  // Set default language to German as requested
+  langSel.value = 'de';
+
+  // --- Voice Dropdown (for TTS) ---
   // OpenAI TTS voice options
   openaiVoices.forEach(v => {
     const opt = document.createElement('option');
