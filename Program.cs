@@ -1,6 +1,8 @@
 using Serilog;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.WebSockets;
+using System.Text.Json;
 using VoiceAssistant; // This should cover the new classes if they are in this namespace
 using VoiceAssistant.Core.Models;
 using VoiceAssistant.Core.Services;
@@ -112,35 +114,52 @@ app.Map("/ws/audio", async context =>
 {
     if (context.WebSockets.IsWebSocketRequest)
     {
+        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
         using (var scope = app.Services.CreateScope())
         {
             var serviceProvider = scope.ServiceProvider;
-
-            // Get the scoped PipelineOptions and VadSettings instances for this session
-            var sessionPipelineOptions = serviceProvider.GetRequiredService<PipelineOptions>();
-            var sessionVadSettings = serviceProvider.GetRequiredService<VadSettings>();
-
-            // Initialize sessionPipelineOptions from the captured global singletons
-            sessionPipelineOptions.CopyFrom(globalPipelineOptions); // Start with global defaults
-
-            var modelQuery = context.Request.Query["model"].ToString();
-            if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
-            var voiceQuery = context.Request.Query["voice"].ToString();
-            if (!string.IsNullOrEmpty(voiceQuery)) sessionPipelineOptions.TtsVoice = voiceQuery;
-            var languageQuery = context.Request.Query["language"].ToString();
-            if (!string.IsNullOrEmpty(languageQuery)) sessionPipelineOptions.Language = languageQuery;
-
-            // Initialize sessionVadSettings from the captured global singleton
-            sessionVadSettings.CopyFrom(globalVadSettings); // Use CopyFrom method
-
             var tempLogger = serviceProvider.GetRequiredService<ILogger<Program>>();
-            tempLogger.LogInformation("WebSocket session starting with PipelineOptions: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}",
-                                    sessionPipelineOptions.ChatModel, sessionPipelineOptions.TtsVoice, sessionPipelineOptions.Language);
+            try
+            {
+                // Get the scoped PipelineOptions and VadSettings instances for this session
+                var sessionPipelineOptions = serviceProvider.GetRequiredService<PipelineOptions>();
+                var sessionVadSettings = serviceProvider.GetRequiredService<VadSettings>();
 
-            var sessionId = Guid.NewGuid().ToString("N")[..8];
-            var webSocketHandler = serviceProvider.GetRequiredService<IWebSocketHandler>();
-            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-            await webSocketHandler.HandleAsync(webSocket, sessionId);
+                // Initialize sessionPipelineOptions from the captured global singletons
+                sessionPipelineOptions.CopyFrom(globalPipelineOptions); // Start with global defaults
+
+                var modelQuery = context.Request.Query["model"].ToString();
+                if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
+                var voiceQuery = context.Request.Query["voice"].ToString();
+                if (!string.IsNullOrEmpty(voiceQuery)) sessionPipelineOptions.TtsVoice = voiceQuery;
+                var languageQuery = context.Request.Query["language"].ToString();
+                if (!string.IsNullOrEmpty(languageQuery)) sessionPipelineOptions.Language = languageQuery;
+
+                // Initialize sessionVadSettings from the captured global singleton
+                sessionVadSettings.CopyFrom(globalVadSettings); // Use CopyFrom method
+
+                tempLogger.LogInformation("WebSocket session starting with PipelineOptions: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}",
+                                        sessionPipelineOptions.ChatModel, sessionPipelineOptions.TtsVoice, sessionPipelineOptions.Language);
+
+                var sessionId = Guid.NewGuid().ToString("N")[..8];
+
+                tempLogger.LogDebug("[{SessionId}] STEP 1: Attempting to resolve IWebSocketHandler...", sessionId);
+                var webSocketHandler = serviceProvider.GetRequiredService<IWebSocketHandler>();
+                tempLogger.LogDebug("[{SessionId}] STEP 2: IWebSocketHandler resolved successfully.", sessionId);
+
+                tempLogger.LogDebug("[{SessionId}] STEP 3: Calling HandleAsync...", sessionId);
+                await webSocketHandler.HandleAsync(webSocket, sessionId);
+                tempLogger.LogDebug("[{SessionId}] STEP 4: HandleAsync completed.", sessionId);
+            }
+            catch (Exception ex)
+            {
+                tempLogger.LogError(ex, "CRITICAL FAILURE within WebSocket endpoint mapping.");
+                // Ensure the socket is closed if it was accepted but the handler failed.
+                if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
+                {
+                    await webSocket.CloseAsync(WebSocketCloseStatus.InternalServerError, "Handler initialization failed", CancellationToken.None);
+                }
+            }
         }
     }
     else

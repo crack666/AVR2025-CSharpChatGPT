@@ -23,6 +23,7 @@ namespace VoiceAssistant
 
         // Store the WebSocket instance for the session to be used by OnSpeechSegmentDetected
         private WebSocket _currentWebSocket;
+        private string _currentSessionId; // Store session ID for event handlers
 
         public WebSocketHandler(
         ILogger<WebSocketHandler> logger,
@@ -39,10 +40,48 @@ namespace VoiceAssistant
             _pipelineOptions = initialPipelineOptions;
             _vadSettings = initialVadSettings;
 
-            // Subscribe to the SpeechSegmentDetected event from AudioFrameProcessor
+            // Subscribe to events from the processors
             _audioFrameProcessor.SpeechSegmentDetected += OnSpeechSegmentDetected;
+            _audioSegmentProcessor.OnTranscriptionReady += OnTranscriptionReadyHandler;
+            _audioSegmentProcessor.OnAudioChunkReady += OnAudioChunkReadyHandler;
+            _audioSegmentProcessor.OnError += OnErrorHandler;
+
             // Initialize AudioFrameProcessor with current settings
             _audioFrameProcessor.UpdateSettings(_vadSettings, _pipelineOptions);
+        }
+
+        // Event Handlers for AudioSegmentProcessor events
+        private Task OnTranscriptionReadyHandler(string sessionId, string transcription)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogInformation("Session {SessionId}: Transcription ready: '{Transcription}'", sessionId, transcription);
+                return SendEventAsync(_currentWebSocket, "transcription", new { text = transcription });
+            }
+            _logger.LogWarning("Session {SessionId}: Received transcription for inactive/mismatched session.", sessionId);
+            return Task.CompletedTask;
+        }
+
+        private Task OnAudioChunkReadyHandler(byte[] audioBytes, int chunkIndex, string sessionId)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogDebug("Session {SessionId}: Audio chunk ready, index {ChunkIndex}", sessionId, chunkIndex);
+                return SendAudioChunkAsync(_currentWebSocket, audioBytes, chunkIndex, sessionId);
+            }
+            _logger.LogWarning("Session {SessionId}: Received audio chunk for inactive/mismatched session.", sessionId);
+            return Task.CompletedTask;
+        }
+
+        private Task OnErrorHandler(string sessionId, string errorMessage)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogError("Session {SessionId}: Error from AudioSegmentProcessor: {ErrorMessage}", sessionId, errorMessage);
+                return SendEventAsync(_currentWebSocket, "error", new { message = errorMessage });
+            }
+            _logger.LogWarning("Session {SessionId}: Received error for inactive/mismatched session.", sessionId);
+            return Task.CompletedTask;
         }
 
         private async Task OnSpeechSegmentDetected(byte[] audioBytes, string sessionId)
@@ -50,7 +89,7 @@ namespace VoiceAssistant
             if (_currentWebSocket != null && _currentWebSocket.State == WebSocketState.Open)
             {
                 _logger.LogDebug("Session {SessionId}: Speech segment detected by AudioFrameProcessor. Processing via AudioSegmentProcessor.", sessionId);
-                await _audioSegmentProcessor.ProcessSegmentAsync(audioBytes, _currentWebSocket, sessionId, _pipelineOptions, _vadSettings);
+                await _audioSegmentProcessor.ProcessSegmentAsync(audioBytes, sessionId, _pipelineOptions, _vadSettings);
             }
             else
             {
@@ -61,6 +100,7 @@ namespace VoiceAssistant
         public async Task HandleAsync(WebSocket webSocket, string sessionId)
         {
             _currentWebSocket = webSocket; // Store the WebSocket for the current session
+            _currentSessionId = sessionId; // Store session ID
             _logger.LogInformation("Session {SessionId}: WebSocket connected to WebSocketHandler. State: {State}", sessionId, webSocket.State);
             var rawAudioBufferForDisabledVad = new List<byte>();
             var messageReceiveBuffer = new byte[8192];
@@ -102,7 +142,7 @@ namespace VoiceAssistant
                         if (_pipelineOptions.DisableVad && rawAudioBufferForDisabledVad.Count > 0)
                         {
                             _logger.LogDebug("Session {SessionId}: VAD disabled, processing all received audio ({Bytes} bytes) on close.", sessionId, rawAudioBufferForDisabledVad.Count);
-                            await _audioSegmentProcessor.ProcessSegmentAsync(rawAudioBufferForDisabledVad.ToArray(), _currentWebSocket, sessionId, _pipelineOptions, _vadSettings);
+                            await _audioSegmentProcessor.ProcessSegmentAsync(rawAudioBufferForDisabledVad.ToArray(), sessionId, _pipelineOptions, _vadSettings);
                             rawAudioBufferForDisabledVad.Clear();
                         }
                         else if (!_pipelineOptions.DisableVad)
@@ -137,18 +177,22 @@ namespace VoiceAssistant
                                         {
                                             case "updatevadsettings":
                                             case "vad_settings":
-                                                await _webSocketSettingsManager.HandleUpdateVadSettingsAsync(payloadElement, _currentWebSocket, _vadSettings, _pipelineOptions, (newSettings) =>
+                                                var newVadSettings = _webSocketSettingsManager.HandleUpdateVadSettings(payloadElement);
+                                                if (newVadSettings != null)
                                                 {
-                                                    _vadSettings = newSettings;
+                                                    _vadSettings = newVadSettings;
                                                     _audioFrameProcessor.UpdateSettings(_vadSettings, _pipelineOptions);
-                                                });
+                                                    await SendEventAsync(_currentWebSocket, "vad_settings_updated", _vadSettings);
+                                                }
                                                 break;
                                             case "updatepipelineoptions":
-                                                await _webSocketSettingsManager.HandleUpdatePipelineOptionsAsync(payloadElement, _currentWebSocket, _pipelineOptions, (newOptions) =>
+                                                var newPipelineOptions = _webSocketSettingsManager.HandleUpdatePipelineOptions(payloadElement);
+                                                if (newPipelineOptions != null)
                                                 {
-                                                    _pipelineOptions = newOptions;
+                                                    _pipelineOptions = newPipelineOptions;
                                                     _audioFrameProcessor.UpdateSettings(_vadSettings, _pipelineOptions);
-                                                });
+                                                    await SendEventAsync(_currentWebSocket, "pipeline_options_updated", _pipelineOptions);
+                                                }
                                                 break;
                                             default:
                                                 _logger.LogWarning("Session {SessionId}: Unknown WebSocket message type: {MessageType}", sessionId, messageType);
@@ -201,7 +245,12 @@ namespace VoiceAssistant
             }
             finally
             {
-                _audioFrameProcessor.SpeechSegmentDetected -= OnSpeechSegmentDetected; // Unsubscribe
+                // Unsubscribe from all events
+                _audioFrameProcessor.SpeechSegmentDetected -= OnSpeechSegmentDetected;
+                _audioSegmentProcessor.OnTranscriptionReady -= OnTranscriptionReadyHandler;
+                _audioSegmentProcessor.OnAudioChunkReady -= OnAudioChunkReadyHandler;
+                _audioSegmentProcessor.OnError -= OnErrorHandler;
+
                 _logger.LogInformation("Session {SessionId}: WebSocket connection closed in WebSocketHandler. Final State: {State}, CloseStatus: {CloseStatus}, Description: {Description}, Exception: {Exception}",
                     sessionId,
                     _currentWebSocket?.State,
@@ -209,6 +258,7 @@ namespace VoiceAssistant
                     closeStatusDescription,
                     finalException?.ToString() ?? "<none>");
                 _currentWebSocket = null; // Clear the stored WebSocket instance
+                _currentSessionId = null; // Clear session ID
             }
         }
 

@@ -17,7 +17,10 @@ namespace VoiceAssistant.Core.Services
         private readonly IChatService _chatService;
         private readonly ChatLogManager _chatLogManager;
         private readonly ISynthesizer _synthesizer;
-        private readonly IWebSocketHandler _webSocketHandler; // To send events and audio
+
+        public event Func<string, string, Task> OnTranscriptionReady;
+        public event Func<byte[], int, string, Task> OnAudioChunkReady;
+        public event Func<string, string, Task> OnError;
 
         private const int SampleRate = 16000;
         private const int Channels = 1;
@@ -28,18 +31,16 @@ namespace VoiceAssistant.Core.Services
             IRecognizer recognizer,
             IChatService chatService,
             ChatLogManager chatLogManager,
-            ISynthesizer synthesizer,
-            IWebSocketHandler webSocketHandler)
+            ISynthesizer synthesizer)
         {
             _logger = logger;
             _recognizer = recognizer;
             _chatService = chatService;
             _chatLogManager = chatLogManager;
             _synthesizer = synthesizer;
-            _webSocketHandler = webSocketHandler;
         }
 
-        public async Task ProcessSegmentAsync(byte[] audioBytes, WebSocket webSocket, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings) // Added pipelineOptions and vadSettings
+        public async Task ProcessSegmentAsync(byte[] audioBytes, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings)
         {
             var segmentProcessingStopwatch = Stopwatch.StartNew();
             long transcriptionTimeMs = 0;
@@ -49,12 +50,10 @@ namespace VoiceAssistant.Core.Services
             double durationSec = (double)audioBytes.Length / (SampleRate * Channels * BitsPerSample / 8);
             _logger.LogDebug("Session {SessionId}: Processing audio segment - {Bytes} bytes, Duration: {Duration:F3}s in AudioSegmentProcessor", sessionId, audioBytes.Length, durationSec);
 
-            if (durationSec < vadSettings.MinSegmentDurationSec) // Use vadSettings from parameter
+            if (durationSec < vadSettings.MinSegmentDurationSec)
             {
                 _logger.LogDebug("Session {SessionId}: Segment discarded - Duration {Duration:F3}s < Min {MinSec:F3}s", sessionId, durationSec, vadSettings.MinSegmentDurationSec);
                 segmentProcessingStopwatch.Stop();
-                // Optionally send an event indicating segment was too short
-                // await _webSocketHandler.SendEventAsync(webSocket, "segment_too_short", new { duration = durationSec, minDuration = vadSettings.MinSegmentDurationSec });
                 return;
             }
 
@@ -64,33 +63,29 @@ namespace VoiceAssistant.Core.Services
 
                 var transcriptionStopwatch = Stopwatch.StartNew();
                 MemoryStream audioMemoryStream = PrepareAudioStreamForTranscription(audioBytes);
-                string prompt = await GetTranscriptionAsync(audioMemoryStream, pipelineOptions.Language, sessionId); // Pass language and sessionId
+                string prompt = await GetTranscriptionAsync(audioMemoryStream, pipelineOptions.Language, sessionId);
                 transcriptionStopwatch.Stop();
                 transcriptionTimeMs = transcriptionStopwatch.ElapsedMilliseconds;
 
                 if (string.IsNullOrWhiteSpace(prompt))
                 {
                     _logger.LogDebug("Session {SessionId}: Empty transcription, skipping LLM and TTS processing", sessionId);
-                    await _webSocketHandler.SendEventAsync(webSocket, "done", new { reason = "Empty transcription, no action taken" });
                     segmentProcessingStopwatch.Stop();
                     _logger.LogDebug("Session {SessionId}: Empty segment processing completed in {TotalTimeMs}ms", sessionId, segmentProcessingStopwatch.ElapsedMilliseconds);
                     return;
                 }
 
                 _chatLogManager.AddMessage(ChatRole.User, prompt);
-                await _webSocketHandler.SendEventAsync(webSocket, "prompt", new { prompt });
+                if (OnTranscriptionReady != null) await OnTranscriptionReady.Invoke(sessionId, prompt);
 
                 var llmProcessingStopwatch = Stopwatch.StartNew();
-                // Updated condition: no longer checks for StreamingOpenAIChatService type explicitly.
-                // Relies on the IChatService implementation to handle streaming appropriately via StreamResponseAsync.
                 if (!pipelineOptions.DisableTokenStreaming)
                 {
-                    // Pass the _chatService instance (which is IChatService) directly.
-                    reply = await HandleStreamingChatResponseAsync(webSocket, _chatService, prompt, pipelineOptions, sessionId);
+                    reply = await HandleStreamingChatResponseAsync(prompt, pipelineOptions, sessionId);
                 }
                 else
                 {
-                    reply = await HandleNonStreamingChatResponseAsync(webSocket, prompt, pipelineOptions, sessionId);
+                    reply = await HandleNonStreamingChatResponseAsync(prompt, pipelineOptions, sessionId);
                 }
                 llmProcessingStopwatch.Stop();
                 llmTimeMs = llmProcessingStopwatch.ElapsedMilliseconds;
@@ -98,13 +93,13 @@ namespace VoiceAssistant.Core.Services
                 segmentProcessingStopwatch.Stop();
                 long totalProcessingTimeMs = segmentProcessingStopwatch.ElapsedMilliseconds;
 
-                await LogAndSendFinalEventsAsync(webSocket, reply, transcriptionTimeMs, llmTimeMs, totalProcessingTimeMs, pipelineOptions, sessionId);
+                LogAndSendFinalEvents(reply, transcriptionTimeMs, llmTimeMs, totalProcessingTimeMs, pipelineOptions, sessionId);
             }
             catch (Exception ex)
             {
                 segmentProcessingStopwatch.Stop();
                 _logger.LogError(ex, "Session {SessionId}: Error processing segment. Total time before error: {TotalTimeMs}ms", sessionId, segmentProcessingStopwatch.ElapsedMilliseconds);
-                await _webSocketHandler.SendEventAsync(webSocket, "error", new { error = ex.Message });
+                if (OnError != null) await OnError.Invoke(sessionId, ex.Message);
             }
         }
 
@@ -126,8 +121,7 @@ namespace VoiceAssistant.Core.Services
             return prompt;
         }
 
-        // Changed signature to accept IChatService
-        private async Task<string> HandleStreamingChatResponseAsync(WebSocket webSocket, IChatService chatService, string prompt, PipelineOptions pipelineOptions, string sessionId)
+        private async Task<string> HandleStreamingChatResponseAsync(string prompt, PipelineOptions pipelineOptions, string sessionId)
         {
             var voice = pipelineOptions.TtsVoice;
             var accumulatedTextForTts = new StringBuilder();
@@ -135,14 +129,13 @@ namespace VoiceAssistant.Core.Services
             int ttsChunkIndex = 0;
             var sentenceDelimiters = new char[] { '.', '!', '?' };
 
-            // Use chatService.StreamResponseAsync which returns IAsyncEnumerable<(string token, bool isFinalToken)>
-            await foreach (var (token, isFinalToken) in chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
+            await foreach (var (token, isFinalToken) in _chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
             {
                 if (!string.IsNullOrEmpty(token))
                 {
                     accumulatedTextForTts.Append(token);
                     fullReply += token;
-                    await _webSocketHandler.SendEventAsync(webSocket, "token", new { token });
+                    // OnLlmChunkGenerated is removed as per the new design
                 }
 
                 if (!pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
@@ -150,24 +143,21 @@ namespace VoiceAssistant.Core.Services
                     bool flushNow = false;
                     string textToSynthesize = null;
 
-                    // If it's the final token and there's accumulated text, flush it all.
                     if (isFinalToken && accumulatedTextForTts.Length > 0)
                     {
                         textToSynthesize = accumulatedTextForTts.ToString();
                         accumulatedTextForTts.Clear();
                         flushNow = true;
                     }
-                    // Otherwise, check for sentence delimiters or buffer length for intermediate flushing.
                     else if (accumulatedTextForTts.Length > 0)
                     {
                         int lastDelimiter = -1;
-                        // Check for delimiters only if not the final token, to avoid splitting the very last part unnecessarily if it doesn't end with a delimiter.
-                        if (!isFinalToken) 
+                        if (!isFinalToken)
                         {
                              lastDelimiter = accumulatedTextForTts.ToString().LastIndexOfAny(sentenceDelimiters);
                         }
                         
-                        const int forceFlushLength = 150; 
+                        const int forceFlushLength = 150;
 
                         if (lastDelimiter != -1)
                         {
@@ -175,7 +165,7 @@ namespace VoiceAssistant.Core.Services
                             accumulatedTextForTts.Remove(0, lastDelimiter + 1);
                             flushNow = true;
                         }
-                        else if (accumulatedTextForTts.Length >= forceFlushLength && !isFinalToken) // Avoid force flush if it's the final token, as it will be flushed anyway
+                        else if (accumulatedTextForTts.Length >= forceFlushLength && !isFinalToken)
                         {
                             textToSynthesize = accumulatedTextForTts.ToString();
                             accumulatedTextForTts.Clear();
@@ -185,12 +175,12 @@ namespace VoiceAssistant.Core.Services
 
                     if (flushNow && !string.IsNullOrWhiteSpace(textToSynthesize))
                     {
-                        _logger.LogDebug("Session {SessionId}: TTS (Progressive) - Sending segment (Length {Length}): \"{SegmentText}\" (IsFinalToken Trigger: {IsFinal})", sessionId, textToSynthesize.Length, textToSynthesize, isFinalToken && textToSynthesize == fullReply.Substring(fullReply.Length - textToSynthesize.Length));
+                        _logger.LogDebug("Session {SessionId}: TTS (Progressive) - Sending segment (Length {Length}): \"{SegmentText}\"", sessionId, textToSynthesize.Length, textToSynthesize);
                         await _synthesizer.ChunkedSynthesisAsync(textToSynthesize, voice, async (audioBytesChunk) =>
                         {
                             if (audioBytesChunk != null && audioBytesChunk.Length > 0)
                             {
-                                await _webSocketHandler.SendAudioChunkAsync(webSocket, audioBytesChunk, ttsChunkIndex, sessionId);
+                                if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(audioBytesChunk, ttsChunkIndex, sessionId);
                                 ttsChunkIndex++;
                             }
                         });
@@ -198,18 +188,15 @@ namespace VoiceAssistant.Core.Services
                 }
             }
             
-            // Removed final flush after loop; isFinalToken logic should handle the last segment.
-            // Ensure any remaining text in accumulatedTextForTts (e.g. if stream ends abruptly without isFinalToken=true on last content) is handled.
-            // However, a well-behaved StreamResponseAsync should ensure the last content token has isFinalToken=true.
             if (accumulatedTextForTts.Length > 0 && !pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
             {
                 string finalTextToSynthesize = accumulatedTextForTts.ToString();
-                _logger.LogWarning("Session {SessionId}: TTS (Progressive) - Flushing remaining text after loop (Length {Length}): \"{SegmentText}\". This might indicate an unexpected stream end.", sessionId, finalTextToSynthesize.Length, finalTextToSynthesize);
+                _logger.LogWarning("Session {SessionId}: TTS (Progressive) - Flushing remaining text after loop (Length {Length}): \"{SegmentText}\".", sessionId, finalTextToSynthesize.Length, finalTextToSynthesize);
                 await _synthesizer.ChunkedSynthesisAsync(finalTextToSynthesize, voice, async (audioBytesChunk) =>
                 {
                     if (audioBytesChunk != null && audioBytesChunk.Length > 0)
                     {
-                        await _webSocketHandler.SendAudioChunkAsync(webSocket, audioBytesChunk, ttsChunkIndex, sessionId);
+                        if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(audioBytesChunk, ttsChunkIndex, sessionId);
                         ttsChunkIndex++;
                     }
                 });
@@ -219,7 +206,7 @@ namespace VoiceAssistant.Core.Services
             return fullReply;
         }
 
-        private async Task<string> HandleNonStreamingChatResponseAsync(WebSocket webSocket, string prompt, PipelineOptions pipelineOptions, string sessionId)
+        private async Task<string> HandleNonStreamingChatResponseAsync(string prompt, PipelineOptions pipelineOptions, string sessionId)
         {
             string reply = await _chatService.GenerateResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString());
             _chatLogManager.AddMessage(ChatRole.Bot, reply);
@@ -231,7 +218,7 @@ namespace VoiceAssistant.Core.Services
                 var ttsAudioBytes = await _synthesizer.SynthesizeAsync(reply, pipelineOptions.TtsVoice);
                 if (ttsAudioBytes != null && ttsAudioBytes.Length > 0)
                 {
-                    await _webSocketHandler.SendAudioChunkAsync(webSocket, ttsAudioBytes, 0, sessionId);
+                    if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(ttsAudioBytes, 0, sessionId);
                 }
                 else
                 {
@@ -241,7 +228,7 @@ namespace VoiceAssistant.Core.Services
             return reply;
         }
 
-        private async Task LogAndSendFinalEventsAsync(WebSocket webSocket, string reply, long transcriptionTimeMs, long llmTimeMs, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
+        private void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, long llmTimeMs, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
         {
             var latencyInfo = new
             {
@@ -249,13 +236,8 @@ namespace VoiceAssistant.Core.Services
                 llmTime = llmTimeMs,
                 totalTime = totalTimeMs
             };
-            await _webSocketHandler.SendEventAsync(webSocket, "reply", new { reply, latency_info = latencyInfo });
+            // OnFinalLlmResponseGenerated and OnProcessingComplete are removed as per the new design
 
-            if (!pipelineOptions.DisableTts)
-            {
-                await _webSocketHandler.SendEventAsync(webSocket, "audio-done", null);
-            }
-            await _webSocketHandler.SendEventAsync(webSocket, "done", null);
             _logger.LogInformation("Session {SessionId}: Interaction completed - Final reply sent. Latency (ms): Trans={TransTime}, LLM={LlmTime}, Total={TotalTime}",
                 sessionId, transcriptionTimeMs, llmTimeMs, totalTimeMs);
         }

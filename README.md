@@ -62,6 +62,20 @@ Die WebSocket-basierte Audioverarbeitung wurde im Zuge des Refactorings von eine
 - **Weitere Services:**
   - `ChatLogManager`, `IChatService`, `ISynthesizer`, `IRecognizer` etc. werden als Abhängigkeiten injiziert und von den Prozessoren genutzt.
 
+### 2.2.1. Architektonische Schlüsselerkenntnis: Entkopplung der WebSocket-Kommunikation
+
+Während des Refactorings im Juni 2025 wurde ein kritisches Problem identifiziert, das die Anwendung blockierte: **zirkuläre Abhängigkeiten** im Dependency-Injection-Container.
+
+**Problem:** Ursprünglich hatten Dienste wie `AudioSegmentProcessor` eine direkte Abhängigkeit vom `IWebSocketHandler`, um Nachrichten (z.B. Transkriptionen, TTS-Audio) an den Client zurückzusenden. Gleichzeitig benötigte der `IWebSocketHandler` diese Dienste, um die Audioverarbeitung zu steuern. Bei der Verwendung von Scoped Services führte dies zu einer Blockade, da jeder Dienst auf die Instanziierung des anderen wartete.
+
+**Lösung und goldene Regel:** Die Lösung ist eine strikt **ereignisgesteuerte Architektur**.
+
+1.  **Keine WebSocket-Abhängigkeit:** Dienste innerhalb der Verarbeitungskette (`AudioFrameProcessor`, `AudioSegmentProcessor`, `WebSocketSettingsManager` etc.) dürfen **niemals** eine direkte Abhängigkeit vom `WebSocket`-Objekt oder dem `IWebSocketHandler` haben. Sie wissen nichts über die Kommunikationsschicht.
+2.  **Kommunikation über Events:** Wenn ein Dienst ein Ergebnis hat (z.B. eine fertige Transkription), löst er ein Event aus (z.B. `OnTranscriptionReady`).
+3.  **Der Orchestrator:** Der `WebSocketHandler` ist die **einzige** Komponente, die die `WebSocket`-Instanz verwaltet. Er abonniert die Events der Verarbeitungsdienste. Wenn ein Event ausgelöst wird, formatiert der `WebSocketHandler` die Nachricht und sendet sie über das WebSocket an den Client.
+
+Diese Entkopplung ist entscheidend für die Stabilität und Wartbarkeit der Anwendung. Zukünftige Entwicklungen müssen dieses Prinzip strikt befolgen, um zu verhindern, dass die Anwendung erneut durch Abhängigkeitsprobleme blockiert wird.
+
 **Ablauf:**
 - Jede WebSocket-Session erhält eigene Instanzen der Handler/Prozessoren (Dependency Injection, Scoped).
 - Audio-Frames werden im Handler empfangen, an den FrameProcessor weitergereicht und bei Segment-Events an den SegmentProcessor übergeben.
