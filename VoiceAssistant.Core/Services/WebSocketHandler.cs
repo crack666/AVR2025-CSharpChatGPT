@@ -72,11 +72,19 @@ namespace VoiceAssistant
             {
                 while (_currentWebSocket.State == WebSocketState.Open)
                 {
+                    // TEMP DEBUG: Log to confirm the loop is running and waiting for data.
+                    _logger.LogTrace("Session {SessionId}: Loop entered, waiting for ReceiveAsync...", sessionId);
+
                     var receiveSegment = new ArraySegment<byte>(messageReceiveBuffer);
                     WebSocketReceiveResult result;
                     try
                     {
                         result = await _currentWebSocket.ReceiveAsync(receiveSegment, CancellationToken.None);
+                        
+                        // TEMP DEBUG: Log upon receiving any data.
+                        if (result.Count > 0) {
+                            _logger.LogTrace("Session {SessionId}: ReceiveAsync returned with {Count} bytes, MessageType: {MessageType}", sessionId, result.Count, result.MessageType);
+                        }
                     }
                     catch (WebSocketException wsex)
                     {

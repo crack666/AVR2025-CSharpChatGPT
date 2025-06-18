@@ -98,7 +98,6 @@ sp => new WebSocketHandler(
 // Let's make WebSocketAudioService scoped as well if it resolves IWebSocketHandler.
 //builder.Services.AddScoped<WebSocketAudioService>();
 
-builder.Services.AddSingleton<VadSettings>(); // Global default VadSettings
 // PipelineOptions are already registered as a singleton for global defaults.
 
 builder.Services.AddControllers();
@@ -121,9 +120,8 @@ app.Map("/ws/audio", async context =>
             var sessionPipelineOptions = serviceProvider.GetRequiredService<PipelineOptions>();
             var sessionVadSettings = serviceProvider.GetRequiredService<VadSettings>();
 
-            // Initialize sessionPipelineOptions from global defaults and query parameters
-            var globalOptions = serviceProvider.GetRequiredService<PipelineOptions>(); // This resolves the singleton global
-            sessionPipelineOptions.CopyFrom(globalOptions); // Start with global defaults
+            // Initialize sessionPipelineOptions from the captured global singletons
+            sessionPipelineOptions.CopyFrom(globalPipelineOptions); // Start with global defaults
 
             var modelQuery = context.Request.Query["model"].ToString();
             if (!string.IsNullOrEmpty(modelQuery)) sessionPipelineOptions.ChatModel = modelQuery;
@@ -132,9 +130,8 @@ app.Map("/ws/audio", async context =>
             var languageQuery = context.Request.Query["language"].ToString();
             if (!string.IsNullOrEmpty(languageQuery)) sessionPipelineOptions.Language = languageQuery;
 
-            // Initialize sessionVadSettings from global defaults (and query params if any in future)
-            var globalVadSingleton = serviceProvider.GetRequiredService<VadSettings>(); // This resolves the singleton global
-            sessionVadSettings.CopyFrom(globalVadSingleton); // Use CopyFrom method
+            // Initialize sessionVadSettings from the captured global singleton
+            sessionVadSettings.CopyFrom(globalVadSettings); // Use CopyFrom method
 
             var tempLogger = serviceProvider.GetRequiredService<ILogger<Program>>();
             tempLogger.LogInformation("WebSocket session starting with PipelineOptions: ChatModel={ChatModel}, TtsVoice={TtsVoice}, Language={Language}",

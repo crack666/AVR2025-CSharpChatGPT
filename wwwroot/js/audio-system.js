@@ -342,10 +342,15 @@ function handleWebSocketClose(event) {
 // sendAudioChunkToServer remains here as it uses convertFloat32ToPcm16 and calls websocket-handler's sendBinaryData
 function sendAudioChunkToServer(float32AudioChunk) {
     if (webSocketHandler.getWebSocketState() === WebSocket.OPEN) {
+        // TEMP DEBUG: Log that we are about to send a chunk.
+        // This can be removed once the data flow is confirmed.
+        audioUtils.debugLog(`[TEMP-DEBUG] Sending audio chunk to WebSocket, size: ${float32AudioChunk.length}`);
+
         const pcm16Buffer = audioUtils.convertFloat32ToPcm16(float32AudioChunk); // Use util function
         webSocketHandler.sendBinaryData(pcm16Buffer); // Use module function
     } else {
-        // debugLog("WebSocket not open, cannot send audio chunk.");
+        // This log is commented out as it would be too spammy while the connection is pending.
+        // audioUtils.debugLog("WebSocket not open, cannot send audio chunk.");
     }
 }
 
