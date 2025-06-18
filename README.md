@@ -90,7 +90,7 @@ Dieser Ordner enthält die grundlegenden Abstraktionen und Datenmodelle:
 
 *   **Interfaces:** `IChatService.cs`, `IRecognizer.cs`, `ISynthesizer.cs` definieren die Verträge für die jeweiligen Funktionalitäten und ermöglichen austauschbare Implementierungen.
 *   **Models:**
-    *   `ChatMessage.cs`, `ChatRole.cs`: Standardmodelle für Chat-Nachrichten.
+    *   `ChatMessage.cs`, `ChatRole.cs`: Standardmodelle für Chat- nachrichten.
     *   `PipelineOptions.cs`: Enthält Flags zur Steuerung des Verhaltens der Verarbeitungspipeline (z.B. Deaktivieren von VAD, TTS, Progressive TTS, Streaming Chat, Auswahl der Sprache).
     *   `VadSettings.cs`: Enthält detaillierte Parameter für die Voice Activity Detection (z.B. `OperatingMode`, Schwellenwerte, Timing-Parameter wie `PreSpeechPaddingMs`, `HangOverMs`, `MinSegmentDurationSec`, Parameter für Spike Detection und Rauschanpassung).
 *   **Services:**
@@ -108,7 +108,72 @@ Dieses Projekt enthält die konkreten Implementierungen der Kerninterfaces unter
 
 ### 2.6. Frontend (`wwwroot/`)
 
-Enthält statische Dateien für die Web-Benutzeroberfläche (`index.html`, CSS, JavaScript). Die UI ermöglicht die Interaktion mit dem Backend, sendet Audio und empfängt Ereignisse sowie synthetisierte Sprache. Sie bietet vermutlich auch Steuerelemente zur dynamischen Anpassung der `VadSettings` und `PipelineOptions`.
+Das Frontend ist eine Single-Page-Application (SPA), die mit modernem, modularem JavaScript (ES6), HTML5 und CSS implementiert ist. Sie dient als Referenzimplementierung und Testumgebung für die Echtzeit-Audioverarbeitung des Backends.
+
+# Frontend-Architektur & Refactoring (Stand Juni 2025)
+
+Das Frontend wurde grundlegend überarbeitet, um Stabilitätsprobleme zu beheben und die Codebasis auf moderne Web-Standards zu heben. Die ursprünglichen Probleme – kein sichtbarer Audio-Pegel und kein automatischer Aufnahmestart – wurden durch zwei zentrale Änderungen gelöst.
+
+### 1. Kernerkenntnis: Automatischer Start und Browser-Richtlinien
+
+**Problem:** Browser verhindern die automatische Wiedergabe (und Verarbeitung) von Audio, bis eine Benutzerinteraktion stattgefunden hat.
+
+**Lösung:** Der Schlüssel liegt in der korrekten Initialisierungsreihenfolge. Anstatt auf einen expliziten "Start"-Button zu warten, nutzt die Anwendung nun die **Anfrage zur Mikrofonberechtigung** als die erforderliche Benutzerinteraktion.
+
+1.  **Seite lädt:** `main.js` ruft `initAndStartAudioSystem()` auf.
+2.  **Berechtigung zuerst:** Die App fordert sofort den Zugriff auf das Mikrofon an (`navigator.mediaDevices.getUserMedia`).
+3.  **Geste des Benutzers:** Das Klicken auf "Zulassen" im Berechtigungsdialog wird vom Browser als die notwendige Geste gewertet.
+4.  **AudioContext starten:** *Nachdem* die Berechtigung erteilt wurde, wird der `AudioContext` erstellt und/oder fortgesetzt. Er ist nun sofort im Zustand `running`.
+5.  **Automatischer Start:** Da der `AudioContext` aktiv ist, kann die Audioverarbeitung (Pegelanzeige) und die WebSocket-Verbindung sofort und automatisch gestartet werden.
+
+### 2. Kernerkenntnis: Performante Audioverarbeitung mit `AudioWorklet`
+
+**Problem:** Die veraltete `ScriptProcessorNode`-API läuft auf dem Haupt-Thread der Benutzeroberfläche. Dies führte dazu, dass die UI (insbesondere die Audio-Pegelanzeige) bei hoher Last einfror und keine Audiodaten zuverlässig verarbeitet wurden.
+
+**Lösung:** Die Implementierung wurde vollständig auf die moderne **`AudioWorklet`**-API umgestellt.
+
+*   **Performance:** Ein `AudioWorklet` läuft in einem eigenen, vom UI-Thread getrennten Thread. Dies garantiert eine ruckelfreie, performante Audioverarbeitung ohne Blockieren der Benutzeroberfläche.
+*   **Stabilität:** Die Verarbeitung ist robuster gegenüber Lastspitzen im Haupt-Thread.
+
+### 3. Modulare Architektur
+
+Die Frontend-Logik ist in spezialisierte, wiederverwendbare ES6-Module unterteilt:
+
+*   **`main.js`**: Der Einstiegspunkt der Anwendung. Initialisiert die UI und startet den gesamten Audioprozess durch den Aufruf von `initAndStartAudioSystem`.
+
+*   **`audio-system.js`**: Der **Orchestrator**. Diese zentrale Komponente steuert den gesamten Lebenszyklus der Audio-Pipeline:
+    *   Implementiert die `initAndStartAudioSystem`-Logik (Berechtigung anfordern, Module initialisieren, Verarbeitung starten).
+    *   Verwaltet den globalen Aufnahmestatus (`isRecordingActive`).
+    *   Empfängt verarbeitete Audio-Chunks vom `microphone.js` und leitet sie an den `websocket-handler.js` weiter.
+    *   Empfängt WebSocket-Events und delegiert sie an `tts-playback.js` oder `ui-manager.js`.
+
+*   **`audio-context.js`**: Verwaltet den globalen, singleton `AudioContext`. Stellt sicher, dass dieser erst *nach* der Benutzergeste (Mikrofonberechtigung) erstellt wird.
+
+*   **`microphone.js`**: Verantwortlich für die Interaktion mit dem Mikrofon und dem `AudioWorklet`.
+    *   Ruft den `MediaStream` vom Mikrofon ab.
+    *   Lädt den `audio-processor.js` Worklet und erstellt einen `AudioWorkletNode`.
+    *   Verbindet die Audioquelle (`MediaStreamSource`) mit dem Worklet-Knoten.
+    *   Empfängt Nachrichten (verarbeitete Audio-Chunks und RMS-Werte) vom Worklet und leitet sie über Callbacks an den `audio-system.js` (für WebSocket) und `ui-manager.js` (für Visualisierung) weiter.
+
+*   **`audio-processor.js` (AudioWorkletProcessor)**: Das Herzstück der Audioverarbeitung. Dieser Code läuft in einem **separaten Thread**.
+    *   Empfängt rohe Audio-Samples vom Mikrofon (typischerweise in 128-Sample-Blöcken).
+    *   Puffert diese Samples und erstellt daraus exakte 20ms-Chunks (320 Samples bei 16kHz), die der Server erwartet.
+    *   Berechnet den RMS-Wert (Root Mean Square) der Audiodaten für die Pegelanzeige.
+    *   Sendet die fertigen Chunks und die RMS-Werte über eine `MessagePort` zurück an `microphone.js` im Haupt-Thread.
+
+*   **`websocket-handler.js`**: Kapselt die gesamte WebSocket-Logik (Verbindung, Senden, Empfangen, Status-Handling).
+
+*   **`tts-playback.js`**: Verwaltet die Wiedergabe der vom Server empfangenen TTS-Audio-Chunks.
+
+*   **`ui-manager.js` & `optimization-manager.js`**: Verwalten die DOM-Manipulation, UI-Events und die Einstellungs-Panels.
+
+### 4. Datenfluss (Audio & UI)
+
+**Audio zum Server:**
+`Mikrofon` -> `MediaStreamSource` -> `AudioWorkletNode` (`audio-processor.js`) -> `(verarbeiteter 20ms Chunk)` -> `port.postMessage` -> `microphone.js` -> `(Callback)` -> `audio-system.js` -> `websocket-handler.js` -> **Server**
+
+**Audio-Pegel zur UI:**
+`AudioWorkletNode` (`audio-processor.js`) -> `(berechneter RMS-Wert)` -> `port.postMessage` -> `microphone.js` -> `(Callback)` -> `ui-manager.js` -> **UI-Pegelanzeige**
 
 # Modularisierung des Frontends (Stand Juni 2025)
 

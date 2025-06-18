@@ -6,15 +6,23 @@ let debugLogFunc;
 export function initAudioContextModule(sampleRate, debugLog) {
     targetSampleRate = sampleRate;
     debugLogFunc = debugLog;
+    // Do not create the context here. It should only be created on demand
+    // after a user gesture has been received.
 }
 
 export function getAudioContext() {
-    if (!audioContext) {
+    if (!audioContext || audioContext.state === 'closed') { // Check for closed state
         const AudioContextGlobal = window.AudioContext || window.webkitAudioContext;
         if (AudioContextGlobal) {
             try {
                 audioContext = new AudioContextGlobal({ sampleRate: targetSampleRate });
                 if (debugLogFunc) debugLogFunc(`AudioContext created (state: ${audioContext.state}). Sample rate: ${audioContext.sampleRate}`);
+                
+                // Handle state changes, e.g., if it gets suspended by the browser
+                audioContext.onstatechange = () => {
+                    if (debugLogFunc) debugLogFunc(`AudioContext state changed to: ${audioContext.state}`);
+                };
+
             } catch (e) {
                 console.error("Failed to create AudioContext:", e);
                 return null;

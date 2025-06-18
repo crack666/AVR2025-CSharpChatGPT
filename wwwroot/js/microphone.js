@@ -1,126 +1,94 @@
 // --- Microphone Processing State & Functions ---
 let mediaStreamSource = null;
-let scriptProcessorNode = null;
-let audioBufferForServer = new Float32Array(0);
-let localMicrophoneStream = null; // Store the stream locally to manage its tracks
+let audioWorkletNode = null;
 
-// Configuration and callbacks, to be set by initMicrophone
-let getAudioContextCallback = null;
-let onAudioChunkProcessedCallback = null;
-let debugLogCallback = null;
-let getIsRecordingActiveCallback = null;
-let getPipelineOptionsCallback = null; // To get { DisableProgressiveTts, ... }
-let getIsTTSSpeakingCallback = null;
-let updateAudioVisualizationCallback = null;
-let samplesPerChunk = 0;
-let localAudioContext = null; // Store the audio context for node creation
+// Configuration callbacks
+let getAudioContext = null;
+let onAudioChunkProcessed = null;
+let debugLog = null;
+let getIsRecordingActive = null;
+let updateAudioVisualization = null;
+let samplesPerChunk = 320; // Default
 
-export function initMicrophone(config) {
-    getAudioContextCallback = config.getAudioContext;
-    onAudioChunkProcessedCallback = config.onAudioChunkProcessed;
-    debugLogCallback = config.debugLog;
-    getIsRecordingActiveCallback = config.getIsRecordingActive;
-    getPipelineOptionsCallback = config.getPipelineOptions;
-    getIsTTSSpeakingCallback = config.getIsTTSSpeaking;
-    updateAudioVisualizationCallback = config.updateAudioVisualization;
-    samplesPerChunk = config.samplesPerChunk;
+const WORKLET_PROCESSOR_NAME = 'audio-processor';
+const WORKLET_URL = 'js/audio-processor.js';
 
-    if (debugLogCallback) debugLogCallback("[Microphone] Initialized.");
+export async function initMicrophone(config) {
+    getAudioContext = config.getAudioContext;
+    onAudioChunkProcessed = config.onAudioChunkProcessed;
+    debugLog = config.debugLog;
+    getIsRecordingActive = config.getIsRecordingActive;
+    updateAudioVisualization = config.updateAudioVisualization;
+    samplesPerChunk = config.samplesPerChunk || samplesPerChunk;
+
+    try {
+        const audioContext = getAudioContext();
+        if (!audioContext) {
+            throw new Error("AudioContext not available for worklet initialization.");
+        }
+        // Pre-load the worklet processor
+        await audioContext.audioWorklet.addModule(WORKLET_URL);
+        debugLog(`[Microphone] AudioWorklet processor '${WORKLET_PROCESSOR_NAME}' loaded from ${WORKLET_URL}.`);
+    } catch (error) {
+        console.error("[Microphone] Failed to load AudioWorklet module:", error);
+        throw new Error("Could not initialize microphone worklet.");
+    }
+
+    debugLog("[Microphone] Initialized.");
 }
 
 export async function startMicrophoneProcessing(stream) {
-    if (!getAudioContextCallback || !onAudioChunkProcessedCallback || !debugLogCallback || samplesPerChunk === 0) {
-        console.error("[Microphone] Not initialized properly. Call initMicrophone first.");
-        throw new Error("Microphone module not initialized.");
+    const audioContext = getAudioContext();
+    if (!audioContext || audioContext.state === 'closed') {
+        throw new Error("Microphone module requires an active AudioContext.");
+    }
+    if (!stream || !stream.active) {
+        throw new Error("A valid, active MediaStream is required.");
     }
 
-    localAudioContext = getAudioContextCallback();
-    if (!localAudioContext || localAudioContext.state !== 'running') {
-        throw new Error("[Microphone] AudioContext not ready or not running.");
-    }
+    mediaStreamSource = audioContext.createMediaStreamSource(stream);
+    debugLog("[Microphone] MediaStreamSource created");
 
-    localMicrophoneStream = stream; // Store the stream
-
-    if (mediaStreamSource) mediaStreamSource.disconnect();
-    if (scriptProcessorNode) scriptProcessorNode.disconnect();
-
-    mediaStreamSource = localAudioContext.createMediaStreamSource(localMicrophoneStream);
-    debugLogCallback('[Microphone] MediaStreamSource created');
-
-    const bufferSize = 4096; // Standard buffer size, can be adjusted
-    scriptProcessorNode = localAudioContext.createScriptProcessor(bufferSize, 1, 1);
-    debugLogCallback(`[Microphone] ScriptProcessorNode created with buffer size: ${bufferSize}`);
-
-    let audioProcessCallCount = 0;
-
-    scriptProcessorNode.onaudioprocess = (audioProcessingEvent) => {
-        audioProcessCallCount++;
-        if (audioProcessCallCount === 1) {
-            debugLogCallback("[Microphone] FIRST onaudioprocess callback executed!");
+    // Create the AudioWorkletNode
+    audioWorkletNode = new AudioWorkletNode(audioContext, WORKLET_PROCESSOR_NAME, {
+        processorOptions: {
+            samplesPerChunk: samplesPerChunk
         }
+    });
+    debugLog("[Microphone] AudioWorkletNode created.");
 
-        if (!getIsRecordingActiveCallback || !getIsRecordingActiveCallback()) {
-            return;
-        }
+    // Set up the message listener to receive data from the worklet
+    audioWorkletNode.port.onmessage = (event) => {
+        if (!getIsRecordingActive()) return;
 
-        const pipelineOptions = getPipelineOptionsCallback ? getPipelineOptionsCallback() : {};
-        const progressiveTTSEnabled = !pipelineOptions.DisableProgressiveTts;
-        const isTTSSpeaking = getIsTTSSpeakingCallback ? getIsTTSSpeakingCallback() : false;
-
-        if (progressiveTTSEnabled && isTTSSpeaking) {
-            return; // Pause sending mic data if progressive TTS is active and speaking
-        }
-
-        const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-        const currentServerBuffer = audioBufferForServer;
-        const combinedBuffer = new Float32Array(currentServerBuffer.length + inputData.length);
-        combinedBuffer.set(currentServerBuffer);
-        combinedBuffer.set(inputData, currentServerBuffer.length);
-        audioBufferForServer = combinedBuffer;
-
-        while (audioBufferForServer.length >= samplesPerChunk) {
-            const chunkToProcess = audioBufferForServer.slice(0, samplesPerChunk);
-            audioBufferForServer = audioBufferForServer.slice(samplesPerChunk);
-            if (onAudioChunkProcessedCallback) {
-                onAudioChunkProcessedCallback(chunkToProcess);
-            }
-        }
-
-        let sumSquares = 0.0;
-        for (const sample of inputData) sumSquares += sample * sample;
-        const rms = Math.sqrt(sumSquares / inputData.length);
-
-        if (updateAudioVisualizationCallback) {
-            updateAudioVisualizationCallback(rms);
+        if (event.data.type === 'audioData') {
+            // Forward the processed audio chunk to the audio-system
+            onAudioChunkProcessed(event.data.buffer);
+        } else if (event.data.type === 'rmsUpdate') {
+            // Forward the RMS value to the UI manager
+            updateAudioVisualization(event.data.rms);
         }
     };
 
-    mediaStreamSource.connect(scriptProcessorNode);
-    debugLogCallback('[Microphone] MediaStreamSource connected to ScriptProcessorNode');
+    // Connect the nodes: Microphone -> Worklet -> Destination (for potential local playback/monitoring if needed)
+    mediaStreamSource.connect(audioWorkletNode);
+    // We connect to the destination to ensure the graph is processed, but the worklet does not pass audio through.
+    audioWorkletNode.connect(audioContext.destination);
 
-    scriptProcessorNode.connect(localAudioContext.destination); // Connect to destination to keep processing alive
-    debugLogCallback('[Microphone] ScriptProcessorNode connected to AudioContext destination');
-    debugLogCallback('[Microphone] Audio pipeline fully connected and processing started.');
+    debugLog("[Microphone] Audio pipeline (Worklet) fully connected and processing started.");
 }
 
 export function stopMicrophoneProcessing() {
-    debugLogCallback("[Microphone] Stopping microphone processing...");
-    if (scriptProcessorNode) {
-        scriptProcessorNode.disconnect();
-        scriptProcessorNode.onaudioprocess = null;
-        // scriptProcessorNode = null; // Keep for potential reuse if context doesn't change
-    }
     if (mediaStreamSource) {
         mediaStreamSource.disconnect();
-        // mediaStreamSource = null;
+        mediaStreamSource = null;
+        debugLog("[Microphone] MediaStreamSource disconnected.");
     }
-
-    if (localMicrophoneStream) {
-        localMicrophoneStream.getTracks().forEach(track => track.stop());
-        debugLogCallback('[Microphone] Microphone stream tracks stopped.');
-        localMicrophoneStream = null;
+    if (audioWorkletNode) {
+        audioWorkletNode.port.onmessage = null; // Remove listener
+        audioWorkletNode.disconnect();
+        audioWorkletNode = null;
+        debugLog("[Microphone] AudioWorkletNode disconnected.");
     }
-    
-    audioBufferForServer = new Float32Array(0); // Clear buffer
-    debugLogCallback("[Microphone] Processing stopped and resources cleaned up.");
+    // The raw microphone stream tracks are stopped in audio-system.js
 }

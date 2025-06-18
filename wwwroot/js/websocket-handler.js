@@ -1,5 +1,6 @@
 // --- WebSocket State & Functions ---
 let webSocket = null;
+let connectionPromise = null;
 let currentBotModel = null;
 let currentBotVoice = null;
 
@@ -79,6 +80,12 @@ export async function connectWebSocket() {
         throw new Error("WebSocketHandler module not initialized.");
     }
 
+    // If a connection is already in progress, return the existing promise
+    if (connectionPromise) {
+        debugLogCallback('[WebSocketHandler] Connection attempt already in progress. Reusing existing promise.');
+        return connectionPromise;
+    }
+
     if (webSocket && webSocket.readyState === WebSocket.OPEN) {
         debugLogCallback('[WebSocketHandler] WebSocket already open. Checking if VAD settings need update.');
         if (getPipelineOptionsCallback && getVadSettingsCallback) {
@@ -102,10 +109,11 @@ export async function connectWebSocket() {
     const wsUrl = getWebSocketUrlWithParams();
     debugLogCallback(`[WebSocketHandler] Connecting to WebSocket: ${wsUrl}`);
     
-    return new Promise((resolve, reject) => {
+    connectionPromise = new Promise((resolve, reject) => {
         webSocket = new WebSocket(wsUrl);
 
         webSocket.onopen = (event) => {
+            connectionPromise = null; // Clear promise on success
             onWebSocketOpenCallback(event);
             resolve();
         };
@@ -115,19 +123,31 @@ export async function connectWebSocket() {
         };
 
         webSocket.onerror = (event) => {
+            connectionPromise = null; // Clear promise on error
             onWebSocketErrorCallback(event);
             reject(new Error("WebSocket connection error")); // Reject promise on error during connection phase
         };
 
         webSocket.onclose = (event) => {
+            // If the promise is still pending, it means the connection failed.
+            // Clear the promise to allow new connection attempts.
+            if (connectionPromise) {
+                connectionPromise = null;
+            }
             onWebSocketCloseCallback(event);
-            // If the promise hasn't resolved (e.g. error before open), it might have been rejected.
-            // If it resolved, this is a subsequent close.
+            // The socket is now closed, so we can nullify the main variable.
+            webSocket = null;
         };
     });
+    return connectionPromise;
 }
 
 export async function closeWebSocket(sendEndOfStream = true) {
+    if (connectionPromise) {
+        debugLogCallback('[WebSocketHandler] A connection is in progress while close is called. Nullifying promise.');
+        connectionPromise = null;
+    }
+
     if (webSocket && webSocket.readyState === WebSocket.OPEN) {
         debugLogCallback("[WebSocketHandler] Closing WebSocket connection...");
         if (sendEndOfStream) {
@@ -142,11 +162,11 @@ export async function closeWebSocket(sendEndOfStream = true) {
         webSocket.close();
     } else if (webSocket && webSocket.readyState === WebSocket.CONNECTING) {
         debugLogCallback("[WebSocketHandler] WebSocket is connecting, attempting to close...");
-        webSocket.close(); // This will likely trigger onerror then onclose
+        webSocket.close(); // This will trigger onerror and then onclose, which will also nullify the websocket object.
     } else {
         debugLogCallback("[WebSocketHandler] WebSocket not open or already closed.");
     }
-    // webSocket = null; // Nullified in onWebSocketCloseCallback if needed by audio-system.js
+    webSocket = null; // Also nullify here to ensure a clean state immediately.
 }
 
 export function sendWebSocketMessage(messageObject) {

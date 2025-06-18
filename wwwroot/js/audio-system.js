@@ -8,7 +8,7 @@ import * as ttsPlayback from './tts-playback.js';
 import * as audioContextManager from './audio-context.js';
 import * as microphoneManager from './microphone.js';
 import * as webSocketHandler from './websocket-handler.js';
-import * as audioUtils from './audio-utils.js'; // NEW IMPORT
+import * as audioUtils from './audio-utils.js';
 
 // --- Core Audio State ---
 let microphoneStream = null; // This will now primarily hold the raw MediaStream object from getUserMedia
@@ -16,116 +16,101 @@ let microphoneStream = null; // This will now primarily hold the raw MediaStream
 // let scriptProcessorNode = null; // MOVED to microphone.js
 let isRecordingActive = false;
 let isTTSSpeaking = false;
-// let audioBufferForServer = new Float32Array(0); // MOVED to microphone.js
+let isInitializationInProgress = false;
 
-// --- WebSocket State ---
-// let webSocket = null; // MOVED to websocket-handler.js
-// let currentBotModel = null; // MOVED to websocket-handler.js
-// let currentBotVoice = null; // MOVED to websocket-handler.js
-
-// --- Exported Core Functions ---
-export async function initAudioSystem() {
-    audioUtils.debugLog('Initializing audio system...');
-
-    audioContextManager.initAudioContextModule(TARGET_SAMPLE_RATE, audioUtils.debugLog);
-
-    ttsPlayback.initTtsPlayback(
-        audioContextManager.getAudioContext,
-        audioUtils.debugLog,
-        (speaking) => { isTTSSpeaking = speaking; },
-        () => window.allAudioSources,
-        () => window.currentBot
-    );
-
-    microphoneManager.initMicrophone({
-        getAudioContext: audioContextManager.getAudioContext,
-        onAudioChunkProcessed: sendAudioChunkToServer, // Still using local sendAudioChunkToServer
-        debugLog: audioUtils.debugLog,
-        getIsRecordingActive: () => isRecordingActive,
-        getPipelineOptions: () => window.optimizationManager?.getCurrentPipelineOptions(),
-        getIsTTSSpeaking: () => isTTSSpeaking,
-        updateAudioVisualization: (rms) => window.uiManager?.updateAudioVisualization(rms),
-        samplesPerChunk: SAMPLES_PER_CHUNK
-    });
-
-    webSocketHandler.initWebSocketHandler({
-        debugLog: audioUtils.debugLog,
-        getPipelineOptions: () => window.optimizationManager?.getCurrentPipelineOptions(),
-        getVadSettings: () => window.optimizationManager?.getCurrentVadSettings(),
-        onOpen: handleWebSocketOpen,
-        onClose: handleWebSocketClose,
-        onMessage: handleWebSocketMessage,
-        onError: handleWebSocketError
-    });
-
-    await attemptAutomaticAudioStart();
-    // Ensure optimizationManager and uiManager are initialized by main.js before this
-    if (window.optimizationManager && typeof window.optimizationManager.init === 'function') {
-        // Assuming optimizationManager.init() is idempotent or handles multiple calls gracefully
-        // window.optimizationManager.init(); 
-    } else {
-        console.warn("[AUDIO-SYSTEM] optimizationManager not found on window or not initialized.");
+// This function will now orchestrate the entire startup sequence,
+// triggered automatically on page load.
+export async function initAndStartAudioSystem() {
+    if (isRecordingActive || isInitializationInProgress) {
+        audioUtils.debugLog("Audio system is already running or initialization is in progress.");
+        return;
     }
-    if (window.uiManager && typeof window.uiManager.init === 'function') {
-        // window.uiManager.init();
-    } else {
-        console.warn("[AUDIO-SYSTEM] uiManager not found on window or not initialized.");
+    isInitializationInProgress = true;
+    audioUtils.debugLog('Attempting to initialize and start audio system automatically...');
+    if (window.uiManager) window.uiManager.showStatus("Warte auf Mikrofonberechtigung...");
+
+    try {
+        // 1. Get microphone access first. This is the required user gesture.
+        audioUtils.debugLog("Requesting microphone access...");
+        microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
+        audioUtils.debugLog("Microphone access granted.");
+
+        // 2. Now that we have permission, create and resume the AudioContext.
+        audioContextManager.initAudioContextModule(TARGET_SAMPLE_RATE, audioUtils.debugLog);
+        const contextRunning = await audioContextManager.resumeAudioContext();
+        if (!contextRunning) {
+            throw new Error("AudioContext could not be started.");
+        }
+        audioUtils.debugLog(`AudioContext is active (state: ${audioContextManager.getAudioContext().state}).`);
+
+        // 3. Initialize all modules that depend on the AudioContext or other configs.
+        ttsPlayback.initTtsPlayback(
+            audioContextManager.getAudioContext,
+            audioUtils.debugLog,
+            (speaking) => { isTTSSpeaking = speaking; },
+            () => window.allAudioSources,
+            () => window.currentBot
+        );
+
+        webSocketHandler.initWebSocketHandler({
+            debugLog: audioUtils.debugLog,
+            getPipelineOptions: () => window.optimizationManager?.getCurrentPipelineOptions(),
+            getVadSettings: () => window.optimizationManager?.getCurrentVadSettings(),
+            onOpen: handleWebSocketOpen,
+            onClose: handleWebSocketClose,
+            onMessage: handleWebSocketMessage,
+            onError: handleWebSocketError
+        });
+
+        // The microphone manager now needs the worklet to be loaded, which is async.
+        await microphoneManager.initMicrophone({
+            getAudioContext: audioContextManager.getAudioContext,
+            onAudioChunkProcessed: sendAudioChunkToServer,
+            debugLog: audioUtils.debugLog,
+            getIsRecordingActive: () => isRecordingActive,
+            updateAudioVisualization: (rms) => window.uiManager?.updateAudioVisualization(rms),
+            samplesPerChunk: SAMPLES_PER_CHUNK
+        });
+
+        // 4. Start microphone processing for immediate UI feedback.
+        audioUtils.debugLog("Starting microphone processing for UI feedback...");
+        await microphoneManager.startMicrophoneProcessing(microphoneStream);
+        audioUtils.debugLog("Microphone processing started.");
+
+        // 5. Connect the WebSocket in the background.
+        audioUtils.debugLog("Connecting WebSocket in the background...");
+        webSocketHandler.connectWebSocket().catch(error => {
+            console.error("Background WebSocket connection failed:", error);
+            updateUIAfterAudioInitAttempt(false, "WebSocket-Verbindung fehlgeschlagen");
+            stopRecording(false); // Stop if WebSocket fails
+        });
+
+        isRecordingActive = true;
+        isInitializationInProgress = false;
+        updateUIAfterAudioInitAttempt(true);
+
+    } catch (error) {
+        console.error("Failed to start audio system:", error);
+        let reason = 'Unknown error during startup';
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            reason = 'Mikrofonberechtigung verweigert';
+        } else {
+            reason = error.message;
+        }
+        updateUIAfterAudioInitAttempt(false, reason);
+        await cleanUpAudioResources(false);
+        isInitializationInProgress = false;
     }
 }
 
+// Manual start function, in case automatic start fails or user wants to restart.
 export async function startRecording() {
     if (isRecordingActive) {
         audioUtils.debugLog("Recording is already active.");
         return;
     }
-    audioUtils.debugLog("Attempting to start recording...");
-    if (window.uiManager && typeof window.uiManager.showStatus === 'function') {
-        window.uiManager.showStatus("Verbinde Audio-Pipeline...");
-    }
-
-    ttsPlayback.resetTTSPlaybackState();
-    // Clear any previous bot message UI that might be half-streamed
-    if (window.uiManager && typeof window.uiManager.clearCurrentBotMessage === 'function') {
-        window.uiManager.clearCurrentBotMessage();
-    }
-
-    try {
-        const contextRunning = await audioContextManager.resumeAudioContext();
-        if (!contextRunning) {
-            updateUIAfterAudioInitAttempt(false, 'AudioContext not running after resume attempt.');
-            return;
-        }
-
-        // Request microphone access if not already available
-        if (!microphoneStream) {
-            audioUtils.debugLog("Requesting microphone access...");
-            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
-            audioUtils.debugLog("Microphone access granted.");
-        }
-
-        await webSocketHandler.connectWebSocket(); // Use module function
-        await microphoneManager.startMicrophoneProcessing(microphoneStream);
-        
-        isRecordingActive = true;
-        updateUIAfterAudioInitAttempt(true);
-
-    } catch (error) {
-        console.error("Failed to start recording:", error);
-        let reason = 'Unknown error during startRecording';
-        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-            reason = 'Microphone access denied';
-        } else if (error.message.includes('AudioContext')) {
-            reason = 'AudioContext issue';
-        } else if (error.message.includes('WebSocket')) { // General WebSocket error
-            reason = 'WebSocket connection error: ' + error.message;
-        } else if (error.message.includes('WebSocket busy')) { // Specific error from our handler
-            reason = 'WebSocket busy, please wait.';
-        } else if (error.message.includes('Microphone module')) {
-            reason = 'Microphone processing setup error: ' + error.message;
-        }
-        updateUIAfterAudioInitAttempt(false, reason);
-        await cleanUpAudioResources(false);
-    }
+    // Simply re-run the main initialization sequence.
+    await initAndStartAudioSystem();
 }
 
 export async function stopRecording(sendEndOfStream = true) {
@@ -153,11 +138,12 @@ export async function restartAudioSystemAndClearState() {
     
     await new Promise(resolve => setTimeout(resolve, 100)); 
     
-    audioUtils.debugLog("Re-initializing audio system components...");
-    // No need to call initAudioSystem() directly if it just does attemptAutomaticAudioStart
-    // The user will typically click "start recording" which handles the full setup.
-    // However, ensuring the audio context is ready is good.
-    await attemptAutomaticAudioStart(); 
+    audioUtils.debugLog("Audio system has been reset. Waiting for user to start recording.");
+    // The call to the removed function `attemptAutomaticAudioStart` was here.
+    // It's been removed because the system should now wait for a manual user action 
+    // (e.g., clicking the start button) to begin recording. This prevents race conditions
+    // and respects browser autoplay policies.
+    
     if (window.uiManager && typeof window.uiManager.hideStatus === 'function') {
         window.uiManager.hideStatus();
     }
@@ -203,47 +189,21 @@ function updateUIAfterAudioInitAttempt(success, reason) {
     }
 }
 
-// --- Internal Core Logic ---
-async function attemptAutomaticAudioStart() {
-    audioUtils.debugLog('Attempting automatic audio start on page load...');
-    try {
-        const contextRunning = await audioContextManager.resumeAudioContext();
-        if (!contextRunning) {
-            audioUtils.debugLog("Automatic AudioContext resume failed or context not running. User gesture will be required.");
-            updateUIAfterAudioInitAttempt(false, 'AudioContext blocked');
-            return;
+function updateUIAfterStopRecording(reason) {
+    audioUtils.debugLog("Updating UI after stopping recording.");
+    if (window.uiManager) {
+        if (reason) {
+            window.uiManager.showStatus(reason, true); // Show as an error/warning
+        } else {
+            window.uiManager.showStatus("Aufnahme gestoppt.", false, 2000); // Acknowledge stop
         }
-        
-        audioUtils.debugLog("Requesting microphone access automatically on page load...");
-        if (!microphoneStream) {
-            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
-            audioUtils.debugLog("Microphone access granted automatically.");
-        }
-        
-        await webSocketHandler.connectWebSocket(); // Use module function
-        await microphoneManager.startMicrophoneProcessing(microphoneStream);
-
-        isRecordingActive = true;
-        updateUIAfterAudioInitAttempt(true);
-        audioUtils.debugLog("Automatic audio start completed successfully. Recording is now active.");
-
-    } catch (error) {
-        console.warn("Automatic audio start failed:", error);
-        let reason = 'Automatic start failed';
-        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-            reason = 'Microphone access denied';
-        } else if (error.message.includes('AudioContext')) {
-            reason = 'AudioContext issue';
-        } else if (error.message.includes('WebSocket')) {
-            reason = 'WebSocket connection error: ' + error.message;
-        } else if (error.message.includes('WebSocket busy')) {
-            reason = 'WebSocket busy, please wait.';
-        } else if (error.message.includes('Microphone module')) {
-            reason = 'Microphone processing setup error: ' + error.message;
-        }
-        updateUIAfterAudioInitAttempt(false, reason);
+        window.uiManager.updateButtonStates(false); // Set to non-recording state
+        window.uiManager.updateAudioVisualization(0); // Reset audio level meter
     }
 }
+
+// --- Internal Core Logic ---
+// REMOVED: The entire faulty attemptAutomaticAudioStart function is gone.
 
 async function cleanUpAudioResources(sendEndOfStream = true) {
     audioUtils.debugLog("Cleaning up audio resources...");
@@ -252,52 +212,6 @@ async function cleanUpAudioResources(sendEndOfStream = true) {
 
     // audioBufferForServer is now managed within microphone.js
     await webSocketHandler.closeWebSocket(sendEndOfStream); // Use module function
-}
-
-function getWebSocketUrlWithParams() {
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const host = window.location.host;
-    
-    let queryParams = {};
-    if (window.optimizationManager && typeof window.optimizationManager.getCurrentPipelineOptions === 'function') {
-        queryParams = window.optimizationManager.getCurrentPipelineOptions();
-        // Store model and voice for creating bot message later
-        currentBotModel = queryParams.ChatModel;
-        currentBotVoice = queryParams.TtsVoice;
-        audioUtils.debugLog("[AUDIO-SYSTEM] Using pipeline options from optimizationManager:", queryParams);
-    } else {
-        console.error("[AUDIO-SYSTEM] CRITICAL: optimizationManager.getCurrentPipelineOptions() is not available. WebSocket connection will likely fail or use incorrect parameters.");
-        // Fallback to some very basic defaults, though this state should ideally not be reached.
-        queryParams = {
-            Language: 'en',
-            ChatModel: 'gpt-3.5-turbo',
-            TtsVoice: 'nova',
-            DisableVad: false,
-            DisableTts: false,
-            DisableProgressiveTts: false,
-        };
-        currentBotModel = queryParams.ChatModel;
-        currentBotVoice = queryParams.TtsVoice;
-    }
-
-    if (window.optimizationManager && typeof window.optimizationManager.getCurrentVadSettings === 'function') {
-        const vadSettings = window.optimizationManager.getCurrentVadSettings();
-        // Only include VAD settings if VAD is not disabled by pipeline options
-        if (!queryParams.DisableVad) {
-            queryParams = {...queryParams, ...vadSettings};
-            audioUtils.debugLog("[AUDIO-SYSTEM] Including VAD settings from optimizationManager:", vadSettings);
-        } else {
-            audioUtils.debugLog("[AUDIO-SYSTEM] VAD is disabled by pipeline options, not including VAD settings.");
-        }
-    } else {
-        console.warn("[AUDIO-SYSTEM] optimizationManager.getCurrentVadSettings() not available. VAD settings might be incorrect if VAD is enabled.");
-    }
-
-    const queryString = new URLSearchParams(queryParams).toString();
-    const path = `/ws/audio?${queryString}`;
-    const fullUrl = `${protocol}://${host}${path}`;
-    audioUtils.debugLog("[AUDIO-SYSTEM] Constructed WebSocket URL:", fullUrl);
-    return fullUrl;
 }
 
 // --- WebSocket Event Handlers (to be passed to websocket-handler.js) ---
@@ -412,14 +326,16 @@ function handleWebSocketError(error) {
 
 function handleWebSocketClose(event) {
     audioUtils.debugLog(`[WebSocket] Connection closed. Code: ${event.code}, Reason: ${event.reason}, Clean: ${event.wasClean}`);
-    // webSocket = null; // Nullify the instance in websocket-handler.js if it does this itself, or manage here.
-                      // For now, websocket-handler doesn't nullify its internal `webSocket` on close, it just reports.
+    // The websocket-handler module manages the WebSocket instance and nullifies it on close.
+    // This handler's job is to react to the close event from the perspective of the audio system.
     if (isRecordingActive) { // If we were recording, this is an unexpected close
         updateUIAfterStopRecording("WebSocket unerwartet geschlossen.");
         isRecordingActive = false; // Ensure state is updated
     } else {
-        // If not recording, it might be a deliberate close after stopRecording, or a failed connection attempt.
-        // updateUIAfterStopRecording(); // This might be redundant if stopRecording already handled UI
+        // If not recording, it was likely a deliberate close (e.g., from stopRecording)
+        // or a failed connection attempt. The UI for this is handled by the functions
+        // that initiated the stop or connection attempt.
+        audioUtils.debugLog("WebSocket closed while not in an active recording state.");
     }
 }
 
@@ -446,7 +362,6 @@ export function sendPipelineOptionsUpdate(options) {
 
 // --- General Purpose Audio Playback (e.g., for UI sounds) ---
 // This section might also use audioContextManager.getAudioContext()
-// ...existing code...
 function playGeneralAudio(url) {
     fetch(url)
         .then(response => response.arrayBuffer())

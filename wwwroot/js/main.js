@@ -1,5 +1,5 @@
 // Import necessary functions from audio-system.js
-import { initAudioSystem } from './audio-system.js';
+import { initAndStartAudioSystem } from './audio-system.js';
 // Import uiManager
 import { uiManager } from './ui-manager.js';
 // Import optimizationManager if it becomes a module
@@ -12,17 +12,21 @@ document.addEventListener('DOMContentLoaded', function() {
   if (window.optimizationManager && typeof window.optimizationManager.init === 'function') {
     window.optimizationManager.init();
   } else {
-    console.error("Optimization manager not found or init function missing. VAD/Pipeline sliders might not work.");
+    console.warn("Optimization manager not found. VAD/Pipeline sliders might not work.");
   }
 
   // Initialize UI Manager using the imported module
   uiManager.init();
   
-  // Initialize Audio System using the imported function
-  initAudioSystem().then(() => {
-    console.log("Audio system initialized successfully via import.");
+  // Automatically start the audio system initialization sequence.
+  // This function will handle requesting microphone permissions, which is the key user gesture
+  // required by browsers to enable audio processing.
+  initAndStartAudioSystem().then(() => {
+    console.log("[Main] Audio system initialization sequence started successfully.");
   }).catch(error => {
-    console.error("Failed to initialize audio system via import:", error);
+    // This catch is for any unexpected errors during the setup phase.
+    // The audio-system module itself handles user-facing errors like permission denial.
+    console.error("[Main] Failed to start audio system initialization sequence:", error);
   });
   
   // Initial data loading - these might need to be moved into uiManager.init or called after it
