@@ -43,6 +43,7 @@ builder.Services.AddSingleton(sp =>
     };
     var client = new HttpClient(handler)
     {
+        BaseAddress = new Uri("https://api.openai.com/"),
         DefaultRequestVersion = HttpVersion.Version20,
         DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher,
         Timeout = TimeSpan.FromSeconds(180) // Increased timeout to 3 minutes
