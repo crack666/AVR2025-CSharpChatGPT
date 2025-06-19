@@ -38,19 +38,17 @@ namespace VoiceAssistant
             _audioSegmentProcessor = audioSegmentProcessor;
             _webSocketSettingsManager = webSocketSettingsManager;
             _pipelineOptions = initialPipelineOptions;
-            _vadSettings = initialVadSettings;
-
-            // Subscribe to events from the processors
+            _vadSettings = initialVadSettings;            // Subscribe to events from the processors
             _audioFrameProcessor.SpeechSegmentDetected += OnSpeechSegmentDetected;
             _audioSegmentProcessor.OnTranscriptionReady += OnTranscriptionReadyHandler;
+            _audioSegmentProcessor.OnTokenReady += OnTokenReadyHandler;
             _audioSegmentProcessor.OnAudioChunkReady += OnAudioChunkReadyHandler;
             _audioSegmentProcessor.OnError += OnErrorHandler;
+            _audioSegmentProcessor.OnDone += OnDoneHandler;
 
             // Initialize AudioFrameProcessor with current settings
             _audioFrameProcessor.UpdateSettings(_vadSettings, _pipelineOptions);
-        }
-
-        // Event Handlers for AudioSegmentProcessor events
+        }        // Event Handlers for AudioSegmentProcessor events
         private Task OnTranscriptionReadyHandler(string sessionId, string transcription)
         {
             if (sessionId == _currentSessionId && _currentWebSocket != null)
@@ -59,6 +57,17 @@ namespace VoiceAssistant
                 return SendEventAsync(_currentWebSocket, "transcription", new { text = transcription });
             }
             _logger.LogWarning("Session {SessionId}: Received transcription for inactive/mismatched session.", sessionId);
+            return Task.CompletedTask;
+        }
+
+        private Task OnTokenReadyHandler(string sessionId, string token)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogDebug("Session {SessionId}: Token ready: '{Token}'", sessionId, token);
+                return SendEventAsync(_currentWebSocket, "token", new { token = token });
+            }
+            _logger.LogWarning("Session {SessionId}: Received token for inactive/mismatched session.", sessionId);
             return Task.CompletedTask;
         }
 
@@ -71,9 +80,7 @@ namespace VoiceAssistant
             }
             _logger.LogWarning("Session {SessionId}: Received audio chunk for inactive/mismatched session.", sessionId);
             return Task.CompletedTask;
-        }
-
-        private Task OnErrorHandler(string sessionId, string errorMessage)
+        }        private Task OnErrorHandler(string sessionId, string errorMessage)
         {
             if (sessionId == _currentSessionId && _currentWebSocket != null)
             {
@@ -81,6 +88,17 @@ namespace VoiceAssistant
                 return SendEventAsync(_currentWebSocket, "error", new { message = errorMessage });
             }
             _logger.LogWarning("Session {SessionId}: Received error for inactive/mismatched session.", sessionId);
+            return Task.CompletedTask;
+        }
+
+        private Task OnDoneHandler(string sessionId, object performanceMetrics, string _)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogInformation("Session {SessionId}: Processing completed, sending done message", sessionId);
+                return SendEventAsync(_currentWebSocket, "done", new { payload = performanceMetrics });
+            }
+            _logger.LogWarning("Session {SessionId}: Received done event for inactive/mismatched session.", sessionId);
             return Task.CompletedTask;
         }
 

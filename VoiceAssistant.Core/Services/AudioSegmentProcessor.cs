@@ -16,11 +16,11 @@ namespace VoiceAssistant.Core.Services
         private readonly IRecognizer _recognizer;
         private readonly IChatService _chatService;
         private readonly ChatLogManager _chatLogManager;
-        private readonly ISynthesizer _synthesizer;
-
-        public event Func<string, string, Task> OnTranscriptionReady;
+        private readonly ISynthesizer _synthesizer;        public event Func<string, string, Task> OnTranscriptionReady;
+        public event Func<string, string, Task> OnTokenReady;
         public event Func<byte[], int, string, Task> OnAudioChunkReady;
         public event Func<string, string, Task> OnError;
+        public event Func<string, object, string, Task> OnDone;
 
         private const int SampleRate = 16000;
         private const int Channels = 1;
@@ -127,15 +127,15 @@ namespace VoiceAssistant.Core.Services
             var accumulatedTextForTts = new StringBuilder();
             string fullReply = string.Empty;
             int ttsChunkIndex = 0;
-            var sentenceDelimiters = new char[] { '.', '!', '?' };
-
-            await foreach (var (token, isFinalToken) in _chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
+            var sentenceDelimiters = new char[] { '.', '!', '?' };            await foreach (var (token, isFinalToken) in _chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
             {
                 if (!string.IsNullOrEmpty(token))
                 {
                     accumulatedTextForTts.Append(token);
                     fullReply += token;
-                    // OnLlmChunkGenerated is removed as per the new design
+                    
+                    // Send token to frontend if token streaming is enabled
+                    if (OnTokenReady != null) await OnTokenReady.Invoke(token, sessionId);
                 }
 
                 if (!pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
@@ -226,17 +226,18 @@ namespace VoiceAssistant.Core.Services
                 }
             }
             return reply;
-        }
-
-        private void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, long llmTimeMs, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
+        }        private async void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, long llmTimeMs, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
         {
-            var latencyInfo = new
+            var performanceMetrics = new
             {
-                transcriptionTime = transcriptionTimeMs,
-                llmTime = llmTimeMs,
-                totalTime = totalTimeMs
+                transcription_latency_ms = transcriptionTimeMs,
+                llm_latency_ms = llmTimeMs,
+                total_latency_ms = totalTimeMs,
+                full_reply = reply
             };
-            // OnFinalLlmResponseGenerated and OnProcessingComplete are removed as per the new design
+
+            // Send done event to frontend
+            if (OnDone != null) await OnDone.Invoke(sessionId, performanceMetrics, sessionId);
 
             _logger.LogInformation("Session {SessionId}: Interaction completed - Final reply sent. Latency (ms): Trans={TransTime}, LLM={LlmTime}, Total={TotalTime}",
                 sessionId, transcriptionTimeMs, llmTimeMs, totalTimeMs);

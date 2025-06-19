@@ -6,11 +6,12 @@ using VoiceAssistant.Core.Models;
 namespace VoiceAssistant
 {
     public interface IAudioSegmentProcessor
-    {
-        // Events to communicate back to the WebSocketHandler without a direct dependency
+    {        // Events to communicate back to the WebSocketHandler without a direct dependency
         event Func<string, string, Task> OnTranscriptionReady;
+        event Func<string, string, Task> OnTokenReady;
         event Func<byte[], int, string, Task> OnAudioChunkReady;
         event Func<string, string, Task> OnError;
+        event Func<string, object, string, Task> OnDone;
 
         Task ProcessSegmentAsync(byte[] audioBytes, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings);
     }

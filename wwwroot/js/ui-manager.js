@@ -180,8 +180,8 @@ const uiManager = {
         console.warn("[UI-MGR] Optimization button or its associated panels not found during setupEventListeners.");
     }
   },
-
   createBotMessage: function(text, model, voice) {
+    console.log(`[UI-MGR] Creating bot message: text="${text}", model="${model}", voice="${voice}"`);
     const chatLog = document.getElementById('chatLog');
     if (!chatLog) {
         console.error("[UI-MGR] Chat log element not found for createBotMessage!");
@@ -203,23 +203,23 @@ const uiManager = {
 
     const contentP = document.createElement('p');
     contentP.className = 'message-content';
-    contentP.textContent = text;
-
-    const latencySpan = document.createElement('span');
-    latencySpan.className = 'latency-info';
+    contentP.textContent = text;    const latencySpan = document.createElement('div');
+    latencySpan.className = 'message-latency';
     latencySpan.innerHTML = 
       '<span class="latency-label">Latenz:</span> ' +
-      '<span class="latency-text-label">Text:</span> <span class="latency-text-value">--</span> | ' +
-      '<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">--</span>';
+      '<span class="latency-text-label">Text:</span> <span class="latency-text-value">berechne...</span> | ' +
+      '<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">berechne...</span>';
 
     messageDiv.appendChild(headerDiv);
     messageDiv.appendChild(contentP);
-    messageDiv.appendChild(latencySpan);
-    chatLog.appendChild(messageDiv);
+    messageDiv.appendChild(latencySpan);    chatLog.appendChild(messageDiv);
     this.scrollToBottom();
 
+    // Store reference to current bot message for streaming updates
+    this.currentBotMessageDiv = messageDiv;
+
     // Return the created messageDiv so it can be referenced
-    return messageDiv; 
+    return messageDiv;
   },
 
   createUserMessage: function(text) {
@@ -281,13 +281,12 @@ const uiManager = {
   },
   
   // Function for updating latency information in bot messages
-  updateMessageLatency: function(latencyInfo) {
-    if (!this.chatLog) return; // Check if chatLog was found
+  updateMessageLatency: function(latencyInfo) {    if (!this.chatLog) return; // Check if chatLog was found
     // Find the most recent bot message and update its latency span
     const botMessages = document.querySelectorAll('.bot-message');
     if (botMessages.length > 0) {
       const lastBotMessage = botMessages[botMessages.length - 1];
-      const latencySpan = lastBotMessage.querySelector('.latency-info');
+      const latencySpan = lastBotMessage.querySelector('.message-latency');
       if (latencySpan && latencyInfo) {
         const { transcriptionTime, llmTime, totalTime } = latencyInfo;
         latencySpan.innerHTML = 
@@ -302,9 +301,8 @@ const uiManager = {
   updateLatencyDisplay: function(latencyText) {
     // Update the most recent bot message latency
     const botMessages = document.querySelectorAll('.bot-message');
-    if (botMessages.length > 0) {
-      const lastBotMessage = botMessages[botMessages.length - 1];
-      const latencySpan = lastBotMessage.querySelector('.latency-info');
+    if (botMessages.length > 0) {      const lastBotMessage = botMessages[botMessages.length - 1];
+      const latencySpan = lastBotMessage.querySelector('.message-latency');
       if (latencySpan) {
         latencySpan.innerHTML = `<span class="latency-label">Latenz:</span> ${latencyText}`;
       }
@@ -355,9 +353,10 @@ const uiManager = {
   // Ensure currentBotMessageElement is handled correctly if it was a window global.
   // Let's assume currentBotMessageElement is a property of uiManager if it needs to persist across calls.
   // currentBotMessageElement: null, // Add to uiManager properties if needed
-
   appendTokenToBotMessage: function(token) {
+    console.log(`[UI-MGR] Appending token: "${token}", currentBotMessageDiv exists: ${!!this.currentBotMessageDiv}`);
     if (!this.currentBotMessageDiv) {
+        console.warn('[UI-MGR] No current bot message div, creating one');
         // Model and voice might need to be passed or retrieved from optimizationManager/global state
         const currentModel = window.optimizationSettings?.chatModel || this.modelSel?.value || 'default';
         const currentVoice = window.optimizationSettings?.ttsVoice || this.voiceSel?.value || 'default';
@@ -365,22 +364,49 @@ const uiManager = {
     }
     const contentElement = this.currentBotMessageDiv.querySelector('.message-content');
     if (contentElement) {
+        const oldText = contentElement.textContent;
         contentElement.textContent += token;
+        console.log(`[UI-MGR] Token appended. Old: "${oldText}", New: "${contentElement.textContent}"`);
         this.scrollToBottom();
+    } else {
+        console.error('[UI-MGR] Could not find message-content element in currentBotMessageDiv');
     }
   },
-
   // Call this when the LLM reply is complete (e.g., on 'llm_reply' or 'done' event from WebSocket)
-  finalizeBotMessage: function(fullText) {
+  finalizeBotMessage: function(fullText, performanceMetrics) {
     if (this.currentBotMessageDiv) {
         if (fullText) { // If full text is provided, update it
              const contentElement = this.currentBotMessageDiv.querySelector('.message-content');
              if (contentElement) contentElement.textContent = fullText;
         }
-        // Update latency if available with the final message
+        
+        // Update latency information if performance metrics are provided
+        if (performanceMetrics) {
+            this.updateLatencyInfo(this.currentBotMessageDiv, performanceMetrics);
+        }
     }
     this.currentBotMessageDiv = null; // Reset for the next message
     this.scrollToBottom();
+  },
+
+  // Helper function to update latency information in a message
+  updateLatencyInfo: function(messageDiv, metrics) {
+    if (!messageDiv || !metrics) return;
+    
+    const latencyElement = messageDiv.querySelector('.message-latency');
+    if (!latencyElement) return;
+    
+    // Extract latency values from metrics (adapt to backend format)
+    const textLatency = metrics.transcription_latency_ms || metrics.text_latency_ms || 'N/A';
+    const audioLatency = metrics.tts_latency_ms || metrics.audio_latency_ms || 'N/A';
+    const totalLatency = metrics.total_latency_ms || 'N/A';
+    
+    // Update the latency display
+    latencyElement.innerHTML = 
+      '<span class="latency-label">Latenz:</span> ' +
+      `<span class="latency-text-label">Text:</span> <span class="latency-text-value">${textLatency}ms</span> | ` +
+      `<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">${audioLatency}ms</span> | ` +
+      `<span class="latency-total-label">Total:</span> <span class="latency-total-value">${totalLatency}ms</span>`;
   },
 
   // Original updateBotMessage might be for non-streaming updates or final updates.

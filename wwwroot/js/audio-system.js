@@ -382,28 +382,52 @@ async function handleWebSocketMessage(event) {
                         window.uiManager.updateBotStatusIndicator(message.payload.is_thinking, message.payload.is_speaking, message.payload.is_processing);
                     }
                     break;                case 'prompt':
-                    if (window.uiManager && typeof window.uiManager.addUserMessage === 'function') {
-                        window.uiManager.addUserMessage(message.payload.text);
+                    if (window.uiManager && typeof window.uiManager.createUserMessage === 'function') {
+                        window.uiManager.createUserMessage(message.payload.text);
                     }
-                    if (window.uiManager && typeof window.uiManager.addBotMessage === 'function') {
-                        window.uiManager.addBotMessage('', botDetails.model, botDetails.voice);
-                    }
-                    break;
-                case 'transcription':
+                    // Don't create bot message here - let the first token create it
+                    audioUtils.debugLog('[WebSocket] Prompt processed, waiting for first token to create bot message');
+                    break;                case 'transcription':
                     audioUtils.debugLog('Server sent transcription:', message.payload);
-                    if (window.uiManager && typeof window.uiManager.addUserMessage === 'function') {
+                    if (window.uiManager && typeof window.uiManager.createUserMessage === 'function') {
                         // Handle transcription message - extract text from payload
                         const transcriptionText = message.payload?.text || message.payload;
-                        window.uiManager.addUserMessage(transcriptionText);
+                        window.uiManager.createUserMessage(transcriptionText);
                     }
-                    if (window.uiManager && typeof window.uiManager.addBotMessage === 'function') {
-                        window.uiManager.addBotMessage('', botDetails.model, botDetails.voice);
-                    }
+                    // Don't create bot message here - let the first token create it
+                    audioUtils.debugLog('[WebSocket] Transcription processed, waiting for first token to create bot message');
                     break;
-                case 'token':
+                case 'response':
+                case 'reply':
+                case 'bot_reply':
+                    // Handle non-streaming bot responses
+                    audioUtils.debugLog('Server sent bot response:', message.payload);
+                    if (window.uiManager && typeof window.uiManager.createBotMessage === 'function') {
+                        const responseText = message.payload?.text || message.payload?.response || message.payload;
+                        window.uiManager.createBotMessage(responseText, botDetails.model, botDetails.voice);
+                    }
+                    break;                case 'token':
+                    audioUtils.debugLog(`[WebSocket] Received token: "${message.payload.token}"`);
+                    
+                    // On first token of a new response, create bot message (like MASTER version)
+                    if (!window.uiManager.currentBotMessageDiv) {
+                        audioUtils.debugLog('[WebSocket] First token received, creating bot message');
+                        const botDetails = webSocketHandler.getCurrentBotDetails();
+                        if (window.uiManager?.createBotMessage) {
+                            window.uiManager.createBotMessage('', botDetails.model, botDetails.voice);
+                        } else {
+                            console.error('[WebSocket] uiManager.createBotMessage not available for first token');
+                            break;
+                        }
+                    }
+                    
+                    // Append token to the bot message
                     if (window.uiManager?.appendTokenToBotMessage) {
                         window.uiManager.appendTokenToBotMessage(message.payload.token);
+                    } else {
+                        console.warn('[WebSocket] uiManager.appendTokenToBotMessage not available');
                     }
+                    
                     // Update speaking state based on token stream
                     isTTSSpeaking = true; 
                     break;

@@ -349,19 +349,30 @@ const optimizationManager = {
 
   // --- Getters for audio-system.js ---
   getCurrentPipelineOptions: function() {
-    // These are the options relevant for the WebSocket query string or initial setup messages
-    return {
+    // Ensure currentSettings is initialized (fallback to defaults if not)
+    if (!this.currentSettings || Object.keys(this.currentSettings).length === 0) {
+      console.warn("[OPTIMIZATION-MGR] currentSettings not initialized, using defaults");
+      this.currentSettings = JSON.parse(JSON.stringify(this.defaultSettings));
+    }
+      // These are the options relevant for the WebSocket query string or initial setup messages
+    const options = {
       Language: document.getElementById('language')?.value || 'en', // Assuming language is still a top-level selector
-      ChatModel: this.currentSettings.chatModel,
-      TtsVoice: this.currentSettings.ttsVoice,
-      DisableVad: this.currentSettings.disableVad,
-      DisableTts: this.currentSettings.disableTts,
-      DisableProgressiveTts: !this.currentSettings.useProgressiveTTS,
-      TtsMinFirstChunkLength: this.currentSettings.ttsMinFirstChunkLength,
-      TtsMaxFirstChunkLength: this.currentSettings.ttsMaxFirstChunkLength,
-      TtsSubsequentChunkLength: this.currentSettings.ttsSubsequentChunkLength,
+      ChatModel: this.currentSettings.chatModel || 'gpt-3.5-turbo',
+      TtsVoice: this.currentSettings.ttsVoice || 'nova',
+      DisableVad: this.currentSettings.disableVad || false,
+      DisableTts: this.currentSettings.disableTts || false,
+      DisableProgressiveTts: !(this.currentSettings.useProgressiveTTS || true), // Invert: useProgressiveTTS=true -> DisableProgressiveTts=false
+      DisableTokenStreaming: !(this.currentSettings.useTokenStreaming || true), // Invert: useTokenStreaming=true -> DisableTokenStreaming=false      TtsMinFirstChunkLength: this.currentSettings.ttsMinFirstChunkLength || 15,
+      TtsMaxFirstChunkLength: this.currentSettings.ttsMaxFirstChunkLength || 25,
+      TtsSubsequentChunkLength: this.currentSettings.ttsSubsequentChunkLength || 10,
       // Add any other pipeline-related settings the server expects
     };
+    // Only log on first call or if debug mode is enabled
+    if (!this._pipelineOptionsLogged || (window.IS_DEBUG_MODE && Math.random() < 0.01)) {
+      console.log("[OPTIMIZATION-MGR] Pipeline options:", options);
+      this._pipelineOptionsLogged = true;
+    }
+    return options;
   },
 
   getCurrentVadSettings: function() {
