@@ -304,14 +304,14 @@ namespace VoiceAssistant
             {
                 _logger.LogWarning("Session {SessionId}: Audio chunk {ChunkIndex} is empty, not sending.", sessionId, chunkIndex);
                 return;
-            }
-            if (webSocket != null && webSocket.State == WebSocketState.Open)
+            }            if (webSocket != null && webSocket.State == WebSocketState.Open)
             {
                 _logger.LogDebug("Session {SessionId}: Sending audio chunk - Index={ChunkIndex}, Size={SizeBytes} bytes", sessionId, chunkIndex, audioBytes.Length);
                 try
                 {
-                    await webSocket.SendAsync(new ArraySegment<byte>(audioBytes), WebSocketMessageType.Binary, true, CancellationToken.None);
+                    // Send info message BEFORE binary data so frontend knows the index
                     await SendEventAsync(webSocket, "audio-chunk-info", new { index = chunkIndex, size = audioBytes.Length });
+                    await webSocket.SendAsync(new ArraySegment<byte>(audioBytes), WebSocketMessageType.Binary, true, CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
