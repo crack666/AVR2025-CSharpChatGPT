@@ -58,9 +58,7 @@ namespace VoiceAssistant
             }
             _logger.LogWarning("Session {SessionId}: Received transcription for inactive/mismatched session.", sessionId);
             return Task.CompletedTask;
-        }
-
-        private Task OnTokenReadyHandler(string sessionId, string token)
+        }        private Task OnTokenReadyHandler(string token, string sessionId)
         {
             if (sessionId == _currentSessionId && _currentWebSocket != null)
             {
