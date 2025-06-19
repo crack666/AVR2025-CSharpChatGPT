@@ -181,13 +181,44 @@ Die Frontend-Logik ist in spezialisierte, wiederverwendbare ES6-Module unterteil
 
 *   **`ui-manager.js` & `optimization-manager.js`**: Verwalten die DOM-Manipulation, UI-Events und die Einstellungs-Panels.
 
+### 3.3. Audio-Verarbeitung im Frontend
+
+Die Audio-Verarbeitung im Frontend ist vollständig in `audio-system.js` und dem `AudioWorklet` (`audio-processor.js`) gekapselt.
+
+**Ablauf der Audio-Aufnahme:**
+
+1.  **Initialisierung:** `audio-system.js` initialisiert den `AudioContext` und lädt das `audio-processor.js`-Modul in den `AudioWorklet`.
+2.  **Start:** Bei `startRecording()` (kann automatisch oder durch Benutzerinteraktion ausgelöst werden) wird der Zugriff auf das Mikrofon angefordert (`getUserMedia`).
+3.  **Verarbeitungskette:** Der `MediaStream` vom Mikrofon wird an einen `AudioWorkletNode` weitergeleitet, der den `audio-processor` ausführt.
+4.  **Chunking & RMS:** Der `audio-processor` empfängt die Audiodaten in Blöcken von 128 Samples. Er puffert diese Daten und erstellt daraus präzise Chunks (standardmäßig 320 Samples für 20ms bei 16kHz). Für jeden dieser Chunks berechnet er den RMS-Wert.
+5.  **Datenübertragung:**
+    - Der Audio-Chunk wird per `postMessage` an `audio-system.js` gesendet.
+    - Der RMS-Wert wird ebenfalls per `postMessage` an `audio-system.js` gesendet.
+6.  **Weiterleitung:**
+    - `audio-system.js` leitet den Audio-Chunk an `websocket-handler.js` weiter, der ihn an den Server sendet.
+    - `audio-system.js` leitet den RMS-Wert an `ui-manager.js` weiter, um die Pegelanzeige zu aktualisieren.
+
+**Architektur-Diagramm (Frontend):**
+
+`Mikrofon` -> `MediaStreamSource` -> `AudioWorkletNode` (`audio-processor.js`) -> `(verarbeiteter 20ms Chunk)` -> `port.postMessage` -> `audio-system.js` -> `websocket-handler.js` -> **Server**
+
+`AudioWorkletNode` (`audio-processor.js`) -> `(berechneter RMS-Wert)` -> `port.postMessage` -> `audio-system.js` -> `ui-manager.js` -> **UI-Pegelanzeige**
+
+### 3.4. Module und ihre Verantwortlichkeiten
+
+- **main.js**: Einstiegspunkt der Anwendung, initialisiert alle Manager-Module.
+- **audio-system.js**: Herzstück der Frontend-Audioverarbeitung. Orchestriert Mikrofon, `AudioWorklet`, `WebSocketHandler` und `TTS-Playback`.
+- **audio-processor.js**: `AudioWorkletProcessor` für das Chunking und die RMS-Berechnung.
+- **audio-context.js**: Verwaltet den globalen `AudioContext`.
+- **websocket-handler.js**: Kapselt die WebSocket-Kommunikation.
+
 ### 4. Datenfluss (Audio & UI)
 
 **Audio zum Server:**
-`Mikrofon` -> `MediaStreamSource` -> `AudioWorkletNode` (`audio-processor.js`) -> `(verarbeiteter 20ms Chunk)` -> `port.postMessage` -> `microphone.js` -> `(Callback)` -> `audio-system.js` -> `websocket-handler.js` -> **Server**
+`Mikrofon` -> `MediaStreamSource` -> `AudioWorkletNode` (`audio-processor.js`) -> `(verarbeiteter 20ms Chunk)` -> `port.postMessage` -> `audio-system.js` -> `websocket-handler.js` -> **Server**
 
 **Audio-Pegel zur UI:**
-`AudioWorkletNode` (`audio-processor.js`) -> `(berechneter RMS-Wert)` -> `port.postMessage` -> `microphone.js` -> `(Callback)` -> `ui-manager.js` -> **UI-Pegelanzeige**
+`AudioWorkletNode` (`audio-processor.js`) -> `(berechneter RMS-Wert)` -> `port.postMessage` -> `audio-system.js` -> `ui-manager.js` -> **UI-Pegelanzeige**
 
 # Modularisierung des Frontends (Stand Juni 2025)
 
@@ -317,3 +348,13 @@ Das Web-Frontend demonstriert die Kerninteraktion mit dem Backend. Für einen al
 *   **Minimale Client-Logik**: Die Kernlogik (VAD, STT, LLM, TTS) verbleibt auf dem Server. Der Client ist primär für die Audio-Interaktion und die Darstellung der Ergebnisse zuständig. Die umfangreichen Debug- und Konfigurations-UI-Elemente des Web-Frontends sind für einen Endanwender-Client (wie in VR) nicht zwingend erforderlich und können für eine schlankere Implementierung weggelassen werden.
 
 Das Ziel ist es, den Client so einfach wie möglich zu halten, während die volle Funktionalität durch die serverseitige Verarbeitung gewährleistet wird. Die im Web-Frontend vorhandenen Debug-Panels sind wertvoll für Testzwecke, zeigen aber auch die Flexibilität der Backend-Konfiguration über die WebSocket-Schnittstelle.
+
+## 5. Wichtige Erkenntnisse und Best Practices
+
+*   **Ereignisgesteuerte Architektur:** Dienste sollten keine direkten Abhängigkeiten zu WebSocket-Objekten haben. Kommunizieren Sie über Ereignisse.
+*   **Scoped Services:** Seien Sie vorsichtig bei der Verwendung von Scoped Services in Verbindung mit WebSocket-Verbindungen. Bevorzugen Sie Singleton- oder Transient-Services, um zirkuläre Abhängigkeiten zu vermeiden.
+*   **Logging:** Nutzen Sie das strukturierte Logging von Serilog umfassend, um die Diagnose und Überwachung zu erleichtern.
+*   **Fehlerbehandlung:** Implementieren Sie eine robuste Fehlerbehandlung und -kommunikation, um Probleme schnell zu identifizieren und zu beheben.
+*   **Ressourcenmanagement:** Achten Sie darauf, dass alle Ressourcen (z.B. Streams, Verbindungen) ordnungsgemäß freigegeben werden, um Lecks zu vermeiden.
+*   **Testabdeckung:** Stellen Sie sicher, dass alle neuen Funktionen und Änderungen umfassend getestet werden, um die Stabilität der Anwendung zu gewährleisten.
+*   **Dokumentation:** Halten Sie die Dokumentation aktuell, insbesondere bei Änderungen an der Architektur oder den öffentlichen Schnittstellen der Anwendung.

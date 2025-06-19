@@ -1,5 +1,5 @@
 // Import necessary functions from audio-system.js
-import { initAndStartAudioSystem } from './audio-system.js';
+import { initAudioSystem } from './audio-system.js';
 // Import uiManager
 import { uiManager } from './ui-manager.js';
 // Import optimizationManager if it becomes a module
@@ -18,47 +18,6 @@ document.addEventListener('DOMContentLoaded', function() {
   // Initialize UI Manager using the imported module
   uiManager.init();
   
-  // Automatically start the audio system initialization sequence.
-  // This function will handle requesting microphone permissions, which is the key user gesture
-  // required by browsers to enable audio processing.
-  initAndStartAudioSystem().then(() => {
-    console.log("[Main] Audio system initialization sequence started successfully.");
-  }).catch(error => {
-    // This catch is for any unexpected errors during the setup phase.
-    // The audio-system module itself handles user-facing errors like permission denial.
-    console.error("[Main] Failed to start audio system initialization sequence:", error);
-  });
-  
-  // Initial data loading - these might need to be moved into uiManager.init or called after it
-  // if they depend on UI elements uiManager initializes.
-  // For now, assuming loadModels and populateVoices are global or correctly handled.
-  if (typeof loadModels === 'function') loadModels(); else console.warn('loadModels function not found globally.');
-  if (typeof populateVoices === 'function') populateVoices(); else console.warn('populateVoices function not found globally.');
-  
-  // Load persisted chat history from backend
-  (async () => {
-    try {
-      const resp = await fetch('/api/chatLog');
-      if (resp.ok) {
-        const logs = await resp.json();
-        logs.forEach(msg => {
-          if (msg.role === 0) { // User message
-            uiManager.createUserMessage(msg.content);
-          } else { // Bot message
-            uiManager.createBotMessage(msg.content, msg.model || undefined, msg.voice || undefined);
-          }
-        });
-      }
-    } catch (err) {
-      console.error('Error loading chat history:', err);
-    }
-  })();
-  
-  // Display ready status - uiManager should handle this if 'status' is one of its elements
-  const statusElement = document.getElementById('status'); // Or uiManager.status if already queried
-  if (statusElement) {
-    statusElement.textContent = 'Bereit';
-  } else {
-    console.error("Status element with ID 'status' not found in main.js after DOMContentLoaded.");
-  }
+  // Initialize the audio system
+  initAudioSystem();
 });
