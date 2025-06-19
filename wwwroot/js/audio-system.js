@@ -77,11 +77,11 @@ export async function startRecording() {
         const audioContext = await audioContextManager.getAudioContext(true); // Ensure context is running
         if (!audioContext) {
             throw new Error("AudioContext could not be created or resumed.");
-        }
-
-        if (!microphoneStream) {
+        }        if (!microphoneStream) {
             audioUtils.debugLog("Requesting microphone access...");
-            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
+            // Use simple audio constraints like the working MASTER version
+            const audioConstraints = { audio: true };
+            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
             audioUtils.debugLog("Microphone access granted.");
         }
 
@@ -233,20 +233,20 @@ async function setupAudioPipeline(stream) {
                     return; // Pause sending mic data if progressive TTS is active and speaking
                 }
                 sendAudioChunkToServer(event.data.buffer);
-            }
-        } else if (event.data.type === 'rms') {
+            }        } else if (event.data.type === 'rms') {
+            // [TRACE LOG] - Very verbose RMS logging, only for detailed debugging
+            audioUtils.traceLog(`[AudioSystem] Received RMS from worklet: ${event.data.rms}`);
             // Forward RMS value to UI manager for visualization
             if (window.uiManager?.updateAudioVisualization) {
                 window.uiManager.updateAudioVisualization(event.data.rms);
             }
         }
     };
-    audioUtils.debugLog("AudioWorkletNode message handler set up.");
-
-    // Connect the nodes to establish the audio processing chain
+    audioUtils.debugLog("AudioWorkletNode message handler set up.");    // Connect the nodes to establish the audio processing chain
     mediaStreamSource.connect(audioWorkletNode);
-    audioWorkletNode.connect(audioContext.destination);
-    audioUtils.debugLog("Audio pipeline connected: MediaStreamSource -> AudioWorkletNode -> Destination.");
+    // NOTE: Do NOT connect worklet to destination - this can cause feedback and issues
+    // audioWorkletNode.connect(audioContext.destination);
+    audioUtils.debugLog("Audio pipeline connected: MediaStreamSource -> AudioWorkletNode (no destination connection).");
 }
 
 async function attemptAutomaticAudioStart() {
@@ -258,10 +258,11 @@ async function attemptAutomaticAudioStart() {
             updateUIAfterAudioInitAttempt(false, 'AudioContext blocked');
             return;
         }
-        
-        audioUtils.debugLog("Requesting microphone access automatically on page load...");
+          audioUtils.debugLog("Requesting microphone access automatically on page load...");
         if (!microphoneStream) {
-            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: TARGET_SAMPLE_RATE }, video: false });
+            // Use simple audio constraints like the working MASTER version
+            const audioConstraints = { audio: true };
+            microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
             audioUtils.debugLog("Microphone access granted automatically.");
         }
         
