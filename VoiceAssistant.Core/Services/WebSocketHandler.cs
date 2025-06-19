@@ -87,14 +87,13 @@ namespace VoiceAssistant
             }
             _logger.LogWarning("Session {SessionId}: Received error for inactive/mismatched session.", sessionId);
             return Task.CompletedTask;
-        }
-
-        private Task OnDoneHandler(string sessionId, object performanceMetrics, string _)
+        }        private Task OnDoneHandler(string sessionId, object performanceMetrics, string _)
         {
             if (sessionId == _currentSessionId && _currentWebSocket != null)
             {
                 _logger.LogInformation("Session {SessionId}: Processing completed, sending done message", sessionId);
-                return SendEventAsync(_currentWebSocket, "done", new { payload = performanceMetrics });
+                // Send performance metrics directly without additional payload wrapping
+                return SendEventAsync(_currentWebSocket, "done", performanceMetrics);
             }
             _logger.LogWarning("Session {SessionId}: Received done event for inactive/mismatched session.", sessionId);
             return Task.CompletedTask;

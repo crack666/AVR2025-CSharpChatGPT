@@ -371,35 +371,53 @@ const uiManager = {
     } else {
         console.error('[UI-MGR] Could not find message-content element in currentBotMessageDiv');
     }
-  },
-  // Call this when the LLM reply is complete (e.g., on 'llm_reply' or 'done' event from WebSocket)
+  },  // Call this when the LLM reply is complete (e.g., on 'llm_reply' or 'done' event from WebSocket)
   finalizeBotMessage: function(fullText, performanceMetrics) {
+    console.log("[UI-MGR] finalizeBotMessage called with:", {fullText, performanceMetrics});
+    console.log("[UI-MGR] currentBotMessageDiv exists:", !!this.currentBotMessageDiv);
+    
     if (this.currentBotMessageDiv) {
         if (fullText) { // If full text is provided, update it
              const contentElement = this.currentBotMessageDiv.querySelector('.message-content');
-             if (contentElement) contentElement.textContent = fullText;
+             if (contentElement) {
+               console.log("[UI-MGR] Updating full text from:", contentElement.textContent, "to:", fullText);
+               contentElement.textContent = fullText;
+             }
         }
         
         // Update latency information if performance metrics are provided
         if (performanceMetrics) {
+            console.log("[UI-MGR] Updating latency info with metrics:", performanceMetrics);
             this.updateLatencyInfo(this.currentBotMessageDiv, performanceMetrics);
+        } else {
+            console.warn("[UI-MGR] No performance metrics provided to finalizeBotMessage");
         }
+    } else {
+        console.warn("[UI-MGR] finalizeBotMessage called but no currentBotMessageDiv");
     }
     this.currentBotMessageDiv = null; // Reset for the next message
     this.scrollToBottom();
   },
-
   // Helper function to update latency information in a message
   updateLatencyInfo: function(messageDiv, metrics) {
-    if (!messageDiv || !metrics) return;
+    console.log("[UI-MGR] updateLatencyInfo called with metrics:", metrics);
+    if (!messageDiv || !metrics) {
+      console.warn("[UI-MGR] updateLatencyInfo: missing messageDiv or metrics");
+      return;
+    }
     
     const latencyElement = messageDiv.querySelector('.message-latency');
-    if (!latencyElement) return;
+    if (!latencyElement) {
+      console.warn("[UI-MGR] updateLatencyInfo: latency element not found in messageDiv");
+      return;
+    }
     
     // Extract latency values from metrics (adapt to backend format)
     const textLatency = metrics.transcription_latency_ms || metrics.text_latency_ms || 'N/A';
-    const audioLatency = metrics.tts_latency_ms || metrics.audio_latency_ms || 'N/A';
+    const audioLatency = metrics.tts_latency_ms || metrics.audio_latency_ms || metrics.llm_latency_ms || 'N/A';
     const totalLatency = metrics.total_latency_ms || 'N/A';
+    
+    console.log("[UI-MGR] Extracted latencies - text:", textLatency, "audio:", audioLatency, "total:", totalLatency);
     
     // Update the latency display
     latencyElement.innerHTML = 
@@ -407,6 +425,8 @@ const uiManager = {
       `<span class="latency-text-label">Text:</span> <span class="latency-text-value">${textLatency}ms</span> | ` +
       `<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">${audioLatency}ms</span> | ` +
       `<span class="latency-total-label">Total:</span> <span class="latency-total-value">${totalLatency}ms</span>`;
+    
+    console.log("[UI-MGR] Latency display updated:", latencyElement.innerHTML);
   },
 
   // Original updateBotMessage might be for non-streaming updates or final updates.

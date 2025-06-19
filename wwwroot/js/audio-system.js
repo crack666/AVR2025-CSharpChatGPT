@@ -430,11 +430,18 @@ async function handleWebSocketMessage(event) {
                     
                     // Update speaking state based on token stream
                     isTTSSpeaking = true; 
-                    break;
-                case 'done':
+                    break;                case 'done':
                     audioUtils.debugLog('Server signaled end of response.', message.payload);
                     if (window.uiManager?.finalizeBotMessage) {
-                        window.uiManager.finalizeBotMessage(message.payload.full_reply, message.payload.performance_metrics);
+                        // After backend fix, performance metrics should be directly in payload
+                        audioUtils.debugLog('Payload properties:', Object.keys(message.payload));
+                        audioUtils.debugLog('transcription_latency_ms:', message.payload.transcription_latency_ms);
+                        audioUtils.debugLog('llm_latency_ms:', message.payload.llm_latency_ms);
+                        audioUtils.debugLog('total_latency_ms:', message.payload.total_latency_ms);
+                        audioUtils.debugLog('full_reply:', message.payload.full_reply);
+                        
+                        // Pass the payload directly - it contains all latency data
+                        window.uiManager.finalizeBotMessage(message.payload.full_reply, message.payload);
                     }
                     // Update speaking state when response is done
                     isTTSSpeaking = false;
