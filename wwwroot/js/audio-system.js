@@ -448,12 +448,22 @@ async function handleWebSocketMessage(event) {
                 case 'ping':
                     webSocketHandler.sendWebSocketMessage({ type: 'pong', timestamp: message.timestamp }); // Use module
                     break;                case 'audio-chunk-info':
-                    audioUtils.debugLog(`[WebSocket] Received audio-chunk-info with index: ${message.index}`);
+                    audioUtils.debugLog(`[WebSocket] Received audio-chunk-info:`, message);
+                    audioUtils.debugLog(`[WebSocket] message.index: ${message.index}, message.payload: ${JSON.stringify(message.payload)}`);
+                    
+                    // Try both message.index and message.payload.index
+                    let chunkIndex = message.index;
+                    if (chunkIndex === undefined && message.payload && message.payload.index !== undefined) {
+                        chunkIndex = message.payload.index;
+                        audioUtils.debugLog(`[WebSocket] Using payload.index: ${chunkIndex}`);
+                    }
+                    
                     // Handle undefined index from server
-                    if (message.index !== undefined && message.index !== null && !isNaN(message.index)) {
-                        audioUtils.setLastKnownAudioChunkInfoIndex(message.index);
+                    if (chunkIndex !== undefined && chunkIndex !== null && !isNaN(chunkIndex)) {
+                        audioUtils.setLastKnownAudioChunkInfoIndex(chunkIndex);
+                        audioUtils.debugLog(`[WebSocket] Valid chunk index set: ${chunkIndex}`);
                     } else {
-                        audioUtils.warnLog(`[WebSocket] Received invalid audio-chunk-info index: ${message.index}, ignoring.`);
+                        audioUtils.warnLog(`[WebSocket] Received invalid audio-chunk-info index: ${chunkIndex}, message:`, message);
                     }
                     break;
                 case 'tts-all-chunks-sent':

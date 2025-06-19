@@ -310,7 +310,9 @@ namespace VoiceAssistant
                 try
                 {
                     // Send info message BEFORE binary data so frontend knows the index
+                    _logger.LogInformation("Session {SessionId}: Sending audio-chunk-info with index={ChunkIndex}, size={Size}", sessionId, chunkIndex, audioBytes.Length);
                     await SendEventAsync(webSocket, "audio-chunk-info", new { index = chunkIndex, size = audioBytes.Length });
+                    _logger.LogInformation("Session {SessionId}: Sending binary audio chunk with index={ChunkIndex}", sessionId, chunkIndex);
                     await webSocket.SendAsync(new ArraySegment<byte>(audioBytes), WebSocketMessageType.Binary, true, CancellationToken.None);
                 }
                 catch (Exception ex)

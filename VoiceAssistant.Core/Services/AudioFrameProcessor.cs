@@ -191,7 +191,7 @@ namespace VoiceAssistant
                     _vadSettings.NoiseFloorAlpha * _noiseFloor + (1 - _vadSettings.NoiseFloorAlpha) * frameRms);
                 if (Math.Abs(oldNoiseFloor - _noiseFloor) > 0.0001)
                 {
-                    _logger.LogDebug("Session {SessionId}: VAD noise floor updated from {OldNoiseFloor:F4} to {NewNoiseFloor:F4} after {SilenceDurationSec:F2}s silence (Frame RMS: {FrameRms:F4})",
+                    _logger.LogTrace("Session {SessionId}: VAD noise floor updated from {OldNoiseFloor:F4} to {NewNoiseFloor:F4} after {SilenceDurationSec:F2}s silence (Frame RMS: {FrameRms:F4})",
                                      sessionId, oldNoiseFloor, _noiseFloor, _silenceDurationSec, frameRms);
                 }
             }
