@@ -62,7 +62,7 @@ namespace VoiceAssistant
         {
             if (sessionId == _currentSessionId && _currentWebSocket != null)
             {
-                _logger.LogDebug("Session {SessionId}: Token ready: '{Token}'", sessionId, token);
+                _logger.LogTrace("Session {SessionId}: Token ready: '{Token}'", sessionId, token);
                 return SendEventAsync(_currentWebSocket, "token", new { token = token });
             }
             _logger.LogWarning("Session {SessionId}: Received token for inactive/mismatched session.", sessionId);
