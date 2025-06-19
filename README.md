@@ -349,12 +349,373 @@ Das Web-Frontend demonstriert die Kerninteraktion mit dem Backend. Für einen al
 
 Das Ziel ist es, den Client so einfach wie möglich zu halten, während die volle Funktionalität durch die serverseitige Verarbeitung gewährleistet wird. Die im Web-Frontend vorhandenen Debug-Panels sind wertvoll für Testzwecke, zeigen aber auch die Flexibilität der Backend-Konfiguration über die WebSocket-Schnittstelle.
 
-## 5. Wichtige Erkenntnisse und Best Practices
+## 9. Bekannte Issues und Roadmap
 
-*   **Ereignisgesteuerte Architektur:** Dienste sollten keine direkten Abhängigkeiten zu WebSocket-Objekten haben. Kommunizieren Sie über Ereignisse.
-*   **Scoped Services:** Seien Sie vorsichtig bei der Verwendung von Scoped Services in Verbindung mit WebSocket-Verbindungen. Bevorzugen Sie Singleton- oder Transient-Services, um zirkuläre Abhängigkeiten zu vermeiden.
-*   **Logging:** Nutzen Sie das strukturierte Logging von Serilog umfassend, um die Diagnose und Überwachung zu erleichtern.
-*   **Fehlerbehandlung:** Implementieren Sie eine robuste Fehlerbehandlung und -kommunikation, um Probleme schnell zu identifizieren und zu beheben.
-*   **Ressourcenmanagement:** Achten Sie darauf, dass alle Ressourcen (z.B. Streams, Verbindungen) ordnungsgemäß freigegeben werden, um Lecks zu vermeiden.
-*   **Testabdeckung:** Stellen Sie sicher, dass alle neuen Funktionen und Änderungen umfassend getestet werden, um die Stabilität der Anwendung zu gewährleisten.
-*   **Dokumentation:** Halten Sie die Dokumentation aktuell, insbesondere bei Änderungen an der Architektur oder den öffentlichen Schnittstellen der Anwendung.
+### 9.1. Aktuelle Limitationen (Stand 2025)
+
+#### 9.1.1. Frontend Issues
+- **Browser-Kompatibilität:** AudioWorklet wird nicht von allen älteren Browsern unterstützt
+- **Mobile Responsiveness:** UI-Panels sind nicht für mobile Geräte optimiert
+- **Audio-Latenz:** Minimale Latenz bei TTS-Playback auf manchen Geräten
+- **Memory Usage:** Langfristige Sessions können zu Memory-Leaks bei unsachgemäßer Bereinigung führen
+
+#### 9.1.2. Backend Issues
+- **Concurrent Sessions:** Noch keine explizite Begrenzung der gleichzeitigen WebSocket-Verbindungen
+- **Resource Monitoring:** Fehlende Metriken für Memory/CPU-Usage pro Session
+- **Error Recovery:** Partielle Failures in der TTS-Pipeline können die gesamte Session blockieren
+
+#### 9.1.3. Integration Issues
+- **Unity Integration:** VoiceAssistant.UnityIntegration noch nicht vollständig in die neue Architektur integriert
+- **Testing Coverage:** E2E-Tests für neue WebSocket-Events noch unvollständig
+
+### 9.2. Geplante Verbesserungen
+
+#### 9.2.1. Kurzfristig (Q1 2025)
+- [ ] **Mobile UI:** Responsive Design für Tablet/Phone-Nutzung
+- [ ] **Error Boundaries:** Bessere Isolation von Fehlern zwischen Sessions
+- [ ] **Metrics Dashboard:** Echtzeit-Monitoring für aktive Sessions
+- [ ] **Unity Integration:** Vollständige Portierung auf neue WebSocket-Architektur
+
+#### 9.2.2. Mittelfristig (Q2 2025)
+- [ ] **Multi-Language TTS:** Dynamische Sprachwahl basierend auf Chat-Content
+- [ ] **Voice Cloning:** Integration von Custom-Voice-Training
+- [ ] **Advanced VAD:** ML-basierte Voice Activity Detection als Alternative
+- [ ] **Load Balancer:** Horizontal Skalierung für hohe Session-Counts
+
+#### 9.2.3. Langfristig (Q3+ 2025)
+- [ ] **Real-time Translation:** Live-Übersetzung während der Konversation
+- [ ] **Emotion Detection:** Sentiment-Analysis für emotionale TTS-Anpassung
+- [ ] **Multi-Modal Input:** Integration von Visual/Gesture Input zusätzlich zu Audio
+- [ ] **Edge Computing:** Lokale STT/TTS-Processing für Latenz-kritische Anwendungen
+
+### 9.3. Regression-Prävention
+
+#### 9.3.1. Automatisierte Tests
+**Erforderlich für jede Änderung:**
+- [ ] WebSocket-Message-Format-Validierung
+- [ ] Token-Streaming-Vollständigkeit
+- [ ] TTS-Chunk-Ordering
+- [ ] Latenz-Metriken-Genauigkeit
+- [ ] Frontend-Module-Initialisierung
+
+#### 9.3.2. Code Review Checklist
+**Vor jedem Merge prüfen:**
+- [ ] Payload-Struktur konsistent (keine Doppel-Serialisierung)
+- [ ] Event-Handler-Signaturen korrekt
+- [ ] Resource-Cleanup implementiert
+- [ ] Debug-Logging strukturiert
+- [ ] Dependency-Injection-Zyklen vermieden
+
+#### 9.3.3. Performance Benchmarks
+**Kontinuierliche Überwachung:**
+- [ ] End-to-End Latenz < 2 Sekunden
+- [ ] Memory-Usage < 100MB pro Session
+- [ ] CPU-Usage < 50% bei 10 gleichzeitigen Sessions
+- [ ] WebSocket-Connection-Stabilität > 99.5%
+
+### 9.4. Migrationshilfen
+
+#### 9.4.1. Legacy-Code-Migration
+Für Entwickler, die von der alten monolithischen Architektur migrieren:
+
+```csharp
+// ALT: Monolithischer WebSocketAudioService
+public class WebSocketAudioService {
+    // Alles in einer Klasse
+}
+
+// NEU: Modulare Architektur
+public class WebSocketHandler {
+    // Nur WebSocket-Management
+}
+public class AudioFrameProcessor {
+    // Nur Frame-Processing
+}
+public class AudioSegmentProcessor {
+    // Nur Segment-Processing
+}
+```
+
+#### 9.4.2. Frontend-Migration
+```javascript
+// ALT: Monolithisches audio-system.js
+// NEU: Modulare Struktur
+import * as ttsPlayback from './tts-playback.js';
+import * as webSocketHandler from './websocket-handler.js';
+// etc.
+```
+
+### 9.5. Troubleshooting Guide
+
+#### 9.5.1. Häufige Probleme
+
+**Problem:** Audio-Input funktioniert nicht
+```javascript
+// Debug-Schritte:
+1. Mikrofon-Berechtigung prüfen: navigator.permissions.query({name: 'microphone'})
+2. AudioContext-State prüfen: audioContext.state
+3. MediaStream-Tracks prüfen: stream.getAudioTracks()[0].enabled
+4. AudioWorklet-Status prüfen: workletNode.port.postMessage({type: 'ping'})
+```
+
+**Problem:** TTS-Audio fragmentiert
+```javascript
+// Debug-Schritte:
+1. Chunk-Reihenfolge prüfen: console.log('Expected:', nextExpectedIndex, 'Got:', chunkIndex)
+2. Queue-Status prüfen: console.log('Queue length:', chunkQueue.length)
+3. Audio-Decoder-Fehler prüfen: audioContext.decodeAudioData().catch(console.error)
+```
+
+**Problem:** WebSocket-Verbindung instabil
+```csharp
+// Debug-Schritte:
+1. Server-Logs prüfen: Serilog Debug-Level aktivieren
+2. Connection-State tracken: WebSocket.State logging
+3. Heartbeat implementieren: Ping/Pong-Messages
+```
+
+#### 9.5.2. Performance-Profiling
+
+**Frontend:**
+```javascript
+// Performance-Monitoring aktivieren
+performance.mark('audio-processing-start');
+// ... Audio-Processing ...
+performance.mark('audio-processing-end');
+performance.measure('audio-processing', 'audio-processing-start', 'audio-processing-end');
+```
+
+**Backend:**
+```csharp
+// Latenz-Tracking
+var stopwatch = Stopwatch.StartNew();
+// ... Processing ...
+var latency = stopwatch.ElapsedMilliseconds;
+_logger.LogInformation("Processing completed in {Latency}ms", latency);
+```
+
+### 9.6. Beitrag zur Codebasis
+
+#### 9.6.1. Development Setup
+```bash
+# Backend
+dotnet restore
+dotnet build
+dotnet test
+
+# Frontend (optional, für erweiterte Tests)
+npm install
+npm run test
+```
+
+#### 9.6.2. Pull Request Guidelines
+1. **Tests:** Alle neuen Features müssen getestet werden
+2. **Documentation:** README-Updates für API-Änderungen
+3. **Performance:** Keine Performance-Regression ohne Begründung
+4. **Breaking Changes:** Ausführliche Migration-Dokumentation erforderlich
+
+Diese umfassende Dokumentation soll als lebende Referenz dienen und kontinuierlich mit der Weiterentwicklung der Anwendung aktualisiert werden.
+
+## 8. WebSocket-Protokoll-Spezifikation
+
+### 8.1. Verbindungsaufbau
+
+Der WebSocket-Endpunkt ist unter `/ws/audio` verfügbar. Die Verbindung wird automatisch akzeptiert, wenn `PipelineOptions.UseLegacyHttp` auf `false` gesetzt ist.
+
+### 8.2. Message-Typen (Client → Server)
+
+#### 8.2.1. Audio-Frames (Binärdaten)
+- **Format:** PCM, 16-bit, 16kHz, Mono
+- **Chunk-Größe:** 20ms (320 Samples)
+- **Übertragung:** WebSocket Binary Message
+- **Frequenz:** ~50 Nachrichten/Sekunde
+
+#### 8.2.2. Kontroll-Nachrichten (JSON)
+
+**VAD-Einstellungen aktualisieren:**
+```json
+{
+  "type": "updateVadSettings",
+  "payload": {
+    "operatingMode": "Auto",
+    "manualThreshold": 0.02,
+    "prerollBufferSizeMs": 300,
+    "preSpeechPaddingMs": 300,
+    "hangOverMs": 1000,
+    "minSegmentDurationSec": 0.5,
+    "maxSegmentDurationSec": 30.0,
+    "enableSpikeDetection": true,
+    "spikeThreshold": 0.15,
+    "enableNoiseFloorAdaptation": true,
+    "adaptationRate": 0.1
+  }
+}
+```
+
+**Pipeline-Optionen aktualisieren:**
+```json
+{
+  "type": "updatePipelineOptions",
+  "payload": {
+    "language": "de",
+    "chatModel": "gpt-4o-mini",
+    "ttsVoice": "nova",
+    "disableVad": false,
+    "disableTts": false,
+    "disableProgressiveTts": false,
+    "disableStreamingChat": false,
+    "useLegacyHttp": false
+  }
+}
+```
+
+### 8.3. Message-Typen (Server → Client)
+
+#### 8.3.1. Textuelle Nachrichten (JSON)
+
+**Transkription bereit:**
+```json
+{
+  "type": "prompt",
+  "payload": "Hallo, wie geht es dir?"
+}
+```
+
+**Token-Streaming (Chat-Antwort):**
+```json
+{
+  "type": "token",
+  "payload": "Hallo"
+}
+```
+
+**Audio-Chunk-Metadaten:**
+```json
+{
+  "type": "audio-chunk-info",
+  "payload": {
+    "index": 0
+  }
+}
+```
+
+**Verarbeitung abgeschlossen:**
+```json
+{
+  "type": "done",
+  "payload": {
+    "textLatency": 1234,
+    "audioLatency": 2345,
+    "total": 3579
+  }
+}
+```
+
+**Fehlermeldung:**
+```json
+{
+  "type": "error",
+  "payload": {
+    "message": "API-Fehler: Rate limit exceeded",
+    "code": "RATE_LIMIT"
+  }
+}
+```
+
+**Einstellungen bestätigt:**
+```json
+{
+  "type": "vadSettingsUpdated",
+  "payload": { /* aktuelle VAD-Einstellungen */ }
+}
+```
+
+```json
+{
+  "type": "pipelineOptionsUpdated",
+  "payload": { /* aktuelle Pipeline-Optionen */ }
+}
+```
+
+#### 8.3.2. Audio-Chunks (Binärdaten)
+
+- **Format:** MP3-kodierte Audio-Segmente
+- **Übertragung:** WebSocket Binary Message
+- **Reihenfolge:** Sequenziell, mit vorangehender `audio-chunk-info`
+- **Timing:** Streaming-basiert, sobald TTS-Chunks verfügbar sind
+
+### 8.4. Protokoll-Fluss
+
+#### 8.4.1. Typischer Konversations-Ablauf
+
+```
+1. Client sendet Audio-Frame (Binary)
+2. Client sendet Audio-Frame (Binary)
+...
+[VAD erkennt Ende des Sprachsegments]
+3. Server sendet "prompt" (JSON)
+4. Server sendet "token" (JSON) [mehrfach]
+5. Server sendet "audio-chunk-info" (JSON)
+6. Server sendet Audio-Chunk (Binary)
+7. Server sendet "audio-chunk-info" (JSON)
+8. Server sendet Audio-Chunk (Binary)
+...
+9. Server sendet "done" (JSON)
+```
+
+#### 8.4.2. Einstellungen-Update-Fluss
+
+```
+1. Client sendet "updateVadSettings" (JSON)
+2. Server sendet "vadSettingsUpdated" (JSON)
+oder
+2. Server sendet "error" (JSON) [bei ungültigen Werten]
+```
+
+### 8.5. Fehlerbehandlung
+
+#### 8.5.1. Verbindungsabbruch
+- **Client:** Automatische Reconnection mit exponential backoff
+- **Server:** Graceful shutdown mit CloseStatus logging
+
+#### 8.5.2. Ungültige Nachrichten
+- **Unbekannte JSON-Typen:** Ignoriert, geloggt
+- **Malformed JSON:** Connection wird geschlossen
+- **Ungültige Einstellungen:** Error-Response gesendet
+
+#### 8.5.3. API-Fehler
+- **OpenAI-Errors:** Als "error"-Message weitergeleitet
+- **Timeout:** Connection wird geschlossen mit entsprechendem CloseStatus
+
+### 8.6. Performance-Optimierungen
+
+#### 8.6.1. Buffering
+- **Audio-Input:** 20ms-Chunks für konsistente Verarbeitung
+- **TTS-Output:** Progressive Chunks für niedrige Latenz
+
+#### 8.6.2. Compression
+- **JSON-Messages:** Minified, keine Whitespace
+- **Audio-Data:** MP3-Kompression für TTS-Output
+
+#### 8.6.3. Connection Management
+- **Keep-Alive:** Automatische Ping/Pong-Nachrichten
+- **Resource Cleanup:** Explizite Bereinigung bei Verbindungsende
+
+### 8.7. Debugging und Monitoring
+
+#### 8.7.1. Client-Side Logging
+```javascript
+// Debug-Modus aktivieren
+localStorage.setItem('debugMode', 'true');
+// oder URL-Parameter: ?debug=true
+```
+
+#### 8.7.2. Server-Side Logging
+- **Verbindungen:** Session-IDs für Tracking
+- **Performance:** Latenz-Metriken für jeden Request
+- **Fehler:** Detaillierte Exception-Logs mit Stack Traces
+
+#### 8.7.3. Message-Flow Debugging
+- **Sequenz:** Jede Nachricht wird mit Timestamp geloggt
+- **Payload:** Strukturierte Logs für JSON-Inhalte
+- **Binary Data:** Größe und Typ-Information

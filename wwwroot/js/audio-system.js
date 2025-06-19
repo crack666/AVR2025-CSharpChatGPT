@@ -407,7 +407,7 @@ async function handleWebSocketMessage(event) {
                         window.uiManager.createBotMessage(responseText, botDetails.model, botDetails.voice);
                     }
                     break;                case 'token':
-                    audioUtils.debugLog(`[WebSocket] Received token: "${message.payload.token}"`);
+                    audioUtils.traceLog(`[WebSocket] Received token: "${message.payload.token}"`);
                     
                     // On first token of a new response, create bot message (like MASTER version)
                     if (!window.uiManager.currentBotMessageDiv) {
@@ -430,7 +430,7 @@ async function handleWebSocketMessage(event) {
                     
                     // Update speaking state based on token stream
                     isTTSSpeaking = true; 
-                    break;                case 'done':
+                    break;case 'done':
                     audioUtils.debugLog('Server signaled end of response.', message.payload);
                     if (window.uiManager?.finalizeBotMessage) {
                         // After backend fix, performance metrics should be directly in payload

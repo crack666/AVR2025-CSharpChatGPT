@@ -1,5 +1,6 @@
 // Import functions from audio-system.js
 import { startRecording, stopRecording, restartAudioSystemAndClearState, stopAllAudioPlayback } from './audio-system.js';
+import { traceLog, debugLog } from './audio-utils.js';
 
 // UI Manager
 const uiManager = {
@@ -345,16 +346,18 @@ const uiManager = {
         const percentage = Math.min(100, (rmsValue * 700)); // Adjusted multiplier for sensitivity
         currentAudioLevel.style.width = percentage + '%';
         currentAudioValue.textContent = rmsValue.toFixed(4);
-    }
-  },
+    }  },
 
   // Functions for handling messages, tokens, latency - called by audio-system.js
   // These should largely remain the same as they are UI manipulation logic.
   // Ensure currentBotMessageElement is handled correctly if it was a window global.
   // Let's assume currentBotMessageElement is a property of uiManager if it needs to persist across calls.
   // currentBotMessageElement: null, // Add to uiManager properties if needed
+  
   appendTokenToBotMessage: function(token) {
-    console.log(`[UI-MGR] Appending token: "${token}", currentBotMessageDiv exists: ${!!this.currentBotMessageDiv}`);
+    // Using traceLog for verbose token-level logging
+    traceLog(`[UI-MGR] Appending token: "${token}", currentBotMessageDiv exists: ${!!this.currentBotMessageDiv}`);
+    
     if (!this.currentBotMessageDiv) {
         console.warn('[UI-MGR] No current bot message div, creating one');
         // Model and voice might need to be passed or retrieved from optimizationManager/global state
@@ -366,28 +369,30 @@ const uiManager = {
     if (contentElement) {
         const oldText = contentElement.textContent;
         contentElement.textContent += token;
-        console.log(`[UI-MGR] Token appended. Old: "${oldText}", New: "${contentElement.textContent}"`);
-        this.scrollToBottom();
-    } else {
+        // Using traceLog for verbose token-level logging
+        traceLog(`[UI-MGR] Token appended. Old: "${oldText}", New: "${contentElement.textContent}"`);
+        this.scrollToBottom();    } else {
         console.error('[UI-MGR] Could not find message-content element in currentBotMessageDiv');
     }
-  },  // Call this when the LLM reply is complete (e.g., on 'llm_reply' or 'done' event from WebSocket)
+  },
+  
+  // Call this when the LLM reply is complete (e.g., on 'llm_reply' or 'done' event from WebSocket)
   finalizeBotMessage: function(fullText, performanceMetrics) {
-    console.log("[UI-MGR] finalizeBotMessage called with:", {fullText, performanceMetrics});
-    console.log("[UI-MGR] currentBotMessageDiv exists:", !!this.currentBotMessageDiv);
+    debugLog("[UI-MGR] finalizeBotMessage called with:", {fullText, performanceMetrics});
+    debugLog("[UI-MGR] currentBotMessageDiv exists:", !!this.currentBotMessageDiv);
     
     if (this.currentBotMessageDiv) {
         if (fullText) { // If full text is provided, update it
              const contentElement = this.currentBotMessageDiv.querySelector('.message-content');
              if (contentElement) {
-               console.log("[UI-MGR] Updating full text from:", contentElement.textContent, "to:", fullText);
+               debugLog("[UI-MGR] Updating full text from:", contentElement.textContent, "to:", fullText);
                contentElement.textContent = fullText;
              }
         }
         
         // Update latency information if performance metrics are provided
         if (performanceMetrics) {
-            console.log("[UI-MGR] Updating latency info with metrics:", performanceMetrics);
+            debugLog("[UI-MGR] Updating latency info with metrics:", performanceMetrics);
             this.updateLatencyInfo(this.currentBotMessageDiv, performanceMetrics);
         } else {
             console.warn("[UI-MGR] No performance metrics provided to finalizeBotMessage");
@@ -397,10 +402,9 @@ const uiManager = {
     }
     this.currentBotMessageDiv = null; // Reset for the next message
     this.scrollToBottom();
-  },
-  // Helper function to update latency information in a message
+  },  // Helper function to update latency information in a message
   updateLatencyInfo: function(messageDiv, metrics) {
-    console.log("[UI-MGR] updateLatencyInfo called with metrics:", metrics);
+    debugLog("[UI-MGR] updateLatencyInfo called with metrics:", metrics);
     if (!messageDiv || !metrics) {
       console.warn("[UI-MGR] updateLatencyInfo: missing messageDiv or metrics");
       return;
@@ -417,7 +421,7 @@ const uiManager = {
     const audioLatency = metrics.tts_latency_ms || metrics.audio_latency_ms || metrics.llm_latency_ms || 'N/A';
     const totalLatency = metrics.total_latency_ms || 'N/A';
     
-    console.log("[UI-MGR] Extracted latencies - text:", textLatency, "audio:", audioLatency, "total:", totalLatency);
+    debugLog("[UI-MGR] Extracted latencies - text:", textLatency, "audio:", audioLatency, "total:", totalLatency);
     
     // Update the latency display
     latencyElement.innerHTML = 
@@ -426,7 +430,7 @@ const uiManager = {
       `<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">${audioLatency}ms</span> | ` +
       `<span class="latency-total-label">Total:</span> <span class="latency-total-value">${totalLatency}ms</span>`;
     
-    console.log("[UI-MGR] Latency display updated:", latencyElement.innerHTML);
+    debugLog("[UI-MGR] Latency display updated:", latencyElement.innerHTML);
   },
 
   // Original updateBotMessage might be for non-streaming updates or final updates.
