@@ -425,7 +425,12 @@ async function handleWebSocketMessage(event) {
                     webSocketHandler.sendWebSocketMessage({ type: 'pong', timestamp: message.timestamp }); // Use module
                     break;                case 'audio-chunk-info':
                     audioUtils.debugLog(`[WebSocket] Received audio-chunk-info with index: ${message.index}`);
-                    audioUtils.setLastKnownAudioChunkInfoIndex(message.index); // Use util function
+                    // Handle undefined index from server
+                    if (message.index !== undefined && message.index !== null && !isNaN(message.index)) {
+                        audioUtils.setLastKnownAudioChunkInfoIndex(message.index);
+                    } else {
+                        audioUtils.warnLog(`[WebSocket] Received invalid audio-chunk-info index: ${message.index}, ignoring.`);
+                    }
                     break;
                 case 'tts-all-chunks-sent':
                     audioUtils.debugLog('Server signaled all TTS audio chunks have been sent.');
@@ -457,11 +462,10 @@ async function handleWebSocketMessage(event) {
         if (!audioContextRef) {
             console.error("AudioContext not available for decoding TTS chunk.");
             return;
-        }
-        try {
+        }        try {
             const audioBuffer = await audioContextRef.decodeAudioData(audioData);
             const currentChunkIndex = audioUtils.getLastKnownAudioChunkInfoIndex(); // Use util function
-
+            
             if (currentChunkIndex === -1) {
                 console.warn("Received an audio chunk without a preceding valid info message/index. Using fallback index.");
                 // Use a fallback strategy: assign next available index
@@ -474,7 +478,7 @@ async function handleWebSocketMessage(event) {
                 audioUtils.resetLastKnownAudioChunkInfoIndex(); // Use util function
             }
             
-            ttsPlayback.ttsPlayLoop();
+            // ttsPlayLoop is now automatically called by addTTSAudioChunk
         } catch (error) {
             console.error('Error decoding audio data:', error);
         }

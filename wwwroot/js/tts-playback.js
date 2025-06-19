@@ -69,8 +69,7 @@ export function scheduleTTSChunk() {
             if (bot && bot.audioSources) {
                 const indexInBot = bot.audioSources.indexOf(src);
                 if (indexInBot > -1) bot.audioSources.splice(indexInBot, 1);
-            }
-
+            }            // Continue playing next chunks
             ttsPlayLoop(); 
 
             if (currentAllAudioChunksReceived && indexedAudioChunks.size === 0 && !currentIsCurrentlyPlayingTTS) {
@@ -87,9 +86,25 @@ export function ttsPlayLoop() {
         currentIsTTSLoopActive = true;
         debugLogFunc('TTS PlayLoop started.');
     }
-    if (currentIsCurrentlyPlayingTTS) return;
+    
+    // If already playing, wait for current chunk to finish
+    if (currentIsCurrentlyPlayingTTS) {
+        debugLogFunc(`TTS PlayLoop: Already playing chunk, waiting...`);
+        return;
+    }
+    
+    // Try to play the next expected chunk
     if (indexedAudioChunks.has(nextPlaybackIndex)) {
+        debugLogFunc(`TTS PlayLoop: Found chunk #${nextPlaybackIndex}, scheduling playback.`);
         scheduleTTSChunk();
+    } else {
+        // Log what chunks we have available
+        const availableChunks = Array.from(indexedAudioChunks.keys()).sort((a, b) => a - b);
+        if (availableChunks.length > 0) {
+            debugLogFunc(`TTS PlayLoop: Waiting for chunk #${nextPlaybackIndex}, available: [${availableChunks.join(', ')}]`);
+        } else {
+            debugLogFunc(`TTS PlayLoop: No chunks available, waiting for chunk #${nextPlaybackIndex}.`);
+        }
     }
 }
 
@@ -110,6 +125,9 @@ export function addTTSAudioChunk(index, buffer) {
         lastReceivedAudioChunkIndex = index;
     }
     debugLogFunc(`[TTS] Added audio chunk #${index}, buffer size: ${indexedAudioChunks.size}`);
+    
+    // Trigger playloop in case this chunk is what we were waiting for
+    ttsPlayLoop();
 }
 
 export function signalAllTTSAudioChunksReceived() {
@@ -137,13 +155,7 @@ export function getIndexedAudioChunks() {
 }
 
 export function getNextExpectedIndex() {
-    // Return the next expected chunk index based on what we have received
-    // Find the highest index we have and add 1, or use lastReceivedAudioChunkIndex + 1
-    if (indexedAudioChunks.size === 0) {
-        return lastReceivedAudioChunkIndex + 1;
-    }
-    
-    const existingIndices = Array.from(indexedAudioChunks.keys());
-    const highestIndex = Math.max(...existingIndices, lastReceivedAudioChunkIndex);
-    return highestIndex + 1;
+    // Return the next expected chunk index for fallback scenarios
+    // Always use lastReceivedAudioChunkIndex + 1 to ensure sequentiality
+    return lastReceivedAudioChunkIndex + 1;
 }
