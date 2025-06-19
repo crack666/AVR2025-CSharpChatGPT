@@ -109,6 +109,7 @@ export function addTTSAudioChunk(index, buffer) {
     if (index > lastReceivedAudioChunkIndex) {
         lastReceivedAudioChunkIndex = index;
     }
+    debugLogFunc(`[TTS] Added audio chunk #${index}, buffer size: ${indexedAudioChunks.size}`);
 }
 
 export function signalAllTTSAudioChunksReceived() {
@@ -133,4 +134,16 @@ export function isTtsCurrentlyPlaying() {
 
 export function getIndexedAudioChunks() {
     return indexedAudioChunks;
+}
+
+export function getNextExpectedIndex() {
+    // Return the next expected chunk index based on what we have received
+    // Find the highest index we have and add 1, or use lastReceivedAudioChunkIndex + 1
+    if (indexedAudioChunks.size === 0) {
+        return lastReceivedAudioChunkIndex + 1;
+    }
+    
+    const existingIndices = Array.from(indexedAudioChunks.keys());
+    const highestIndex = Math.max(...existingIndices, lastReceivedAudioChunkIndex);
+    return highestIndex + 1;
 }

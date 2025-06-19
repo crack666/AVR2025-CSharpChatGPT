@@ -381,10 +381,20 @@ async function handleWebSocketMessage(event) {
                     if (window.uiManager && typeof window.uiManager.updateBotStatusIndicator === 'function') {
                         window.uiManager.updateBotStatusIndicator(message.payload.is_thinking, message.payload.is_speaking, message.payload.is_processing);
                     }
-                    break;
-                case 'prompt':
+                    break;                case 'prompt':
                     if (window.uiManager && typeof window.uiManager.addUserMessage === 'function') {
                         window.uiManager.addUserMessage(message.payload.text);
+                    }
+                    if (window.uiManager && typeof window.uiManager.addBotMessage === 'function') {
+                        window.uiManager.addBotMessage('', botDetails.model, botDetails.voice);
+                    }
+                    break;
+                case 'transcription':
+                    audioUtils.debugLog('Server sent transcription:', message.payload);
+                    if (window.uiManager && typeof window.uiManager.addUserMessage === 'function') {
+                        // Handle transcription message - extract text from payload
+                        const transcriptionText = message.payload?.text || message.payload;
+                        window.uiManager.addUserMessage(transcriptionText);
                     }
                     if (window.uiManager && typeof window.uiManager.addBotMessage === 'function') {
                         window.uiManager.addBotMessage('', botDetails.model, botDetails.voice);
@@ -413,8 +423,8 @@ async function handleWebSocketMessage(event) {
                     break;
                 case 'ping':
                     webSocketHandler.sendWebSocketMessage({ type: 'pong', timestamp: message.timestamp }); // Use module
-                    break;
-                case 'audio-chunk-info':
+                    break;                case 'audio-chunk-info':
+                    audioUtils.debugLog(`[WebSocket] Received audio-chunk-info with index: ${message.index}`);
                     audioUtils.setLastKnownAudioChunkInfoIndex(message.index); // Use util function
                     break;
                 case 'tts-all-chunks-sent':
@@ -440,8 +450,8 @@ async function handleWebSocketMessage(event) {
             }
         } catch (e) {
             console.error("Error parsing JSON from server or handling message:", e, event.data);
-        }
-    } else if (event.data instanceof Blob) {
+        }    } else if (event.data instanceof Blob) {
+        audioUtils.debugLog(`[WebSocket] Received audio blob, size: ${event.data.size} bytes`);
         const audioData = await event.data.arrayBuffer();
         const audioContextRef = audioContextManager.getAudioContext();
         if (!audioContextRef) {
@@ -453,14 +463,18 @@ async function handleWebSocketMessage(event) {
             const currentChunkIndex = audioUtils.getLastKnownAudioChunkInfoIndex(); // Use util function
 
             if (currentChunkIndex === -1) {
-                console.warn("Received an audio chunk without a preceding valid info message/index. Discarding.");
-                return;
+                console.warn("Received an audio chunk without a preceding valid info message/index. Using fallback index.");
+                // Use a fallback strategy: assign next available index
+                const fallbackIndex = ttsPlayback.getNextExpectedIndex();
+                ttsPlayback.addTTSAudioChunk(fallbackIndex, audioBuffer);
+                audioUtils.debugLog(`Received and decoded TTS audio chunk #${fallbackIndex} (fallback), duration=${audioBuffer.duration.toFixed(2)}s. Total buffered: ${ttsPlayback.getIndexedAudioChunks().size}`);
+            } else {
+                ttsPlayback.addTTSAudioChunk(currentChunkIndex, audioBuffer);
+                audioUtils.debugLog(`Received and decoded TTS audio chunk #${currentChunkIndex}, duration=${audioBuffer.duration.toFixed(2)}s. Total buffered: ${ttsPlayback.getIndexedAudioChunks().size}`);
+                audioUtils.resetLastKnownAudioChunkInfoIndex(); // Use util function
             }
-
-            ttsPlayback.addTTSAudioChunk(currentChunkIndex, audioBuffer);
-            audioUtils.debugLog(`Received and decoded TTS audio chunk #${currentChunkIndex}, duration=${audioBuffer.duration.toFixed(2)}s. Total buffered: ${ttsPlayback.getIndexedAudioChunks().size}`);
+            
             ttsPlayback.ttsPlayLoop();
-            audioUtils.resetLastKnownAudioChunkInfoIndex(); // Use util function
         } catch (error) {
             console.error('Error decoding audio data:', error);
         }
