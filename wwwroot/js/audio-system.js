@@ -382,12 +382,17 @@ async function handleWebSocketMessage(event) {
                         window.uiManager.updateBotStatusIndicator(message.payload.is_thinking, message.payload.is_speaking, message.payload.is_processing);
                     }
                     break;                case 'prompt':
+                    // NOTE: This event is not actually sent by the current backend
+                    // Keeping for legacy compatibility in case it gets implemented
                     if (window.uiManager && typeof window.uiManager.createUserMessage === 'function') {
                         window.uiManager.createUserMessage(message.payload.text);
                     }
-                    // Don't create bot message here - let the first token create it
-                    audioUtils.debugLog('[WebSocket] Prompt processed, waiting for first token to create bot message');
+                    audioUtils.debugLog('[WebSocket] Legacy prompt event processed (not sent by current backend)');
                     break;                case 'transcription':
+                    // Reset TTS playback state for new conversation round - this is the ONLY place we do this!
+                    // Backend sends 'transcription' event after speech recognition completes and before LLM processing starts
+                    ttsPlayback.resetTTSPlaybackState();
+                    
                     audioUtils.debugLog('Server sent transcription:', message.payload);
                     if (window.uiManager && typeof window.uiManager.createUserMessage === 'function') {
                         // Handle transcription message - extract text from payload
@@ -395,7 +400,7 @@ async function handleWebSocketMessage(event) {
                         window.uiManager.createUserMessage(transcriptionText);
                     }
                     // Don't create bot message here - let the first token create it
-                    audioUtils.debugLog('[WebSocket] Transcription processed, waiting for first token to create bot message');
+                    audioUtils.debugLog('[WebSocket] Transcription processed, TTS state reset, waiting for first token to create bot message');
                     break;
                 case 'response':
                 case 'reply':
@@ -412,6 +417,7 @@ async function handleWebSocketMessage(event) {
                     // On first token of a new response, create bot message (like MASTER version)
                     if (!window.uiManager.currentBotMessageDiv) {
                         audioUtils.debugLog('[WebSocket] First token received, creating bot message');
+                        
                         const botDetails = webSocketHandler.getCurrentBotDetails();
                         if (window.uiManager?.createBotMessage) {
                             window.uiManager.createBotMessage('', botDetails.model, botDetails.voice);
@@ -430,7 +436,8 @@ async function handleWebSocketMessage(event) {
                     
                     // Update speaking state based on token stream
                     isTTSSpeaking = true; 
-                    break;case 'done':
+                    break;
+                    case 'done':
                     audioUtils.debugLog('Server signaled end of response.', message.payload);
                     if (window.uiManager?.finalizeBotMessage) {
                         // After backend fix, performance metrics should be directly in payload

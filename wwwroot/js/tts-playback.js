@@ -109,7 +109,7 @@ export function ttsPlayLoop() {
 }
 
 export function resetTTSPlaybackState() {
-    debugLogFunc('Resetting TTS playback state.');
+    debugLogFunc('Resetting TTS playback state for new conversation round.');
     indexedAudioChunks.clear();
     nextPlaybackIndex = 0;
     currentIsCurrentlyPlayingTTS = false;
