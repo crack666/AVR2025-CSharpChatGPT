@@ -181,37 +181,35 @@ namespace VoiceAssistant.Plugins.OpenAI
 
         /// <summary>
         /// Splits text into chunks based on sentence boundaries.
-        /// Uses a regex pattern to identify sentence endings and ensures words are never split.
+        /// Uses a robust regex pattern to identify sentence endings while avoiding common false positives.
         /// </summary>
         /// <param name="input">The text to split into chunks</param>
         /// <returns>A list of text chunks at sentence boundaries</returns>
         private List<string> SplitTextIntoSentenceChunks(string input)
         {
             var chunks = new List<string>();
+
             if (string.IsNullOrWhiteSpace(input)) return chunks;
 
             LogDebug($"Splitting text into sentence chunks: {input.Length} characters");
 
-            // Regex to split by sentences, keeping punctuation.
-            // This pattern tries to identify sentence endings (. ! ?) followed by space or end of string.
-            // It also handles cases like "Mr. Smith" or "e.g." by not splitting after a period followed by a lowercase letter.
-            // It's not perfect but aims to be better than simple character splits.
-            // Consider refining this regex further based on observed edge cases.
-            // Example: @"(?<!\\w\\.\\w.)(?<![A-Z][a-z]\\.)(?<=\\.|\\?|!)\\s"
-            // A simpler version that might work well enough:
-            var sentencePattern = new Regex(
-                 // Splits after a sentence-ending punctuation mark (. ! ?) that is followed by a space or is at the end of the string.
-                 // It tries to avoid splitting in the middle of abbreviations like "U.S.A." by looking ahead for spaces.
-                 @"(?<=[.!?])(\\s+|$)(?<!\\s[A-Z]\\.)", // Simpler, might need refinement
-                 RegexOptions.Singleline | RegexOptions.IgnoreCase
-            );
+            // Improved sentence splitting regex that handles German and English edge cases:
+            // 1. Avoids splitting on common abbreviations like "z.B.", "u.a.", "Dr.", "Mr.", etc.
+            // 2. Avoids splitting on ordinal numbers like "20. November", "1. Klasse"
+            // 3. Avoids splitting on decimal numbers like "3.14", "19.99"
+            // 4. Only splits after sentence-ending punctuation (. ! ?) when followed by whitespace and capital letter or at end
 
-            // More robust sentence splitting:
-            // This regex splits after '.', '!', '?' when followed by whitespace or end of string.
-            // It includes lookbehinds to avoid splitting on abbreviations (e.g., "Mr.", "Mrs.", "Dr.") or initials.
-            // It also tries to handle quoted sentences.
-            // This is a complex area, and perfect splitting is hard.
-            string[] splitSentences = Regex.Split(input, @"(?<=[.!?])\s+(?=[A-Z""'])|(?<=[.!?])$");
+            // Build the pattern step by step to avoid escaping issues
+            string pattern = @"(?<=[.!?])"; // Match after sentence ending punctuation
+            pattern += @"(?:\s+(?=[A-ZÄÖÜ])|$)"; // Followed by whitespace+capital or end of string
+            pattern += @"(?<!(?:\b(?:"; // Negative lookbehind - NOT preceded by abbreviations
+            pattern += @"z\.B|u\.a|d\.h|m\.E|z\.T|z\.Z|"; // German abbreviations part 1
+            pattern += @"ggf|evtl|etc|usw|vgl|bzw|"; // German abbreviations part 2
+            pattern += @"Dr|Prof|Hr|Fr|Mr|Mrs|Ms|"; // Titles
+            pattern += @"ca|inkl|exkl|max|min"; // Other abbreviations
+            pattern += @")\.)|(?:\b\d{1,2}\.)|(?:\d\.\d))"; // Close abbreviations, ordinal numbers, decimals
+
+            string[] splitSentences = Regex.Split(input, pattern, RegexOptions.IgnoreCase);
 
             foreach (string sentencePart in splitSentences)
             {

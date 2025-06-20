@@ -1,10 +1,10 @@
+using Microsoft.Extensions.Logging;
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Net.WebSockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using VoiceAssistant.Core.Interfaces;
 using VoiceAssistant.Core.Models;
 
@@ -16,7 +16,7 @@ namespace VoiceAssistant.Core.Services
         private readonly IRecognizer _recognizer;
         private readonly IChatService _chatService;
         private readonly ChatLogManager _chatLogManager;
-        private readonly ISynthesizer _synthesizer;        public event Func<string, string, Task> OnTranscriptionReady;
+        private readonly ISynthesizer _synthesizer; public event Func<string, string, Task> OnTranscriptionReady;
         public event Func<string, string, Task> OnTokenReady;
         public event Func<byte[], int, string, Task> OnAudioChunkReady;
         public event Func<string, string, Task> OnError;
@@ -38,7 +38,8 @@ namespace VoiceAssistant.Core.Services
             _chatService = chatService;
             _chatLogManager = chatLogManager;
             _synthesizer = synthesizer;
-        }        public async Task ProcessSegmentAsync(byte[] audioBytes, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings)
+        }
+        public async Task ProcessSegmentAsync(byte[] audioBytes, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings)
         {
             var segmentProcessingStopwatch = Stopwatch.StartNew();
             var latencyTracker = new LatencyTracker();
@@ -117,14 +118,14 @@ namespace VoiceAssistant.Core.Services
             string prompt = await _recognizer.RecognizeAsync(audioMemoryStream, language, "audio/wav", "segment.wav");
             _logger.LogInformation("Session {SessionId}: Transcription complete: '{Prompt}' (Length: {Length})", sessionId, prompt, prompt.Length);
             return prompt;
-        }        private async Task<string> HandleStreamingChatResponseAsync(string prompt, PipelineOptions pipelineOptions, string sessionId, 
+        }
+        private async Task<string> HandleStreamingChatResponseAsync(string prompt, PipelineOptions pipelineOptions, string sessionId,
             Stopwatch mainStopwatch, LatencyTracker latencyTracker)
         {
             var voice = pipelineOptions.TtsVoice;
             var accumulatedTextForTts = new StringBuilder();
             string fullReply = string.Empty;
             int ttsChunkIndex = 0;
-            var sentenceDelimiters = new char[] { '.', '!', '?' };
 
             await foreach (var (token, isFinalToken) in _chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
             {
@@ -132,7 +133,7 @@ namespace VoiceAssistant.Core.Services
                 {
                     accumulatedTextForTts.Append(token);
                     fullReply += token;
-                    
+
                     // Measure time to first token
                     if (!latencyTracker.FirstTokenSent)
                     {
@@ -140,11 +141,10 @@ namespace VoiceAssistant.Core.Services
                         latencyTracker.FirstTokenSent = true;
                         _logger.LogDebug("Session {SessionId}: First token sent at {TimeMs}ms", sessionId, latencyTracker.TimeToFirstTokenMs);
                     }
-                    
+
                     // Send token to frontend if token streaming is enabled
                     if (OnTokenReady != null) await OnTokenReady.Invoke(token, sessionId);
                 }
-
                 if (!pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
                 {
                     bool flushNow = false;
@@ -152,33 +152,42 @@ namespace VoiceAssistant.Core.Services
 
                     if (isFinalToken && accumulatedTextForTts.Length > 0)
                     {
+                        // Final token: flush everything remaining
                         textToSynthesize = accumulatedTextForTts.ToString();
                         accumulatedTextForTts.Clear();
                         flushNow = true;
                     }
-                    else if (accumulatedTextForTts.Length > 0)
+                    else if (accumulatedTextForTts.Length > 0 && !isFinalToken)
                     {
-                        int lastDelimiter = -1;
-                        if (!isFinalToken)
-                        {
-                             lastDelimiter = accumulatedTextForTts.ToString().LastIndexOfAny(sentenceDelimiters);
-                        }
-                        
-                        const int forceFlushLength = 150;
+                        // Progressive processing: check for sentence boundaries
+                        string currentText = accumulatedTextForTts.ToString();
+                        int safeSplitPosition = FindSafeSplitPosition(currentText);
 
-                        if (lastDelimiter != -1)
+                        if (safeSplitPosition != -1)
                         {
-                            textToSynthesize = accumulatedTextForTts.ToString().Substring(0, lastDelimiter + 1);
-                            accumulatedTextForTts.Remove(0, lastDelimiter + 1);
+                            // Found a safe sentence boundary
+                            textToSynthesize = currentText.Substring(0, safeSplitPosition + 1);
+                            accumulatedTextForTts.Remove(0, safeSplitPosition + 1);
                             flushNow = true;
+
+                            // Log the decision
+                            _logger.LogDebug("Session {SessionId}: TTS split at safe boundary, chunk: '{ChunkPreview}' (Length: {Length})",
+                                sessionId, textToSynthesize.Length > 50 ? textToSynthesize.Substring(0, 47) + "..." : textToSynthesize, textToSynthesize.Length);
                         }
-                        else if (accumulatedTextForTts.Length >= forceFlushLength && !isFinalToken)
+                        else if (currentText.Length > 200)
                         {
-                            textToSynthesize = accumulatedTextForTts.ToString();
+                            // Safety valve: if text gets too long without sentence boundary, flush anyway
+                            // This prevents memory issues with very long sentences
+                            textToSynthesize = currentText;
                             accumulatedTextForTts.Clear();
                             flushNow = true;
+
+                            _logger.LogWarning("Session {SessionId}: TTS force-flush due to length ({Length} chars), no sentence boundary found",
+                                sessionId, currentText.Length);
                         }
-                    }                    if (flushNow && !string.IsNullOrWhiteSpace(textToSynthesize))
+                        // Otherwise: continue accumulating until we find a proper sentence boundary
+                    }
+                    if (flushNow && !string.IsNullOrWhiteSpace(textToSynthesize))
                     {
                         _logger.LogDebug("Session {SessionId}: TTS (Progressive) - Sending segment (Length {Length}): \"{SegmentText}\"", sessionId, textToSynthesize.Length, textToSynthesize);
                         await _synthesizer.ChunkedSynthesisAsync(textToSynthesize, voice, async (audioBytesChunk) =>
@@ -192,7 +201,7 @@ namespace VoiceAssistant.Core.Services
                                     latencyTracker.FirstAudioChunkSent = true;
                                     _logger.LogDebug("Session {SessionId}: First audio chunk sent at {TimeMs}ms", sessionId, latencyTracker.TimeToFirstAudioChunkMs);
                                 }
-                                
+
                                 if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(audioBytesChunk, ttsChunkIndex, sessionId);
                                 ttsChunkIndex++;
                             }
@@ -200,7 +209,7 @@ namespace VoiceAssistant.Core.Services
                     }
                 }
             }
-              if (accumulatedTextForTts.Length > 0 && !pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
+            if (accumulatedTextForTts.Length > 0 && !pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
             {
                 string finalTextToSynthesize = accumulatedTextForTts.ToString();
                 _logger.LogWarning("Session {SessionId}: TTS (Progressive) - Flushing remaining text after loop (Length {Length}): \"{SegmentText}\".", sessionId, finalTextToSynthesize.Length, finalTextToSynthesize);
@@ -215,7 +224,7 @@ namespace VoiceAssistant.Core.Services
                             latencyTracker.FirstAudioChunkSent = true;
                             _logger.LogDebug("Session {SessionId}: First audio chunk sent at {TimeMs}ms (final flush)", sessionId, latencyTracker.TimeToFirstAudioChunkMs);
                         }
-                        
+
                         if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(audioBytesChunk, ttsChunkIndex, sessionId);
                         ttsChunkIndex++;
                     }
@@ -246,7 +255,8 @@ namespace VoiceAssistant.Core.Services
                 }
             }
             return reply;
-        }        private async void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, LatencyTracker latencyTracker, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
+        }
+        private async void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, LatencyTracker latencyTracker, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
         {
             var performanceMetrics = new
             {
@@ -285,8 +295,57 @@ namespace VoiceAssistant.Core.Services
             writer.Write(blockAlign);
             writer.Write((short)BitsPerSample);
             writer.Write(Encoding.ASCII.GetBytes("data"));
-            writer.Write(dataLength);
-            return ms.ToArray();
+            writer.Write(dataLength); return ms.ToArray();
+        }        /// <summary>
+                 /// Finds the best position to split text for TTS, avoiding common false positives.
+                 /// Prefers longer, complete sentences to avoid tiny audio chunks.
+                 /// Returns -1 if no suitable split position is found.
+                 /// </summary>
+                 /// <param name="text">The text to find a split position in</param>
+                 /// <returns>Position of last character to include in the split (like LastIndexOfAny), or -1 if none found</returns>
+        private int FindSafeSplitPosition(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return -1;
+
+            // Build the same robust pattern as in ProgressiveTTSSynthesizer
+            string pattern = @"(?<=[.!?])"; // Match after sentence ending punctuation
+            pattern += @"(?:\s+(?=[A-ZÄÖÜ])|$)"; // Followed by whitespace+capital or end of string
+            pattern += @"(?<!(?:\b(?:"; // Negative lookbehind - NOT preceded by abbreviations
+            pattern += @"z\.B|u\.a|d\.h|m\.E|z\.T|z\.Z|"; // German abbreviations part 1
+            pattern += @"ggf|evtl|etc|usw|vgl|bzw|"; // German abbreviations part 2
+            pattern += @"Dr|Prof|Hr|Fr|Mr|Mrs|Ms|"; // Titles
+            pattern += @"ca|inkl|exkl|max|min"; // Other abbreviations
+            pattern += @")\.)|(?:\b\d{1,2}\.)|(?:\d\.\d))"; // Close abbreviations, ordinal numbers, decimals
+
+            var matches = Regex.Matches(text, pattern, RegexOptions.IgnoreCase);
+
+            if (matches.Count > 0)
+            {
+                // Find the best split position - prefer later matches for longer chunks
+                // But avoid splitting if the result would be too short
+                for (int i = matches.Count - 1; i >= 0; i--)
+                {
+                    var match = matches[i];
+                    // Find the punctuation character before this position
+                    for (int j = match.Index - 1; j >= 0; j--)
+                    {
+                        if (text[j] == '.' || text[j] == '!' || text[j] == '?')
+                        {
+                            // Check if this would create a reasonable chunk
+                            string potentialChunk = text.Substring(0, j + 1).Trim();
+
+                            // Prefer chunks that form complete thoughts (at least some minimum reasonable length)
+                            // But don't be too restrictive - let natural sentence boundaries guide us
+                            if (potentialChunk.Length >= 20) // Very conservative minimum for meaningful sentences
+                            {
+                                return j; // Return position of the punctuation mark
+                            }
+                        }
+                    }
+                }
+            }
+
+            return -1; // No suitable split position found
         }
 
         // Helper class for tracking first-response latencies
