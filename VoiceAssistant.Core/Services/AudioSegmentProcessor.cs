@@ -38,13 +38,11 @@ namespace VoiceAssistant.Core.Services
             _chatService = chatService;
             _chatLogManager = chatLogManager;
             _synthesizer = synthesizer;
-        }
-
-        public async Task ProcessSegmentAsync(byte[] audioBytes, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings)
+        }        public async Task ProcessSegmentAsync(byte[] audioBytes, string sessionId, PipelineOptions pipelineOptions, VadSettings vadSettings)
         {
             var segmentProcessingStopwatch = Stopwatch.StartNew();
+            var latencyTracker = new LatencyTracker();
             long transcriptionTimeMs = 0;
-            long llmTimeMs = 0;
             string reply = string.Empty;
 
             double durationSec = (double)audioBytes.Length / (SampleRate * Channels * BitsPerSample / 8);
@@ -78,22 +76,22 @@ namespace VoiceAssistant.Core.Services
                 _chatLogManager.AddMessage(ChatRole.User, prompt);
                 if (OnTranscriptionReady != null) await OnTranscriptionReady.Invoke(sessionId, prompt);
 
-                var llmProcessingStopwatch = Stopwatch.StartNew();
+                // Start LLM processing and measure first response times
                 if (!pipelineOptions.DisableTokenStreaming)
                 {
-                    reply = await HandleStreamingChatResponseAsync(prompt, pipelineOptions, sessionId);
+                    reply = await HandleStreamingChatResponseAsync(prompt, pipelineOptions, sessionId, segmentProcessingStopwatch, latencyTracker);
                 }
                 else
                 {
                     reply = await HandleNonStreamingChatResponseAsync(prompt, pipelineOptions, sessionId);
+                    // For non-streaming, consider the full response as "first token time"
+                    latencyTracker.TimeToFirstTokenMs = segmentProcessingStopwatch.ElapsedMilliseconds;
                 }
-                llmProcessingStopwatch.Stop();
-                llmTimeMs = llmProcessingStopwatch.ElapsedMilliseconds;
 
                 segmentProcessingStopwatch.Stop();
                 long totalProcessingTimeMs = segmentProcessingStopwatch.ElapsedMilliseconds;
 
-                LogAndSendFinalEvents(reply, transcriptionTimeMs, llmTimeMs, totalProcessingTimeMs, pipelineOptions, sessionId);
+                LogAndSendFinalEvents(reply, transcriptionTimeMs, latencyTracker, totalProcessingTimeMs, pipelineOptions, sessionId);
             }
             catch (Exception ex)
             {
@@ -119,20 +117,29 @@ namespace VoiceAssistant.Core.Services
             string prompt = await _recognizer.RecognizeAsync(audioMemoryStream, language, "audio/wav", "segment.wav");
             _logger.LogInformation("Session {SessionId}: Transcription complete: '{Prompt}' (Length: {Length})", sessionId, prompt, prompt.Length);
             return prompt;
-        }
-
-        private async Task<string> HandleStreamingChatResponseAsync(string prompt, PipelineOptions pipelineOptions, string sessionId)
+        }        private async Task<string> HandleStreamingChatResponseAsync(string prompt, PipelineOptions pipelineOptions, string sessionId, 
+            Stopwatch mainStopwatch, LatencyTracker latencyTracker)
         {
             var voice = pipelineOptions.TtsVoice;
             var accumulatedTextForTts = new StringBuilder();
             string fullReply = string.Empty;
             int ttsChunkIndex = 0;
-            var sentenceDelimiters = new char[] { '.', '!', '?' };            await foreach (var (token, isFinalToken) in _chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
+            var sentenceDelimiters = new char[] { '.', '!', '?' };
+
+            await foreach (var (token, isFinalToken) in _chatService.StreamResponseAsync(_chatLogManager.GetMessages(), pipelineOptions.ChatModel.ToString()))
             {
                 if (!string.IsNullOrEmpty(token))
                 {
                     accumulatedTextForTts.Append(token);
                     fullReply += token;
+                    
+                    // Measure time to first token
+                    if (!latencyTracker.FirstTokenSent)
+                    {
+                        latencyTracker.TimeToFirstTokenMs = mainStopwatch.ElapsedMilliseconds;
+                        latencyTracker.FirstTokenSent = true;
+                        _logger.LogDebug("Session {SessionId}: First token sent at {TimeMs}ms", sessionId, latencyTracker.TimeToFirstTokenMs);
+                    }
                     
                     // Send token to frontend if token streaming is enabled
                     if (OnTokenReady != null) await OnTokenReady.Invoke(token, sessionId);
@@ -171,15 +178,21 @@ namespace VoiceAssistant.Core.Services
                             accumulatedTextForTts.Clear();
                             flushNow = true;
                         }
-                    }
-
-                    if (flushNow && !string.IsNullOrWhiteSpace(textToSynthesize))
+                    }                    if (flushNow && !string.IsNullOrWhiteSpace(textToSynthesize))
                     {
                         _logger.LogDebug("Session {SessionId}: TTS (Progressive) - Sending segment (Length {Length}): \"{SegmentText}\"", sessionId, textToSynthesize.Length, textToSynthesize);
                         await _synthesizer.ChunkedSynthesisAsync(textToSynthesize, voice, async (audioBytesChunk) =>
                         {
                             if (audioBytesChunk != null && audioBytesChunk.Length > 0)
                             {
+                                // Measure time to first audio chunk
+                                if (!latencyTracker.FirstAudioChunkSent)
+                                {
+                                    latencyTracker.TimeToFirstAudioChunkMs = mainStopwatch.ElapsedMilliseconds;
+                                    latencyTracker.FirstAudioChunkSent = true;
+                                    _logger.LogDebug("Session {SessionId}: First audio chunk sent at {TimeMs}ms", sessionId, latencyTracker.TimeToFirstAudioChunkMs);
+                                }
+                                
                                 if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(audioBytesChunk, ttsChunkIndex, sessionId);
                                 ttsChunkIndex++;
                             }
@@ -187,8 +200,7 @@ namespace VoiceAssistant.Core.Services
                     }
                 }
             }
-            
-            if (accumulatedTextForTts.Length > 0 && !pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
+              if (accumulatedTextForTts.Length > 0 && !pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
             {
                 string finalTextToSynthesize = accumulatedTextForTts.ToString();
                 _logger.LogWarning("Session {SessionId}: TTS (Progressive) - Flushing remaining text after loop (Length {Length}): \"{SegmentText}\".", sessionId, finalTextToSynthesize.Length, finalTextToSynthesize);
@@ -196,6 +208,14 @@ namespace VoiceAssistant.Core.Services
                 {
                     if (audioBytesChunk != null && audioBytesChunk.Length > 0)
                     {
+                        // Measure time to first audio chunk (fallback for final flush)
+                        if (!latencyTracker.FirstAudioChunkSent)
+                        {
+                            latencyTracker.TimeToFirstAudioChunkMs = mainStopwatch.ElapsedMilliseconds;
+                            latencyTracker.FirstAudioChunkSent = true;
+                            _logger.LogDebug("Session {SessionId}: First audio chunk sent at {TimeMs}ms (final flush)", sessionId, latencyTracker.TimeToFirstAudioChunkMs);
+                        }
+                        
                         if (OnAudioChunkReady != null) await OnAudioChunkReady.Invoke(audioBytesChunk, ttsChunkIndex, sessionId);
                         ttsChunkIndex++;
                     }
@@ -226,12 +246,16 @@ namespace VoiceAssistant.Core.Services
                 }
             }
             return reply;
-        }        private async void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, long llmTimeMs, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
+        }        private async void LogAndSendFinalEvents(string reply, long transcriptionTimeMs, LatencyTracker latencyTracker, long totalTimeMs, PipelineOptions pipelineOptions, string sessionId)
         {
             var performanceMetrics = new
             {
+                textLatency = latencyTracker.TimeToFirstTokenMs > 0 ? latencyTracker.TimeToFirstTokenMs : transcriptionTimeMs,
+                audioLatency = latencyTracker.TimeToFirstAudioChunkMs > 0 ? latencyTracker.TimeToFirstAudioChunkMs : -1,
+                total = totalTimeMs,
+                // Legacy field names for compatibility
                 transcription_latency_ms = transcriptionTimeMs,
-                llm_latency_ms = llmTimeMs,
+                llm_latency_ms = latencyTracker.TimeToFirstTokenMs,
                 total_latency_ms = totalTimeMs,
                 full_reply = reply
             };
@@ -239,8 +263,8 @@ namespace VoiceAssistant.Core.Services
             // Send done event to frontend
             if (OnDone != null) await OnDone.Invoke(sessionId, performanceMetrics, sessionId);
 
-            _logger.LogInformation("Session {SessionId}: Interaction completed - Final reply sent. Latency (ms): Trans={TransTime}, LLM={LlmTime}, Total={TotalTime}",
-                sessionId, transcriptionTimeMs, llmTimeMs, totalTimeMs);
+            _logger.LogInformation("Session {SessionId}: Interaction completed - Final reply sent. Latency (ms): FirstToken={FirstTokenTime}, FirstAudio={FirstAudioTime}, Total={TotalTime}",
+                sessionId, latencyTracker.TimeToFirstTokenMs, latencyTracker.TimeToFirstAudioChunkMs, totalTimeMs);
         }
 
         private byte[] CreateWavHeader(int dataLength)
@@ -263,6 +287,15 @@ namespace VoiceAssistant.Core.Services
             writer.Write(Encoding.ASCII.GetBytes("data"));
             writer.Write(dataLength);
             return ms.ToArray();
+        }
+
+        // Helper class for tracking first-response latencies
+        private class LatencyTracker
+        {
+            public long TimeToFirstTokenMs { get; set; } = -1;
+            public long TimeToFirstAudioChunkMs { get; set; } = -1;
+            public bool FirstTokenSent { get; set; } = false;
+            public bool FirstAudioChunkSent { get; set; } = false;
         }
     }
 }

@@ -205,11 +205,10 @@ const uiManager = {
     const contentP = document.createElement('p');
     contentP.className = 'message-content';
     contentP.textContent = text;    const latencySpan = document.createElement('div');
-    latencySpan.className = 'message-latency';
-    latencySpan.innerHTML = 
+    latencySpan.className = 'message-latency';    latencySpan.innerHTML = 
       '<span class="latency-label">Latenz:</span> ' +
-      '<span class="latency-text-label">Text:</span> <span class="latency-text-value">berechne...</span> | ' +
-      '<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">berechne...</span>';
+      '<span class="latency-text-label">Erster Token:</span> <span class="latency-text-value">berechne...</span> | ' +
+      '<span class="latency-audio-label">Erster Audio:</span> <span class="latency-audio-value">berechne...</span>';
 
     messageDiv.appendChild(headerDiv);
     messageDiv.appendChild(contentP);
@@ -415,19 +414,18 @@ const uiManager = {
       console.warn("[UI-MGR] updateLatencyInfo: latency element not found in messageDiv");
       return;
     }
+      // Extract latency values from metrics (adapt to backend format)
+    // New format: textLatency = time to first token, audioLatency = time to first audio chunk
+    const textLatency = metrics.textLatency || metrics.transcription_latency_ms || metrics.text_latency_ms || 'N/A';
+    const audioLatency = metrics.audioLatency || metrics.tts_latency_ms || metrics.audio_latency_ms || 'N/A';
+    const totalLatency = metrics.total || metrics.total_latency_ms || 'N/A';
     
-    // Extract latency values from metrics (adapt to backend format)
-    const textLatency = metrics.transcription_latency_ms || metrics.text_latency_ms || 'N/A';
-    const audioLatency = metrics.tts_latency_ms || metrics.audio_latency_ms || metrics.llm_latency_ms || 'N/A';
-    const totalLatency = metrics.total_latency_ms || 'N/A';
-    
-    debugLog("[UI-MGR] Extracted latencies - text:", textLatency, "audio:", audioLatency, "total:", totalLatency);
-    
-    // Update the latency display
+    debugLog("[UI-MGR] Extracted latencies (first response times) - text:", textLatency, "audio:", audioLatency, "total:", totalLatency);
+      // Update the latency display with first-response timing labels
     latencyElement.innerHTML = 
       '<span class="latency-label">Latenz:</span> ' +
-      `<span class="latency-text-label">Text:</span> <span class="latency-text-value">${textLatency}ms</span> | ` +
-      `<span class="latency-audio-label">Audio:</span> <span class="latency-audio-value">${audioLatency}ms</span> | ` +
+      `<span class="latency-text-label">Erster Token:</span> <span class="latency-text-value">${textLatency}ms</span> | ` +
+      `<span class="latency-audio-label">Erster Audio:</span> <span class="latency-audio-value">${audioLatency}ms</span> | ` +
       `<span class="latency-total-label">Total:</span> <span class="latency-total-value">${totalLatency}ms</span>`;
     
     debugLog("[UI-MGR] Latency display updated:", latencyElement.innerHTML);
