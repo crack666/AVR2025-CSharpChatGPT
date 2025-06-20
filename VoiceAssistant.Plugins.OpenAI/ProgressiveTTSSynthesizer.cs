@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq; // Added for .Any()
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -7,7 +8,6 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using VoiceAssistant.Core.Interfaces;
-using System.Linq; // Added for .Any()
 
 namespace VoiceAssistant.Plugins.OpenAI
 {
@@ -151,12 +151,12 @@ namespace VoiceAssistant.Plugins.OpenAI
                     continue;
                 }
                 // Corrected string interpolation for logging
-                LogDebug($"Synthesizing chunk {i + 1}/{chunks.Count} for ChunkedSynthesisAsync: \"{ShortenForLog(currentChunk)}\" ({currentChunk.Length} chars)");
+                LogDebug($"Synthesizing chunk {i + 1}/{chunks.Count} for ChunkedSynthesisAsync: \"{currentChunk}\" ({currentChunk.Length} chars)");
 
                 try
                 {
                     var audioBytes = await SynthesizeAsync(currentChunk, voice);
-                    
+
                     if (audioBytes != null && audioBytes.Length > 0)
                     {
                         LogDebug($"Chunk {i + 1} synthesized: {audioBytes.Length} bytes. Invoking onChunkReady.");
@@ -177,27 +177,6 @@ namespace VoiceAssistant.Plugins.OpenAI
             }
 
             LogDebug("Chunked synthesis completed for ChunkedSynthesisAsync");
-        }
-
-        /// <summary>
-        /// Creates a shortened version of the chunk text suitable for logging.
-        /// </summary>
-        /// <param name="text">The text to shorten.</param>
-        /// <returns>A shortened version of the text.</returns>
-        private string ShortenForLog(string text)
-        {
-            if (string.IsNullOrEmpty(text))
-                return string.Empty;
-
-            const int maxLogLength = 50;
-
-            if (text.Length <= maxLogLength)
-                return text;
-
-            // This truncation is only for logging display purposes
-            // Using a special marker "[...]" instead of "..." to avoid confusion with actual text content
-            return text.Substring(0, maxLogLength / 2 - 3) + "[...]" +
-                   text.Substring(text.Length - maxLogLength / 2);
         }
 
         /// <summary>
@@ -226,7 +205,7 @@ namespace VoiceAssistant.Plugins.OpenAI
                  @"(?<=[.!?])(\\s+|$)(?<!\\s[A-Z]\\.)", // Simpler, might need refinement
                  RegexOptions.Singleline | RegexOptions.IgnoreCase
             );
-            
+
             // More robust sentence splitting:
             // This regex splits after '.', '!', '?' when followed by whitespace or end of string.
             // It includes lookbehinds to avoid splitting on abbreviations (e.g., "Mr.", "Mrs.", "Dr.") or initials.
@@ -240,7 +219,7 @@ namespace VoiceAssistant.Plugins.OpenAI
                 if (!string.IsNullOrEmpty(trimmedPart))
                 {
                     chunks.Add(trimmedPart);
-                    LogDebug($"Found sentence chunk: '{ShortenForLog(trimmedPart)}'");
+                    LogDebug($"Found sentence chunk: '{trimmedPart}'");
                 }
             }
 
@@ -249,7 +228,7 @@ namespace VoiceAssistant.Plugins.OpenAI
             {
                 if (!string.IsNullOrWhiteSpace(input))
                 {
-                     LogDebug($"Regex splitting yielded no chunks, adding entire input as one chunk: '{ShortenForLog(input)}'");
+                    LogDebug($"Regex splitting yielded no chunks, adding entire input as one chunk: '{input}'");
                     chunks.Add(input.Trim());
                 }
             }
