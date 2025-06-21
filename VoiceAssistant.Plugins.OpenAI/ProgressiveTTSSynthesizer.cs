@@ -22,12 +22,6 @@ namespace VoiceAssistant.Plugins.OpenAI
         private readonly bool _enableDebugLogging = true;
 
         /// <summary>
-        /// Minimum text length in characters to consider for chunked synthesis.
-        /// For very short texts, single-shot synthesis is more efficient.
-        /// </summary>
-        private const int MinTextLength = 40;
-
-        /// <summary>
         /// Initializes a new instance of the <see cref="ProgressiveTTSSynthesizer"/> class.
         /// </summary>
         /// <param name="httpClient">The HTTP client to use for API requests.</param>
@@ -108,30 +102,10 @@ namespace VoiceAssistant.Plugins.OpenAI
                 LogDebug("ChunkedSynthesisAsync called with empty or whitespace text. No audio will be generated.");
                 return;
             }
-
             text = text.Trim();
             if (text.Length == 0)
             {
                 LogDebug("ChunkedSynthesisAsync called with effectively empty text after trimming. No audio will be generated.");
-                return;
-            }
-
-            // For very short text, just do a single synthesis and invoke onChunkReady once.
-            // This avoids unnecessary overhead of regex splitting for tiny segments.
-            // The MinTextLength can be tuned.
-            if (text.Length < MinTextLength)
-            {
-                LogDebug($"Text too short ({text.Length} chars), using single synthesis for ChunkedSynthesisAsync");
-                try
-                {
-                    var audioBytes = await SynthesizeAsync(text, voice); // This is the non-chunking SynthesizeAsync
-                    onChunkReady(audioBytes);
-                }
-                catch (Exception ex)
-                {
-                    LogDebug($"Error during single synthesis within ChunkedSynthesisAsync: {ex.Message}");
-                    throw;
-                }
                 return;
             }
 
