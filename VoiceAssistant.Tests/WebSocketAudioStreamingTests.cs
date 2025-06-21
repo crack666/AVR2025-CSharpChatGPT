@@ -90,9 +90,7 @@ namespace VoiceAssistant.Tests
             Assert.False(string.IsNullOrWhiteSpace(promptEvent));
             Assert.Contains("elefanten", promptEvent!, StringComparison.InvariantCultureIgnoreCase);
             Assert.Contains("wie", promptEvent!, StringComparison.InvariantCultureIgnoreCase);
-        }
-
-        // stub recognizer returns the expected prompt synchronously
+        }        // stub recognizer returns the expected prompt synchronously
         private class StubRecognizer : IRecognizer
         {
             public Task<string> RecognizeAsync(Stream audioStream, string language, string contentType, string fileName)
@@ -100,6 +98,32 @@ namespace VoiceAssistant.Tests
                 // simulate correct transcript for Elefanten.wav
                 return Task.FromResult("Wie groß werden Elefanten?");
             }
+
+            public Task<string> RecognizeStreamingAsync(byte[] audioChunk, string language, bool isPartial = true)
+            {
+                // Mock streaming recognition
+                return Task.FromResult(isPartial ? "Wie groß..." : "Wie groß werden Elefanten?");
+            }
+
+            public Task<string> RecognizeRealtimeAsync(byte[] audioChunk, string language, string sessionId)
+            {
+                // Mock realtime recognition
+                return Task.FromResult("Wie groß werden Elefanten?");
+            }
+
+            public Task ConnectAsync(string sessionId, string language = "en")
+            {
+                // Mock connection
+                return Task.CompletedTask;
+            }
+
+            public Task DisconnectAsync()
+            {
+                // Mock disconnection
+                return Task.CompletedTask;
+            }
+
+            public bool IsRealtimeConnected => false; // Mock: always return false for tests
         }
     }
 }

@@ -1,3 +1,60 @@
+# Voice Assistant mit OpenAI Realtime API Integration
+
+Modernisierter, latenzoptimierter Voice Assistant mit Unterstützung für:
+- **OpenAI Realtime API** für echtes Echtzeit-Streaming (WebSocket-basiert)
+- **Traditionelle HTTP-API** für Kompatibilität  
+- **Hybride Streaming-Pipeline** mit optimierter Satzgrenze-Erkennung
+- **Flexible VAD-Modi**: Lokales WebRTC VAD oder eingebautes OpenAI VAD
+
+## 🚀 Neue Features (2025)
+
+### OpenAI Realtime API Integration
+- **Echtes Streaming**: WebSocket-Verbindung zu `wss://api.openai.com/v1/realtime`
+- **Eingebaute VAD**: Eliminiert lokales VAD, bessere Spracherkennung
+- **Ultra-niedrige Latenz**: 200-500ms statt 2-4 Sekunden
+- **Sofortige Teilergebnisse**: Beginnt während des Sprechens
+
+### Verbesserte Pipeline
+- **Robuste Satzgrenze-Erkennung**: Verhindert Aufspaltung bei Abkürzungen und Zahlen
+- **Streaming Session Management**: Kontinuierliche Verarbeitung mit Zustandsverfolgung  
+- **Ereignis-basierte Architektur**: Asynchrone Kommunikation zwischen Komponenten
+- **Rückwärtskompatibilität**: Alle bestehenden Modi funktionieren weiterhin
+
+## 📊 Performance-Verbesserungen
+
+| Modus | Latenz | VAD | API-Typ |
+|-------|--------|-----|---------|
+| Legacy | 2-4s | WebRTC | HTTP |
+| Streaming | 1-2s | WebRTC | HTTP (Chunked) |
+| **Realtime** | **200-500ms** | **OpenAI** | **WebSocket** |
+
+## 🔧 Schnellstart
+
+### Realtime API aktivieren
+```json
+{
+  "PipelineOptions": {
+    "UseOpenAIRealtimeVad": true,
+    "DisableVad": false,
+    "UseLegacyHttp": false
+  }
+}
+```
+
+### Umgebungsvariable setzen
+```bash
+OPENAI_API_KEY=your_api_key_here
+```
+
+### Starten
+```bash
+dotnet run
+```
+
+Siehe [OPENAI_REALTIME_INTEGRATION.md](OPENAI_REALTIME_INTEGRATION.md) für detaillierte Informationen.
+
+---
+
 # Detaillierte Analyse der Voice Assistant Anwendung
 
 Dieses Dokument beschreibt detailliert den Aufbau und den Funktionsablauf der Voice Assistant Anwendung. Es dient als umfassende Anleitung für Entwickler und als Wissensbasis für LLMs, um die Codebasis schnell zu verstehen und spezifische Komponenten zu lokalisieren.

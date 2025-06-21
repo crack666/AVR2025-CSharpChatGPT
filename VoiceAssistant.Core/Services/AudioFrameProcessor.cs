@@ -32,10 +32,19 @@ namespace VoiceAssistant
         private int _consecSilence;
         private bool _potentialSpikeDetected;
         private bool _speechPrimedBySpike;
-        
-        private int _frameCount = 0; // For debugging
+          private int _frameCount = 0; // For debugging
 
+        // Existing event for complete segments
         public event Func<byte[], string, Task> SpeechSegmentDetected;
+        
+        // New events for streaming processing
+        public event Func<string, Task> SpeechStreamStarted;          // When speech begins
+        public event Func<byte[], string, Task> SpeechFrameReady;     // Continuous frames during speech
+        public event Func<string, Task> SpeechStreamEnded;           // When speech ends
+        
+        // Streaming state
+        private DateTime _lastStreamingChunk = DateTime.MinValue;
+        private const double StreamingIntervalSec = 1.5; // Send audio chunk every 1.5s during speech
 
         public AudioFrameProcessor(ILogger<AudioFrameProcessor> logger, VadSettings initialVadSettings, PipelineOptions initialPipelineOptions)
         {
@@ -116,16 +125,34 @@ namespace VoiceAssistant
             _logger.LogInformation("Current Pipeline Options (AudioFrameProcessor): DisableVad={DisableVad}, DisableTts={DisableTts}, DisableProgressiveTts={DisableProgressiveTts}, TtsVoice={TtsVoice}, MinFirstChunk={MinFirst}, MaxFirst={MaxFirst}, SubsequentChunk={Subsequent}, DisableTokenStreaming={DisableTokenStreaming}, Language={Language}, ChatModel={ChatModel}",
                 _pipelineOptions.DisableVad, _pipelineOptions.DisableTts, _pipelineOptions.DisableProgressiveTts, _pipelineOptions.TtsVoice,
                 _pipelineOptions.TtsMinFirstChunkLength, _pipelineOptions.TtsMaxFirstChunkLength, _pipelineOptions.TtsSubsequentChunkLength, _pipelineOptions.DisableTokenStreaming, _pipelineOptions.Language, _pipelineOptions.ChatModel);
-        }
-
-        public async Task ProcessFrameAsync(byte[] audioFrame, string sessionId)
+        }        public async Task ProcessFrameAsync(byte[] audioFrame, string sessionId)
         {
             _frameCount++;
             if (_frameCount <= 10 || _frameCount % 100 == 0)
             {
-                _logger.LogDebug("Session {SessionId}: Processing binary audio frame #{FrameCount} in AudioFrameProcessor", sessionId, _frameCount);
+                _logger.LogDebug("Session {SessionId}: Processing binary audio frame #{FrameCount} ({ByteCount} bytes) in AudioFrameProcessor", sessionId, _frameCount, audioFrame?.Length ?? 0);
             }
 
+            // If OpenAI Realtime API with built-in VAD is enabled, bypass local VAD
+            if (_pipelineOptions.UseOpenAIRealtimeVad)
+            {
+                _logger.LogTrace("Session {SessionId}: Frame #{FrameCount} - Using OpenAI Realtime VAD, bypassing local VAD and sending frame directly", sessionId, _frameCount);
+                
+                // Send frames directly to the Realtime API, which handles VAD internally
+                if (SpeechFrameReady != null)
+                {
+                    _logger.LogTrace("Session {SessionId}: Invoking SpeechFrameReady event for frame #{FrameCount} ({ByteCount} bytes)", sessionId, _frameCount, audioFrame?.Length ?? 0);
+                    await SpeechFrameReady.Invoke(audioFrame, sessionId);
+                    _logger.LogTrace("Session {SessionId}: SpeechFrameReady event completed for frame #{FrameCount}", sessionId, _frameCount);
+                }
+                else
+                {
+                    _logger.LogWarning("Session {SessionId}: SpeechFrameReady event is null - audio frame #{FrameCount} will be dropped", sessionId, _frameCount);
+                }
+                return;
+            }
+
+            // Legacy local VAD processing
             if (_pipelineOptions.DisableVad)
             {
                 // If VAD is disabled, we might want to accumulate frames differently or bypass VAD logic.
@@ -228,9 +255,7 @@ namespace VoiceAssistant
                     if (_potentialSpikeDetected) _speechPrimedBySpike = true;
 
                     int startFrames = (int)(_vadSettings.MinSpeechDurationSec * 1000 / FrameDurationMs);
-                    bool meetsStartCriteria = (_speechPrimedBySpike && _consecSpeech >= MinSpikeConfirmFrames) || (!_speechPrimedBySpike && _consecSpeech >= startFrames);
-
-                    if (meetsStartCriteria)
+                    bool meetsStartCriteria = (_speechPrimedBySpike && _consecSpeech >= MinSpikeConfirmFrames) || (!_speechPrimedBySpike && _consecSpeech >= startFrames);                    if (meetsStartCriteria)
                     {
                         _inSpeech = true;
                         _consecSpeech = _speechPrimedBySpike ? Math.Max(_consecSpeech, MinSpikeConfirmFrames) : _consecSpeech;
@@ -238,8 +263,16 @@ namespace VoiceAssistant
                         _segmentBuffer.Clear();
                         foreach (var buf in _preBuffer) _segmentBuffer.AddRange(buf);
                         if (!_preBuffer.Contains(frame)) _segmentBuffer.AddRange(frame);
+                        
                         _logger.LogInformation("Session {SessionId}: VAD speech started (PrimedBySpike: {IsSpikeTriggered}, ConsecSpeechFrames: {ConsecSpeech}, RMS: {FrameRms:F4}, DynThr: {DynThr:F4}, WebRTC: {WebRtcSpeech})",
                                              sessionId, _speechPrimedBySpike, _consecSpeech, frameRms, dynamicThreshold, isWebRtcSpeech);
+                        
+                        // Trigger streaming start event
+                        _lastStreamingChunk = DateTime.Now;
+                        if (SpeechStreamStarted != null)
+                        {
+                            _ = Task.Run(async () => await SpeechStreamStarted.Invoke(sessionId));
+                        }
                         _potentialSpikeDetected = false;
                         _speechPrimedBySpike = false;
                     }
@@ -250,10 +283,19 @@ namespace VoiceAssistant
                     _potentialSpikeDetected = false;
                     _speechPrimedBySpike = false;
                 }
-            }
-            else // _inSpeech == true
+            }            else // _inSpeech == true
             {
                 _segmentBuffer.AddRange(frame);
+                
+                // Streaming: Send audio chunks periodically during speech
+                var timeSinceLastChunk = DateTime.Now - _lastStreamingChunk;
+                if (timeSinceLastChunk.TotalSeconds >= StreamingIntervalSec && SpeechFrameReady != null)
+                {
+                    _lastStreamingChunk = DateTime.Now;
+                    byte[] streamingChunk = _segmentBuffer.ToArray();
+                    _ = Task.Run(async () => await SpeechFrameReady.Invoke(streamingChunk, sessionId));
+                }
+                
                 int endFrames = (int)(_vadSettings.HangoverDurationSec * 1000 / FrameDurationMs);
                 if (!activeSpeechSignal && ++_consecSilence >= endFrames)
                 {
@@ -261,6 +303,13 @@ namespace VoiceAssistant
                     _logger.LogInformation("Session {SessionId}: VAD speech ended ({Bytes} bytes, ConsecSilenceFrames: {ConsecSilence}, RMS: {FrameRms:F4}, DynThr: {DynThr:F4}, WebRTC: {WebRtcSpeech})",
                                          sessionId, _segmentBuffer.Count, _consecSilence, frameRms, dynamicThreshold, isWebRtcSpeech);
                     
+                    // Trigger streaming end event
+                    if (SpeechStreamEnded != null)
+                    {
+                        _ = Task.Run(async () => await SpeechStreamEnded.Invoke(sessionId));
+                    }
+                    
+                    // Keep existing complete segment processing
                     if (SpeechSegmentDetected != null)
                     {
                         await SpeechSegmentDetected.Invoke(_segmentBuffer.ToArray(), sessionId);

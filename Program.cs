@@ -60,7 +60,22 @@ builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IChatService>(sp =>
     // Use the streaming version of the chat service
     return new VoiceAssistant.Plugins.OpenAI.StreamingOpenAIChatService(httpClient);
 });
-builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IRecognizer, VoiceAssistant.Plugins.OpenAI.OpenAIApiRecognizer>();
+
+// Register recognizer with automatic switching between HTTP and Realtime API
+builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.IRecognizer>(sp =>
+{
+    var httpClient = sp.GetRequiredService<HttpClient>();
+    var logger = sp.GetRequiredService<ILogger<VoiceAssistant.Plugins.OpenAI.OpenAIApiRecognizer>>();
+    
+    // Pass API key and realtime flag to the recognizer
+    return new VoiceAssistant.Plugins.OpenAI.OpenAIApiRecognizer(
+        httpClient, 
+        logger, 
+        apiKey, 
+        globalPipelineOptions.UseOpenAIRealtimeVad
+    );
+});
+
 builder.Services.AddSingleton<VoiceAssistant.Core.Interfaces.ISynthesizer, VoiceAssistant.Plugins.OpenAI.ProgressiveTTSSynthesizer>();
 
 // Register new services

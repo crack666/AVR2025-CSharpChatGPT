@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -20,11 +21,23 @@ namespace VoiceAssistant.Core.Services
         public event Func<string, string, Task> OnTokenReady;
         public event Func<byte[], int, string, Task> OnAudioChunkReady;
         public event Func<string, string, Task> OnError;
-        public event Func<string, object, string, Task> OnDone;
-
-        private const int SampleRate = 16000;
+        public event Func<string, object, string, Task> OnDone;        private const int SampleRate = 16000;
         private const int Channels = 1;
-        private const int BitsPerSample = 16;
+        private const int BitsPerSample = 16;        // Streaming state management
+        private readonly Dictionary<string, StreamingSession> _streamingSessions = new Dictionary<string, StreamingSession>();
+        private readonly object _streamingLock = new object();        /// <summary>
+        /// Tracks the state of a streaming recognition session
+        /// </summary>
+        private class StreamingSession
+        {
+            public StringBuilder AccumulatedText { get; } = new StringBuilder();
+            public StringBuilder AccumulatedTextForTts { get; } = new StringBuilder();
+            public Stopwatch SessionStopwatch { get; } = new Stopwatch();
+            public LatencyTracker LatencyTracker { get; set; } = new LatencyTracker();
+            public string LastPartialResult { get; set; } = "";
+            public bool IsActive { get; set; } = false;
+            public int TtsChunkIndex { get; set; } = 0;
+        }
 
         public AudioSegmentProcessor(
             ILogger<AudioSegmentProcessor> logger,
@@ -343,10 +356,194 @@ namespace VoiceAssistant.Core.Services
                         }
                     }
                 }
+            }            return -1; // No suitable split position found
+        }
+
+        #region Streaming Methods        /// <summary>
+        /// Starts a streaming recognition session
+        /// </summary>
+        public async Task StartStreamingSessionAsync(string sessionId, PipelineOptions pipelineOptions)
+        {
+            lock (_streamingLock)
+            {
+                if (_streamingSessions.ContainsKey(sessionId))
+                {
+                    _logger.LogWarning("Session {SessionId}: Streaming session already exists, resetting", sessionId);
+                    _streamingSessions[sessionId].AccumulatedText.Clear();
+                    _streamingSessions[sessionId].AccumulatedTextForTts.Clear();
+                    _streamingSessions[sessionId].SessionStopwatch.Restart();
+                    _streamingSessions[sessionId].LatencyTracker = new LatencyTracker();
+                    _streamingSessions[sessionId].IsActive = true;
+                    _streamingSessions[sessionId].TtsChunkIndex = 0;
+                }
+                else
+                {
+                    var session = new StreamingSession { IsActive = true };
+                    session.SessionStopwatch.Start();
+                    _streamingSessions[sessionId] = session;
+                }
+            }
+              // Initialize OpenAI Realtime API connection if enabled
+            if (pipelineOptions.UseOpenAIRealtimeVad)
+            {
+                try
+                {
+                    // Connect to the Realtime API through the facade
+                    await _recognizer.ConnectAsync(sessionId, pipelineOptions.Language);
+                    _logger.LogInformation("Session {SessionId}: OpenAI Realtime API connection established", sessionId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Session {SessionId}: Failed to establish OpenAI Realtime API connection", sessionId);
+                    throw;
+                }
+            }
+            
+            _logger.LogInformation("Session {SessionId}: Started streaming recognition session (UseRealtimeVAD: {UseRealtimeVAD})", sessionId, pipelineOptions.UseOpenAIRealtimeVad);
+        }        /// <summary>
+        /// Processes a streaming audio chunk
+        /// </summary>
+        public async Task ProcessStreamingChunkAsync(byte[] audioChunk, string sessionId, PipelineOptions pipelineOptions)
+        {
+            _logger.LogTrace("Session {SessionId}: ProcessStreamingChunkAsync called with {ByteCount} bytes", sessionId, audioChunk?.Length ?? 0);
+            
+            StreamingSession session;
+            lock (_streamingLock)
+            {
+                if (!_streamingSessions.TryGetValue(sessionId, out session) || !session.IsActive)
+                {
+                    _logger.LogWarning("Session {SessionId}: No active streaming session for chunk processing", sessionId);
+                    return;
+                }
             }
 
-            return -1; // No suitable split position found
+            try
+            {
+                // Use realtime API if configured (check pipeline options instead of recognizer type)
+                if (pipelineOptions.UseOpenAIRealtimeVad)
+                {
+                    _logger.LogTrace("Session {SessionId}: Sending {ByteCount} bytes to OpenAI Realtime API", sessionId, audioChunk.Length);
+                    
+                    // Use the true realtime API - results come through events
+                    await _recognizer.RecognizeRealtimeAsync(audioChunk, pipelineOptions.Language, sessionId);
+                    
+                    _logger.LogTrace("Session {SessionId}: OpenAI Realtime API call completed (events should fire separately)", sessionId);
+                    // Note: Results will come through the recognizer's events, not return value
+                }
+                else
+                {
+                    _logger.LogTrace("Session {SessionId}: Using HTTP streaming API for {ByteCount} bytes", sessionId, audioChunk.Length);
+                    
+                    // Fallback to chunked HTTP API
+                    string partialText = await _recognizer.RecognizeStreamingAsync(audioChunk, pipelineOptions.Language, isPartial: true);
+                    
+                    if (!string.IsNullOrWhiteSpace(partialText))
+                    {
+                        _logger.LogDebug("Session {SessionId}: HTTP streaming returned text: '{Text}'", sessionId, partialText);
+                        await ProcessStreamingTextAsync(partialText, sessionId, session, pipelineOptions);
+                    }
+                    else
+                    {
+                        _logger.LogTrace("Session {SessionId}: HTTP streaming returned empty/null text", sessionId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Session {SessionId}: Error processing streaming chunk", sessionId);
+            }
         }
+
+        /// <summary>
+        /// Ends a streaming recognition session
+        /// </summary>
+        public async Task EndStreamingSessionAsync(string sessionId, PipelineOptions pipelineOptions)
+        {
+            StreamingSession session;
+            lock (_streamingLock)
+            {
+                if (!_streamingSessions.TryGetValue(sessionId, out session) || !session.IsActive)
+                {
+                    _logger.LogWarning("Session {SessionId}: No active streaming session to end", sessionId);
+                    return;
+                }
+                session.IsActive = false;
+            }
+
+            // Process any remaining text
+            if (session.AccumulatedTextForTts.Length > 0)
+            {
+                string remainingText = session.AccumulatedTextForTts.ToString();
+                _logger.LogInformation("Session {SessionId}: Processing final streaming text: '{Text}'", sessionId, remainingText);
+                
+                await _synthesizer.ChunkedSynthesisAsync(remainingText, pipelineOptions.TtsVoice, async (audioBytesChunk) =>
+                {
+                    if (audioBytesChunk != null && audioBytesChunk.Length > 0)
+                    {
+                        if (OnAudioChunkReady != null) 
+                            await OnAudioChunkReady.Invoke(audioBytesChunk, session.TtsChunkIndex, sessionId);
+                        session.TtsChunkIndex++;
+                    }
+                });
+            }            session.SessionStopwatch.Stop();
+            _logger.LogInformation("Session {SessionId}: Ended streaming session, total time: {TotalMs}ms", 
+                sessionId, session.SessionStopwatch.ElapsedMilliseconds);
+        }
+
+        /// <summary>
+        /// Processes streaming text and triggers TTS for complete sentences
+        /// </summary>
+        private async Task ProcessStreamingTextAsync(string newText, string sessionId, StreamingSession session, PipelineOptions pipelineOptions)
+        {
+            // Update accumulated text
+            session.AccumulatedTextForTts.Append(newText);
+            
+            // Send tokens to frontend
+            if (OnTokenReady != null) await OnTokenReady.Invoke(newText, sessionId);
+            
+            // Track first token timing
+            if (!session.LatencyTracker.FirstTokenSent)
+            {
+                session.LatencyTracker.TimeToFirstTokenMs = session.SessionStopwatch.ElapsedMilliseconds;
+                session.LatencyTracker.FirstTokenSent = true;
+                _logger.LogDebug("Session {SessionId}: First streaming token at {TimeMs}ms", sessionId, session.LatencyTracker.TimeToFirstTokenMs);
+            }
+
+            // Check for sentence boundaries and trigger TTS
+            if (!pipelineOptions.DisableTts && !pipelineOptions.DisableProgressiveTts)
+            {
+                string currentText = session.AccumulatedTextForTts.ToString();
+                int safeSplitPosition = FindSafeSplitPosition(currentText);
+                
+                if (safeSplitPosition != -1)
+                {
+                    string textToSynthesize = currentText.Substring(0, safeSplitPosition + 1);
+                    session.AccumulatedTextForTts.Remove(0, safeSplitPosition + 1);
+                    
+                    _logger.LogDebug("Session {SessionId}: Streaming TTS for sentence: '{Text}'", sessionId, textToSynthesize);
+                    
+                    await _synthesizer.ChunkedSynthesisAsync(textToSynthesize, pipelineOptions.TtsVoice, async (audioBytesChunk) =>
+                    {
+                        if (audioBytesChunk != null && audioBytesChunk.Length > 0)
+                        {
+                            // Track first audio timing
+                            if (!session.LatencyTracker.FirstAudioChunkSent)
+                            {
+                                session.LatencyTracker.TimeToFirstAudioChunkMs = session.SessionStopwatch.ElapsedMilliseconds;
+                                session.LatencyTracker.FirstAudioChunkSent = true;
+                                _logger.LogDebug("Session {SessionId}: First streaming audio at {TimeMs}ms", sessionId, session.LatencyTracker.TimeToFirstAudioChunkMs);
+                            }
+                            
+                            if (OnAudioChunkReady != null) 
+                                await OnAudioChunkReady.Invoke(audioBytesChunk, session.TtsChunkIndex, sessionId);
+                            session.TtsChunkIndex++;
+                        }
+                    });
+                }
+            }
+        }
+
+        #endregion
 
         // Helper class for tracking first-response latencies
         private class LatencyTracker

@@ -147,9 +147,7 @@ namespace VoiceAssistant.Tests
 
             // Verify all tokens concatenated equal the full response
             Assert.Equal(response, string.Concat(tokens));
-        }
-
-        // Simple mock recognizer for testing
+        }        // Simple mock recognizer for testing
         public class MockRecognizer : VoiceAssistant.Core.Interfaces.IRecognizer
         {
             private readonly ITestOutputHelper _mockOutput;
@@ -159,12 +157,38 @@ namespace VoiceAssistant.Tests
                 _mockOutput = outputHelper;
             }
 
-            public Task<string> RecognizeAsync(Stream? audioStream, string? contentType = null, string? fileName = null, string? language = null)
+            public Task<string> RecognizeAsync(Stream audioStream, string language, string? contentType = null, string? fileName = null)
             {
                 // Simply return a mock transcription without actually processing audio
                 _mockOutput.WriteLine($"MockRecognizer.RecognizeAsync called with language: {language ?? "not specified"}");
                 return Task.FromResult("This is a mock transcription for testing.");
             }
+
+            public Task<string> RecognizeStreamingAsync(byte[] audioChunk, string language, bool isPartial = true)
+            {
+                _mockOutput.WriteLine($"MockRecognizer.RecognizeStreamingAsync called with language: {language}, isPartial: {isPartial}");
+                return Task.FromResult(isPartial ? "This is partial..." : "This is a mock transcription for testing.");
+            }
+
+            public Task<string> RecognizeRealtimeAsync(byte[] audioChunk, string language, string sessionId)
+            {
+                _mockOutput.WriteLine($"MockRecognizer.RecognizeRealtimeAsync called with language: {language}, sessionId: {sessionId}");
+                return Task.FromResult("This is a mock transcription for testing.");
+            }
+
+            public Task ConnectAsync(string sessionId, string language = "en")
+            {
+                _mockOutput.WriteLine($"MockRecognizer.ConnectAsync called with sessionId: {sessionId}, language: {language}");
+                return Task.CompletedTask;
+            }
+
+            public Task DisconnectAsync()
+            {
+                _mockOutput.WriteLine($"MockRecognizer.DisconnectAsync called");
+                return Task.CompletedTask;
+            }
+
+            public bool IsRealtimeConnected => false; // Mock: always return false for tests
         }
 
         [Theory]
@@ -189,7 +213,8 @@ namespace VoiceAssistant.Tests
 
             // ACT
             // 1. Simulate speech recognition (using mock)
-            string userText = await recognizer.RecognizeAsync(null, language: chatLanguage); // Pass language to mock
+            using var emptyStream = new MemoryStream();
+            string userText = await recognizer.RecognizeAsync(emptyStream, language: chatLanguage); // Pass language to mock
             _output.WriteLine($"User input (mocked for language {chatLanguage}): {userText}");
 
             // 2. Add to chat log

@@ -6,11 +6,12 @@ namespace VoiceAssistant.Core.Models
     /// Feature flags for selecting pipeline modes and optimizations.
     /// </summary>
     public class PipelineOptions
-    {
-        /// <summary>Use the legacy HTTP-based endpoints instead of WebSocket streaming.</summary>
+    {        /// <summary>Use the legacy HTTP-based endpoints instead of WebSocket streaming.</summary>
         public bool UseLegacyHttp { get; set; }
         /// <summary>Disable voice activity detection (process full audio segments).</summary>
         public bool DisableVad { get; set; }
+        /// <summary>Use OpenAI Realtime API with built-in VAD instead of local WebRTC VAD.</summary>
+        public bool UseOpenAIRealtimeVad { get; set; }
         /// <summary>Disable token-level streaming for chat responses.</summary>
         public bool DisableTokenStreaming { get; set; }
         /// <summary>Disable progressive (chunked) TTS; use single-shot synthesis.</summary>
@@ -36,10 +37,9 @@ namespace VoiceAssistant.Core.Models
 
         public void CopyFrom(PipelineOptions other)
         {
-            if (other == null) return;
-
-            UseLegacyHttp = other.UseLegacyHttp;
+            if (other == null) return;            UseLegacyHttp = other.UseLegacyHttp;
             DisableVad = other.DisableVad;
+            UseOpenAIRealtimeVad = other.UseOpenAIRealtimeVad;
             DisableTokenStreaming = other.DisableTokenStreaming;
             DisableProgressiveTts = other.DisableProgressiveTts;
             DisableTts = other.DisableTts;

@@ -46,6 +46,11 @@ namespace VoiceAssistant
             _audioSegmentProcessor.OnError += OnErrorHandler;
             _audioSegmentProcessor.OnDone += OnDoneHandler;
 
+            // Subscribe to streaming events
+            _audioFrameProcessor.SpeechStreamStarted += OnSpeechStreamStartedHandler;
+            _audioFrameProcessor.SpeechFrameReady += OnSpeechFrameReadyHandler;
+            _audioFrameProcessor.SpeechStreamEnded += OnSpeechStreamEndedHandler;
+
             // Initialize AudioFrameProcessor with current settings
             _audioFrameProcessor.UpdateSettings(_vadSettings, _pipelineOptions);
         }        // Event Handlers for AudioSegmentProcessor events
@@ -112,11 +117,55 @@ namespace VoiceAssistant
             }
         }
 
-        public async Task HandleAsync(WebSocket webSocket, string sessionId)
+        // Streaming event handlers
+        private async Task OnSpeechStreamStartedHandler(string sessionId)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogInformation("Session {SessionId}: Speech stream started", sessionId);
+                await _audioSegmentProcessor.StartStreamingSessionAsync(sessionId, _pipelineOptions);
+                await SendEventAsync(_currentWebSocket, "speech_stream_started", new { sessionId });
+            }
+        }        private async Task OnSpeechFrameReadyHandler(byte[] audioChunk, string sessionId)
+        {
+            _logger.LogTrace("Session {SessionId}: OnSpeechFrameReadyHandler called with {ByteCount} bytes (Current session: {CurrentSessionId})", 
+                sessionId, audioChunk?.Length ?? 0, _currentSessionId);
+            
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogTrace("Session {SessionId}: Processing streaming audio chunk ({Length} bytes) in WebSocketHandler", sessionId, audioChunk.Length);
+                await _audioSegmentProcessor.ProcessStreamingChunkAsync(audioChunk, sessionId, _pipelineOptions);
+                _logger.LogTrace("Session {SessionId}: Streaming audio chunk processing completed in WebSocketHandler", sessionId);
+            }
+            else
+            {
+                _logger.LogWarning("Session {SessionId}: OnSpeechFrameReadyHandler - session mismatch or no WebSocket (Current: {CurrentSessionId}, WebSocket: {HasWebSocket})", 
+                    sessionId, _currentSessionId, _currentWebSocket != null);
+            }
+        }
+
+        private async Task OnSpeechStreamEndedHandler(string sessionId)
+        {
+            if (sessionId == _currentSessionId && _currentWebSocket != null)
+            {
+                _logger.LogInformation("Session {SessionId}: Speech stream ended", sessionId);
+                await _audioSegmentProcessor.EndStreamingSessionAsync(sessionId, _pipelineOptions);
+                await SendEventAsync(_currentWebSocket, "speech_stream_ended", new { sessionId });
+            }
+        }        public async Task HandleAsync(WebSocket webSocket, string sessionId)
         {
             _currentWebSocket = webSocket; // Store the WebSocket for the current session
             _currentSessionId = sessionId; // Store session ID
             _logger.LogInformation("Session {SessionId}: WebSocket connected to WebSocketHandler. State: {State}", sessionId, webSocket.State);
+            
+            // Setup OpenAI Realtime API if enabled
+            if (_pipelineOptions.UseOpenAIRealtimeVad)
+            {
+                _logger.LogInformation("Session {SessionId}: OpenAI Realtime VAD enabled - audio will be processed in real-time", sessionId);
+                // The AudioSegmentProcessor will handle the Realtime API connection
+                await _audioSegmentProcessor.StartStreamingSessionAsync(sessionId, _pipelineOptions);
+            }
+            
             var rawAudioBufferForDisabledVad = new List<byte>();
             var messageReceiveBuffer = new byte[8192];
             var binaryMessageBuffer = new List<byte>();
@@ -221,16 +270,22 @@ namespace VoiceAssistant
                         }
                         catch (JsonException jsonEx) { _logger.LogError(jsonEx, "Session {SessionId}: Error deserializing WebSocket message: {MessageJson}", sessionId, messageJson); }
                         catch (Exception ex) { _logger.LogError(ex, "Session {SessionId}: Error processing WebSocket message: {MessageJson}", sessionId, messageJson); }
-                    }
-                    else if (result.MessageType == WebSocketMessageType.Binary)
+                    }                    else if (result.MessageType == WebSocketMessageType.Binary)
                     {
                         if (receiveSegment.Array == null) continue;
+                        
+                        _logger.LogTrace("Session {SessionId}: Received binary chunk with {Count} bytes, EndOfMessage: {EndOfMessage}", 
+                            sessionId, result.Count, result.EndOfMessage);
+                        
                         binaryMessageBuffer.AddRange(new ArraySegment<byte>(receiveSegment.Array, receiveSegment.Offset, result.Count));
 
                         if (result.EndOfMessage)
                         {
                             var completeFrame = binaryMessageBuffer.ToArray();
                             binaryMessageBuffer.Clear();
+
+                            _logger.LogTrace("Session {SessionId}: Complete binary frame assembled with {Length} bytes (expected: {ExpectedLength})", 
+                                sessionId, completeFrame.Length, FrameBytes);
 
                             if (completeFrame.Length != FrameBytes)
                             {
@@ -240,11 +295,19 @@ namespace VoiceAssistant
 
                             if (_pipelineOptions.DisableVad)
                             {
+                                _logger.LogTrace("Session {SessionId}: VAD disabled - accumulating audio frame ({Length} bytes)", sessionId, completeFrame.Length);
                                 rawAudioBufferForDisabledVad.AddRange(completeFrame);
+                            }
+                            else if (_pipelineOptions.UseOpenAIRealtimeVad)
+                            {
+                                // Send audio directly to OpenAI Realtime API via streaming
+                                _logger.LogTrace("Session {SessionId}: Sending audio frame to OpenAI Realtime API ({Length} bytes)", sessionId, completeFrame.Length);
+                                await _audioSegmentProcessor.ProcessStreamingChunkAsync(completeFrame, sessionId, _pipelineOptions);
+                                _logger.LogTrace("Session {SessionId}: OpenAI Realtime API call completed for frame", sessionId);
                             }
                             else
                             {
-                                // Pass the frame to AudioFrameProcessor. 
+                                // Pass the frame to AudioFrameProcessor for local VAD processing.
                                 // AudioFrameProcessor will raise SpeechSegmentDetected event when a segment is ready.
                                 // The event handler will then call AudioSegmentProcessor.
                                 await _audioFrameProcessor.ProcessFrameAsync(completeFrame, sessionId);
